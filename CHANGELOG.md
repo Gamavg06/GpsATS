@@ -4,6 +4,18 @@ Todas las modificaciones notables, correcciones de errores y nuevas funcionalida
 
 ---
 
+## [v1.2.2] — 2026-11-05
+### Cambiado y Corregido
+- **Eliminación de binarios propietarios del repositorio:** `map_ats.bin` y APKs eliminados del historial y rastreo de Git.
+- **Herramienta CLI `--build-map`:** Generación local de la red vial desde la instalación de ATS del usuario.
+- **Licenciamiento unificado:** Servidor bajo **GNU GPL-2.0** (enlace con TruckLib) y app Android bajo **MIT License**.
+- **Atribuciones añadidas:** OkHttp, Okio, Kotlin y AndroidX documentados en `LICENSES.md`.
+- **Seguridad en red local:** WebSocket `ws://` documentado con precisión (sin cifrado TLS, autenticado con PIN). Validación estricta en código de subredes RFC 1918.
+- **APK Release firmado:** Compilación con keystore RSA 2048, `debuggable=false`, `allowBackup=false`, icono propio y pantalla fija (`FLAG_KEEP_SCREEN_ON`).
+- **Pruebas empíricas:** Suite `EmpiricalEvidenceTests.cs` (A* <1ms / 16KB, conectividad 100%, giros prohibidos y escaneo dinámico de sectores).
+
+---
+
 ## [v1.2.1] — 2026-11-05
 ### Agregado
 - **Documentación oficial y publicación en GitHub:** Configuración de repositorio Git en rama `main`, exclusión optimizada vía `.gitignore` y creación de `README.md` exhaustivo con diagramas Mermaid, insignias de estado, guía paso a paso y arquitectura del sistema.
