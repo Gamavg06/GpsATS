@@ -14,6 +14,20 @@ import java.util.concurrent.TimeUnit
 
 class AtsNetworkClient {
 
+    companion object {
+        fun isAllowedPrivateAddress(host: String): Boolean {
+            val trimmed = host.trim()
+            if (trimmed.equals("localhost", ignoreCase = true)) return true
+
+            return try {
+                val addr = java.net.InetAddress.getByName(trimmed)
+                addr.isLoopbackAddress || addr.isSiteLocalAddress || addr.isLinkLocalAddress
+            } catch (e: Exception) {
+                false
+            }
+        }
+    }
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
@@ -22,6 +36,11 @@ class AtsNetworkClient {
     private var activeWebSocket: WebSocket? = null
 
     suspend fun pairWithServer(host: String, port: Int, pin: String): Result<String> = withContext(Dispatchers.IO) {
+        if (!isAllowedPrivateAddress(host)) {
+            return@withContext Result.failure(
+                SecurityException("Conexión rechazada: '$host' no es una IP privada (RFC 1918, loopback o link-local). Solo se admiten redes LAN privadas de confianza.")
+            )
+        }
         try {
             val url = "http://$host:$port/api/pair"
             val json = JSONObject().put("pin", pin).toString()
@@ -49,6 +68,11 @@ class AtsNetworkClient {
     }
 
     suspend fun downloadMap(host: String, port: Int): Result<MapGraph> = withContext(Dispatchers.IO) {
+        if (!isAllowedPrivateAddress(host)) {
+            return@withContext Result.failure(
+                SecurityException("Conexión rechazada: '$host' no es una IP privada permitida.")
+            )
+        }
         try {
             val url = "http://$host:$port/api/map/download"
             val request = Request.Builder().url(url).build()
@@ -74,6 +98,11 @@ class AtsNetworkClient {
         onStatusChanged: (Boolean) -> Unit
     ) {
         disconnectWebSocket()
+
+        if (!isAllowedPrivateAddress(host)) {
+            onStatusChanged(false)
+            return
+        }
 
         val url = "ws://$host:$port/ws/telemetry?token=$token"
         val request = Request.Builder().url(url).build()

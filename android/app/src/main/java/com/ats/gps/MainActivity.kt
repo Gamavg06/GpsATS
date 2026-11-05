@@ -49,6 +49,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Mantener la pantalla encendida mientras la app de navegación está activa
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         voiceAssistant = NavigationVoiceAssistant(this)
 
         setContent {
