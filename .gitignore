@@ -1,0 +1,58 @@
+# ==========================================
+# .gitignore - ATS Telemetry GPS & Companion
+# ==========================================
+
+# Visual Studio / Visual Studio Code
+.vs/
+.vscode/
+*.user
+*.userosv
+*.suo
+*.sln.docstates
+*.ide/
+
+# Build Outputs (.NET / C#)
+bin/
+obj/
+server/bin/
+server/obj/
+Phase0Test/bin/
+Phase0Test/obj/
+tests/bin/
+tests/obj/
+
+# Android / Gradle
+.gradle/
+android/.gradle/
+android/build/
+android/app/build/
+android/.idea/
+android/*.iml
+android/app/*.iml
+local.properties
+.cxx/
+*.apk
+*.aab
+
+# Map Binaries & Large Generated Assets (Generate locally via: AtsGpsServer --build-map)
+server/data/*.bin
+data/*.bin
+*.bin
+
+# Keystore & Signing Secrets
+*.keystore
+*.jks
+signing.properties
+
+# Backups & Legacy
+_legacy_backup/
+*.bak
+*.tmp
+*.log
+
+# OS Generated
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store

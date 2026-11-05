@@ -1,0 +1,5 @@
+SCS Telemetry SDK Files
+=========================
+These files (scs-telemetry-common.hpp, scs_sdk_readme.txt, scs_sdk_license.txt) originate from SCS Software's Telemetry SDK.
+Distributed under the SCS SDK License (see scs_sdk_license.txt).
+Copyright (c) SCS Software.
