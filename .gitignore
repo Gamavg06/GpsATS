@@ -16,10 +16,14 @@ bin/
 obj/
 server/bin/
 server/obj/
+server/publish/
+publish/
 Phase0Test/bin/
 Phase0Test/obj/
 tests/bin/
 tests/obj/
+TestResults/
+tests/**/TestResults/
 
 # Android / Gradle
 .gradle/

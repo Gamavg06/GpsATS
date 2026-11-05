@@ -14,6 +14,7 @@ namespace AtsGpsServer.Map
     {
         private readonly string _atsDir;
         private readonly Dictionary<string, PrefabDescriptor?> _ppdCache = new();
+        private readonly Dictionary<string, string> _prefabDescMap = new(StringComparer.OrdinalIgnoreCase);
 
         public MapExtractor(string atsDir)
         {
@@ -25,18 +26,77 @@ namespace AtsGpsServer.Map
             _atsDir = Path.GetDirectoryName(baseMapScsPath) ?? @"C:\Program Files (x86)\Steam\steamapps\common\American Truck Simulator";
         }
 
+        public List<string> GetMapScsFiles()
+        {
+            var result = new List<string>();
+            if (!Directory.Exists(_atsDir)) return result;
+
+            var files = Directory.GetFiles(_atsDir, "*.scs");
+            foreach (var file in files)
+            {
+                string name = Path.GetFileName(file).ToLowerInvariant();
+                if (name.StartsWith("base_map"))
+                {
+                    result.Add(file);
+                }
+                else if (name.StartsWith("dlc_"))
+                {
+                    if (name == "dlc_arizona.scs" || name == "dlc_nevada.scs" ||
+                        System.Text.RegularExpressions.Regex.IsMatch(name, @"^dlc_[a-z]{2}\.scs$"))
+                    {
+                        result.Add(file);
+                    }
+                }
+            }
+            return result.Distinct().OrderBy(f => f).ToList();
+        }
+
+        private void EnsurePrefabDefinitionsLoaded(IEnumerable<IHashFsReader> dlcReaders)
+        {
+            if (_prefabDescMap.Count > 0) return;
+
+            string defScsPath = Path.Combine(_atsDir, "def.scs");
+            var readers = new List<IHashFsReader>();
+            if (File.Exists(defScsPath))
+            {
+                try { readers.Add(HashFsReader.Open(defScsPath)); } catch { }
+            }
+            readers.AddRange(dlcReaders);
+
+            var regex = new System.Text.RegularExpressions.Regex(
+                @"prefab_model\s*:\s*prefab\.([a-zA-Z0-9_]+)\s*\{[^}]*prefab_desc\s*:\s*""([^""]+)""",
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+
+            foreach (var reader in readers)
+            {
+                try
+                {
+                    if (reader.EntryExists("/def/world/prefab.sii") != EntryType.NotFound)
+                    {
+                        var bytes = reader.Extract("/def/world/prefab.sii")[0];
+                        string content = System.Text.Encoding.UTF8.GetString(bytes);
+                        foreach (System.Text.RegularExpressions.Match m in regex.Matches(content))
+                        {
+                            _prefabDescMap[m.Groups[1].Value] = m.Groups[2].Value;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+
+        public Dictionary<string, string> GetPrefabDescMap(IEnumerable<IHashFsReader> dlcReaders)
+        {
+            EnsurePrefabDefinitionsLoaded(dlcReaders);
+            return _prefabDescMap;
+        }
+
         public List<SectorCoordinate> DiscoverSectors()
         {
             var readers = new List<IHashFsReader>();
             try
             {
-                var mapScsFiles = new List<string>();
-                if (Directory.Exists(_atsDir))
-                {
-                    mapScsFiles.AddRange(Directory.GetFiles(_atsDir, "dlc_*.scs"));
-                    mapScsFiles.AddRange(Directory.GetFiles(_atsDir, "base_map*.scs"));
-                }
-                mapScsFiles = mapScsFiles.Distinct().OrderBy(f => f).ToList();
+                var mapScsFiles = GetMapScsFiles();
                 foreach (var scsPath in mapScsFiles)
                 {
                     try { readers.Add(HashFsReader.Open(scsPath)); } catch { }
@@ -60,14 +120,7 @@ namespace AtsGpsServer.Map
             var readers = new List<IHashFsReader>();
             try
             {
-                var mapScsFiles = new List<string>();
-                if (Directory.Exists(_atsDir))
-                {
-                    mapScsFiles.AddRange(Directory.GetFiles(_atsDir, "dlc_*.scs"));
-                    mapScsFiles.AddRange(Directory.GetFiles(_atsDir, "base_map*.scs"));
-                }
-                mapScsFiles = mapScsFiles.Distinct().OrderBy(f => f).ToList();
-
+                var mapScsFiles = GetMapScsFiles();
                 foreach (var scsPath in mapScsFiles)
                 {
                     try
@@ -87,7 +140,17 @@ namespace AtsGpsServer.Map
 
                 string baseScsPath = Path.Combine(_atsDir, "base.scs");
                 using var baseReader = File.Exists(baseScsPath) ? HashFsReader.Open(baseScsPath) : null;
+                string defScsPath = Path.Combine(_atsDir, "def.scs");
+                using var defReader = File.Exists(defScsPath) ? HashFsReader.Open(defScsPath) : null;
+
+                var allFs = new List<IFileSystem>(readers);
+                if (baseReader != null) allFs.Add(baseReader);
+                if (defReader != null) allFs.Add(defReader);
+
                 var compositeMapFs = new AssetLoader(readers.ToArray());
+                var compositePpdFs = new AssetLoader(allFs.ToArray());
+
+                EnsurePrefabDefinitionsLoaded(readers);
 
                 List<SectorCoordinate> sectorsToLoad;
                 if (targetSectors != null)
@@ -198,18 +261,23 @@ namespace AtsGpsServer.Map
                     {
                         if (prefab.Nodes == null || prefab.Nodes.Count < 2 || prefab.Nodes[0] == null) continue;
 
-                        string ppdPath = "/prefab/" + prefab.Model.ToString().TrimStart('/') + ".ppd";
+                        string modelToken = prefab.Model.ToString().TrimStart('/');
+                        if (!_prefabDescMap.TryGetValue(modelToken, out string? ppdPath))
+                        {
+                            ppdPath = "/prefab/" + modelToken + ".ppd";
+                        }
                         if (!ppdPath.EndsWith(".ppd")) ppdPath += ".ppd";
 
-                        var desc = baseReader != null ? GetOrLoadPpd(ppdPath, baseReader) : null;
+                        var desc = GetOrLoadPpd(ppdPath, compositePpdFs);
                         if (desc == null || desc.NavCurves.Count == 0) continue;
 
                         var prefabOrigin = new Vector3(prefab.Nodes[0].Position.X, prefab.Nodes[0].Position.Y, prefab.Nodes[0].Position.Z);
+                        var prefabRot = prefab.Nodes[0].Rotation;
 
                         foreach (var nc in desc.NavCurves)
                         {
-                            int pStartIdx = nc.LeadsToNodes.Item1;
-                            int pEndIdx = nc.LeadsToNodes.Item3;
+                            int pStartIdx = nc.LeadsToNodes.Item1 - 1;
+                            int pEndIdx = nc.LeadsToNodes.Item3 - 1;
 
                             if (pStartIdx >= 0 && pStartIdx < prefab.Nodes.Count &&
                                 pEndIdx >= 0 && pEndIdx < prefab.Nodes.Count &&
@@ -222,8 +290,8 @@ namespace AtsGpsServer.Map
                                 uint globalA = GetOrAddNode(graph, uidToNodeIndex, nodeA);
                                 uint globalB = GetOrAddNode(graph, uidToNodeIndex, nodeB);
 
-                                var worldStart = TransformLocalToWorld(nc.StartPosition, prefabOrigin);
-                                var worldEnd = TransformLocalToWorld(nc.EndPosition, prefabOrigin);
+                                var worldStart = TransformLocalToWorld(nc.StartPosition, prefabOrigin, prefabRot);
+                                var worldEnd = TransformLocalToWorld(nc.EndPosition, prefabOrigin, prefabRot);
 
                                 var turnPolyline = new List<Vector3> { worldStart, worldEnd };
 
@@ -452,9 +520,10 @@ namespace AtsGpsServer.Map
             }
         }
 
-        private static Vector3 TransformLocalToWorld(Vector3 localPos, Vector3 worldOrigin)
+        private static Vector3 TransformLocalToWorld(Vector3 localPos, Vector3 worldOrigin, Quaternion rotation)
         {
-            return new Vector3(worldOrigin.X + localPos.X, worldOrigin.Y + localPos.Y, worldOrigin.Z + localPos.Z);
+            var rotated = Vector3.Transform(localPos, rotation);
+            return new Vector3(worldOrigin.X + rotated.X, worldOrigin.Y + rotated.Y, worldOrigin.Z + rotated.Z);
         }
 
         private static List<Vector3> GenerateRoadPolyline(Vector3 start, Vector3 end)

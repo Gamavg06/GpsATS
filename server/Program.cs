@@ -112,8 +112,8 @@ app.MapPost("/api/pair", async (HttpContext context, AuthManager auth) =>
             return Results.BadRequest(new { error = "El campo 'pin' es requerido." });
         }
 
-        string? token = auth.TryAuthenticate(pin);
-        if (token != null)
+        var (success, token, errorMsg) = auth.TryAuthenticate(pin);
+        if (success && token != null)
         {
             return Results.Ok(new
             {
@@ -124,7 +124,7 @@ app.MapPost("/api/pair", async (HttpContext context, AuthManager auth) =>
             });
         }
 
-        return Results.Json(new { authenticated = false, error = "Código PIN incorrecto." }, statusCode: 401);
+        return Results.Json(new { authenticated = false, error = errorMsg ?? "Código PIN incorrecto." }, statusCode: 401);
     }
     catch (Exception ex)
     {

@@ -41,23 +41,50 @@ namespace AtsGpsServer.Tests
         [Fact]
         public void AuthManager_AuthenticatesOnlyWithCorrectPin()
         {
-            var auth = new AuthManager();
-            string correctPin = auth.ServerPin;
-            string incorrectPin = "000000";
-            if (correctPin == incorrectPin) incorrectPin = "111111";
+            var auth = new AuthManager("123456");
 
             // Intentar con PIN incorrecto
-            string? invalidToken = auth.TryAuthenticate(incorrectPin);
-            Assert.Null(invalidToken);
+            var (success1, token1, err1) = auth.TryAuthenticate("999999");
+            Assert.False(success1);
+            Assert.Null(token1);
+            Assert.Contains("PIN incorrecto", err1);
 
             // Intentar con PIN correcto
-            string? validToken = auth.TryAuthenticate(correctPin);
-            Assert.NotNull(validToken);
-            Assert.NotEmpty(validToken);
+            var (success2, token2, err2) = auth.TryAuthenticate("123456");
+            Assert.True(success2);
+            Assert.NotNull(token2);
+            Assert.NotEmpty(token2);
+            Assert.Null(err2);
 
             // Validar token emitido
-            Assert.True(auth.ValidateToken(validToken));
+            Assert.True(auth.ValidateToken(token2));
             Assert.False(auth.ValidateToken("fake-token-xyz"));
+        }
+
+        [Fact]
+        public void AuthManager_EnforcesRateLimitingAndLockout()
+        {
+            var auth = new AuthManager("654321");
+
+            // 5 intentos fallidos consecutivos
+            for (int i = 0; i < 4; i++)
+            {
+                var (success, _, _) = auth.TryAuthenticate("000000");
+                Assert.False(success);
+                Assert.False(auth.IsLockedOut);
+            }
+
+            // Quinto intento activa el bloqueo
+            var (success5, token5, err5) = auth.TryAuthenticate("000000");
+            Assert.False(success5);
+            Assert.Null(token5);
+            Assert.True(auth.IsLockedOut);
+            Assert.Contains("bloqueado temporalmente", err5);
+
+            // Intento con el PIN correcto mientras está bloqueado debe ser rechazado
+            var (blockedSuccess, _, blockedErr) = auth.TryAuthenticate("654321");
+            Assert.False(blockedSuccess);
+            Assert.Contains("bloqueado", blockedErr);
         }
     }
 }

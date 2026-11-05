@@ -5,6 +5,8 @@ import com.ats.gps.data.model.MapGraph
 import com.ats.gps.data.model.TelemetryData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -34,6 +36,10 @@ class AtsNetworkClient {
         .build()
 
     private var activeWebSocket: WebSocket? = null
+    private var reconnectJob: kotlinx.coroutines.Job? = null
+    private val clientScope = kotlinx.coroutines.CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+    private var isUserDisconnected = false
+    private var retryAttempt = 0
 
     suspend fun pairWithServer(host: String, port: Int, pin: String): Result<String> = withContext(Dispatchers.IO) {
         if (!isAllowedPrivateAddress(host)) {
@@ -97,7 +103,9 @@ class AtsNetworkClient {
         onTelemetry: (TelemetryData) -> Unit,
         onStatusChanged: (Boolean) -> Unit
     ) {
-        disconnectWebSocket()
+        isUserDisconnected = false
+        reconnectJob?.cancel()
+        disconnectWebSocketInternal()
 
         if (!isAllowedPrivateAddress(host)) {
             onStatusChanged(false)
@@ -109,6 +117,7 @@ class AtsNetworkClient {
 
         activeWebSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                retryAttempt = 0
                 onStatusChanged(true)
             }
 
@@ -124,15 +133,45 @@ class AtsNetworkClient {
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 onStatusChanged(false)
+                scheduleReconnect(host, port, token, onTelemetry, onStatusChanged)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 onStatusChanged(false)
+                scheduleReconnect(host, port, token, onTelemetry, onStatusChanged)
             }
         })
     }
 
+    private fun scheduleReconnect(
+        host: String,
+        port: Int,
+        token: String,
+        onTelemetry: (TelemetryData) -> Unit,
+        onStatusChanged: (Boolean) -> Unit
+    ) {
+        if (isUserDisconnected) return
+
+        reconnectJob?.cancel()
+        reconnectJob = clientScope.launch {
+            retryAttempt++
+            // Backoff exponencial: 1s, 2s, 4s, 8s, hasta máx 15s
+            val delayMs = (1000L * (1L shl kotlin.math.min(retryAttempt, 4))).coerceAtMost(15000L)
+            delay(delayMs)
+
+            if (!isUserDisconnected) {
+                connectTelemetryWebSocket(host, port, token, onTelemetry, onStatusChanged)
+            }
+        }
+    }
+
     fun disconnectWebSocket() {
+        isUserDisconnected = true
+        reconnectJob?.cancel()
+        disconnectWebSocketInternal()
+    }
+
+    private fun disconnectWebSocketInternal() {
         activeWebSocket?.close(1000, "Cierre voluntario de la app")
         activeWebSocket = null
     }

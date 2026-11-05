@@ -40,15 +40,20 @@ fun GpsMapCanvas(
     isFollowingTruck: Boolean = true,
     modifier: Modifier = Modifier
 ) {
+    val currentZoom by rememberUpdatedState(zoomScale)
+    val currentPan by rememberUpdatedState(panOffset)
+    val currentOnZoom by rememberUpdatedState(onZoomChange)
+    val currentOnPan by rememberUpdatedState(onPanChange)
+
     Canvas(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFF0A0F1D))
             .pointerInput(Unit) {
                 detectTransformGestures { _, pan, zoom, _ ->
-                    val newZoom = (zoomScale * zoom).coerceIn(0.10f, 4.5f)
-                    onZoomChange(newZoom)
-                    onPanChange(panOffset + pan)
+                    val newZoom = (currentZoom * zoom).coerceIn(0.10f, 4.5f)
+                    currentOnZoom(newZoom)
+                    currentOnPan(currentPan + pan)
                 }
             }
     ) {
@@ -101,22 +106,26 @@ private fun DrawScope.drawMap2D(
     panOffset: Offset,
     isFollowingTruck: Boolean
 ) {
-    val cx = size.width / 2f + if (!isFollowingTruck) panOffset.x else 0f
-    val cy = size.height * 0.62f + if (!isFollowingTruck) panOffset.y else 0f
+    val cx = size.width / 2f
+    val cy = size.height * 0.62f
     val baseScale = (1.8f * zoomScale).coerceIn(0.08f, 10f)
+
+    // Coordenadas mundiales del centro de vista actual
+    val viewCenterX = truckX - (if (!isFollowingTruck) panOffset.x / baseScale else 0f)
+    val viewCenterZ = truckZ - (if (!isFollowingTruck) panOffset.y / baseScale else 0f)
 
     val rotationAngle = if (isFollowingTruck) -headingDeg else 0f
 
     rotate(rotationAngle, pivot = Offset(cx, cy)) {
-        val viewRadius = (max(size.width, size.height) / baseScale) * 1.2f
+        val viewRadius = (max(size.width, size.height) / baseScale) * 1.5f
 
         // 1. Dibujar red vial (capa arcén y asfalto)
         for (edge in graph.edges) {
             if (edge.polyline.size < 2) continue
 
-            // Comprobación de visibilidad segura: si algún punto cae dentro del radio de vista
+            // Comprobación de visibilidad respecto al centro de vista real
             val inView = edge.polyline.any { pt ->
-                abs(pt.x - truckX) <= viewRadius && abs(pt.z - truckZ) <= viewRadius
+                abs(pt.x - viewCenterX) <= viewRadius && abs(pt.z - viewCenterZ) <= viewRadius
             }
             if (!inView) continue
 
@@ -136,26 +145,26 @@ private fun DrawScope.drawMap2D(
                 else -> Color(0xFF3B4A5E)
             }
 
-            drawPolyline2D(edge.polyline, truckX, truckZ, cx, cy, baseScale, edgeColor, strokeW + 3f)
-            drawPolyline2D(edge.polyline, truckX, truckZ, cx, cy, baseScale, roadColor, strokeW)
+            drawPolyline2D(edge.polyline, viewCenterX, viewCenterZ, cx, cy, baseScale, edgeColor, strokeW + 3f)
+            drawPolyline2D(edge.polyline, viewCenterX, viewCenterZ, cx, cy, baseScale, roadColor, strokeW)
         }
 
         // 2. Ruta activa GPS (Glow cyan brillante)
         if (activeRoute != null) {
             for (edge in activeRoute.edgePath) {
                 val rw = 16f * zoomScale.coerceIn(0.4f, 2.2f)
-                drawPolyline2D(edge.polyline, truckX, truckZ, cx, cy, baseScale, Color(0x6600E5FF), rw * 1.6f)
-                drawPolyline2D(edge.polyline, truckX, truckZ, cx, cy, baseScale, Color(0xFF00E5FF), rw)
+                drawPolyline2D(edge.polyline, viewCenterX, viewCenterZ, cx, cy, baseScale, Color(0x6600E5FF), rw * 1.6f)
+                drawPolyline2D(edge.polyline, viewCenterX, viewCenterZ, cx, cy, baseScale, Color(0xFF00E5FF), rw)
             }
         }
 
         // 3. Dibujar Ciudades (Nombres grandes destacados)
         for (city in graph.cities) {
-            val dist = sqrt((city.x - truckX).pow(2) + (city.z - truckZ).pow(2))
+            val dist = sqrt((city.x - viewCenterX).pow(2) + (city.z - viewCenterZ).pow(2))
             if (dist > viewRadius * 1.5f) continue
 
-            val sx = cx + (city.x - truckX) * baseScale
-            val sy = cy + (city.z - truckZ) * baseScale
+            val sx = cx + (city.x - viewCenterX) * baseScale
+            val sy = cy + (city.z - viewCenterZ) * baseScale
 
             drawCircle(Color(0xFF38BDF8), radius = 6f * zoomScale.coerceIn(0.6f, 1.5f), center = Offset(sx, sy))
 
@@ -174,18 +183,24 @@ private fun DrawScope.drawMap2D(
         // 4. Dibujar POIs (Gasolineras, Descanso, Talleres, Concesionarios, Empresas)
         val poiDrawRadius = viewRadius * 1.1f
         for (poi in graph.pois) {
-            val dist = sqrt((poi.x - truckX).pow(2) + (poi.z - truckZ).pow(2))
+            val dist = sqrt((poi.x - viewCenterX).pow(2) + (poi.z - viewCenterZ).pow(2))
             if (dist > poiDrawRadius) continue
 
-            val sx = cx + (poi.x - truckX) * baseScale
-            val sy = cy + (poi.z - truckZ) * baseScale
+            val sx = cx + (poi.x - viewCenterX) * baseScale
+            val sy = cy + (poi.z - viewCenterZ) * baseScale
 
             drawPoiMarker2D(poi, sx, sy, baseScale)
         }
     }
 
     // 5. Cursor del camión
-    drawTruckCursor(cx, cy, 0f)
+    if (isFollowingTruck) {
+        drawTruckCursor(cx, cy, 0f)
+    } else {
+        val truckSx = cx + (truckX - viewCenterX) * baseScale
+        val truckSy = cy + (truckZ - viewCenterZ) * baseScale
+        drawTruckCursor(truckSx, truckSy, headingDeg)
+    }
 }
 
 // Marcador individual de POI en 2D con insignia redondeada e icono
@@ -282,21 +297,66 @@ private fun DrawScope.drawMap3D(
     val camX = truckX + camFollowDist * sinH
     val camZ = truckZ + camFollowDist * cosH
 
-    fun project3D(wx: Float, wz: Float, wy: Float = 0f): Offset? {
+    val zNear = 1.0f
+
+    fun toCam(wx: Float, wz: Float, wy: Float = 0f): Triple<Float, Float, Float> {
         val dx = wx - camX
         val dz = wz - camZ
         val dy = wy
-
         val xCam = dx * cosH - dz * sinH
         val zCam = -dx * sinH - dz * cosH
+        return Triple(xCam, dy, zCam)
+    }
 
-        if (zCam < 1.0f || zCam > viewDistMax) return null
-
+    fun projectCam(xCam: Float, dy: Float, zCam: Float): Offset {
         val pX = (w * 0.5f) + (xCam * focalLength / zCam)
         val pY = horizonY + ((camHeight - dy) * focalLength / zCam)
-
-        if (pY < horizonY - 30f || pY > h + 200f) return null
         return Offset(pX, pY)
+    }
+
+    fun project3D(wx: Float, wz: Float, wy: Float = 0f): Offset? {
+        val (xCam, dy, zCam) = toCam(wx, wz, wy)
+        if (zCam < zNear || zCam > viewDistMax) return null
+        val pY = horizonY + ((camHeight - dy) * focalLength / zCam)
+        if (pY < horizonY - 30f || pY > h + 200f) return null
+        return Offset((w * 0.5f) + (xCam * focalLength / zCam), pY)
+    }
+
+    fun drawSegmentClipped(
+        pt1: Point3D,
+        pt2: Point3D,
+        edgeColor: Color,
+        roadColor: Color,
+        widthMult: Float
+    ) {
+        val (x1, y1, z1) = toCam(pt1.x, pt1.z, pt1.y)
+        val (x2, y2, z2) = toCam(pt2.x, pt2.z, pt2.y)
+
+        if ((z1 < zNear && z2 < zNear) || (z1 > viewDistMax && z2 > viewDistMax)) return
+
+        var cx1 = x1; var cy1 = y1; var cz1 = z1
+        var cx2 = x2; var cy2 = y2; var cz2 = z2
+
+        if (cz1 < zNear) {
+            val t = (zNear - cz1) / (cz2 - cz1)
+            cx1 = cx1 + t * (cx2 - cx1)
+            cy1 = cy1 + t * (cy2 - cy1)
+            cz1 = zNear
+        } else if (cz2 < zNear) {
+            val t = (zNear - cz2) / (cz1 - cz2)
+            cx2 = cx2 + t * (cx1 - cx2)
+            cy2 = cy2 + t * (cy1 - cy2)
+            cz2 = zNear
+        }
+
+        val proj1 = projectCam(cx1, cy1, cz1)
+        val proj2 = projectCam(cx2, cy2, cz2)
+
+        val avgDist = (cz1 + cz2) * 0.5f
+        val strokeW = (focalLength * widthMult / max(avgDist, 4f)).coerceIn(2.5f, 54f)
+
+        drawLine(edgeColor, proj1, proj2, strokeWidth = strokeW + 4f, cap = StrokeCap.Round)
+        drawLine(roadColor, proj1, proj2, strokeWidth = strokeW, cap = StrokeCap.Round)
     }
 
     // 3. Rejilla virtual de perspectiva en el suelo
@@ -319,44 +379,27 @@ private fun DrawScope.drawMap3D(
         )
     )
 
-    // 5. Dibujar Carreteras en 3D
+    // 5. Dibujar Carreteras en 3D con recorte geométrico de plano cercano
     val nearbyEdges = graph.edges.filter { edge ->
-        edge.polyline.any { abs(it.x - truckX) < 550f && abs(it.z - truckZ) < 550f }
+        edge.polyline.any { abs(it.x - truckX) < 650f && abs(it.z - truckZ) < 650f }
     }
 
     for (edge in nearbyEdges) {
-        var prevProj: Offset? = null
-        for (pt in edge.polyline) {
-            val proj = project3D(pt.x, pt.z)
-            if (prevProj != null && proj != null) {
-                val dist = sqrt((pt.x - camX).pow(2) + (pt.z - camZ).pow(2))
-                val strokeW = (focalLength * 11f / max(dist, 4f)).coerceIn(2.5f, 54f)
+        val isHwy = edge.roadType.toInt() == 0
+        val roadColor = if (isHwy) Color(0xFF475569) else Color(0xFF334155)
+        val edgeColor = Color(0xFF1E293B)
+        val widthMult = if (isHwy) 12f else 9f
 
-                val isHwy = edge.roadType.toInt() == 0
-                val roadColor = if (isHwy) Color(0xFF475569) else Color(0xFF334155)
-                val edgeColor = Color(0xFF1E293B)
-
-                drawLine(edgeColor, prevProj, proj, strokeWidth = strokeW + 4f, cap = StrokeCap.Round)
-                drawLine(roadColor, prevProj, proj, strokeWidth = strokeW, cap = StrokeCap.Round)
-            }
-            prevProj = proj
+        for (i in 0 until edge.polyline.size - 1) {
+            drawSegmentClipped(edge.polyline[i], edge.polyline[i + 1], edgeColor, roadColor, widthMult)
         }
     }
 
     // 6. Dibujar Ruta Activa GPS en 3D
     if (activeRoute != null) {
         for (edge in activeRoute.edgePath) {
-            var prevProj: Offset? = null
-            for (pt in edge.polyline) {
-                val proj = project3D(pt.x, pt.z)
-                if (prevProj != null && proj != null) {
-                    val dist = sqrt((pt.x - camX).pow(2) + (pt.z - camZ).pow(2))
-                    val strokeW = (focalLength * 9f / max(dist, 4f)).coerceIn(3.5f, 40f)
-
-                    drawLine(Color(0x5500E5FF), prevProj, proj, strokeWidth = strokeW * 1.5f, cap = StrokeCap.Round)
-                    drawLine(Color(0xFF00E5FF), prevProj, proj, strokeWidth = strokeW, cap = StrokeCap.Round)
-                }
-                prevProj = proj
+            for (i in 0 until edge.polyline.size - 1) {
+                drawSegmentClipped(edge.polyline[i], edge.polyline[i + 1], Color(0x5500E5FF), Color(0xFF00E5FF), 11f)
             }
         }
     }
