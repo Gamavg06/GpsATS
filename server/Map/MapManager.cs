@@ -71,10 +71,7 @@ namespace AtsGpsServer.Map
         {
             return Task.Run(() =>
             {
-                string baseMapScs = Path.Combine(_atsDir, "base_map.scs");
-                string baseScs = Path.Combine(_atsDir, "base.scs");
-
-                var extractor = new MapExtractor(baseMapScs, baseScs);
+                var extractor = new MapExtractor(_atsDir);
                 var graph = extractor.ExtractGraph(null, progressCallback);
 
                 lock (_lock)

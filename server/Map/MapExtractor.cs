@@ -93,23 +93,34 @@ namespace AtsGpsServer.Map
 
         public List<SectorCoordinate> DiscoverSectors()
         {
-            var readers = new List<IHashFsReader>();
-            try
+            var sectors = new HashSet<SectorCoordinate>();
+            var secRegex = new System.Text.RegularExpressions.Regex(@"sec([+-]\d{4})([+-]\d{4})\.base$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            var mapScsFiles = GetMapScsFiles();
+
+            foreach (var scsPath in mapScsFiles)
             {
-                var mapScsFiles = GetMapScsFiles();
-                foreach (var scsPath in mapScsFiles)
+                try
                 {
-                    try { readers.Add(HashFsReader.Open(scsPath)); } catch { }
+                    using var reader = HashFsReader.Open(scsPath);
+                    if (reader.DirectoryExists("/map/usa"))
+                    {
+                        var entries = reader.GetFiles("/map/usa");
+                        foreach (var e in entries)
+                        {
+                            var match = secRegex.Match(e);
+                            if (match.Success)
+                            {
+                                int x = int.Parse(match.Groups[1].Value);
+                                int z = int.Parse(match.Groups[2].Value);
+                                sectors.Add(new SectorCoordinate(x, z));
+                            }
+                        }
+                    }
                 }
-                if (readers.Count == 0) return new List<SectorCoordinate>();
-                var composite = new AssetLoader(readers.ToArray());
-                var mbdMap = TruckLib.ScsMap.Map.Open("/map/usa.mbd", composite);
-                return mbdMap.Sectors?.Keys.OrderBy(s => s.X).ThenBy(s => s.Z).ToList() ?? new List<SectorCoordinate>();
+                catch { }
             }
-            finally
-            {
-                foreach (var r in readers) try { r.Dispose(); } catch { }
-            }
+
+            return sectors.OrderBy(s => s.X).ThenBy(s => s.Z).ToList();
         }
 
         public MapGraph ExtractGraph(IEnumerable<SectorCoordinate>? targetSectors = null, Action<string, int, int>? progressCallback = null)
@@ -159,23 +170,7 @@ namespace AtsGpsServer.Map
                 }
                 else
                 {
-                    // Enumeración dinámica de sectores leyendo usa.mbd montado sobre el sistema de archivos compuesto
-                    try
-                    {
-                        var mbdMap = TruckLib.ScsMap.Map.Open("/map/usa.mbd", compositeMapFs);
-                        if (mbdMap.Sectors != null && mbdMap.Sectors.Count > 0)
-                        {
-                            sectorsToLoad = mbdMap.Sectors.Keys.OrderBy(s => s.X).ThenBy(s => s.Z).ToList();
-                        }
-                        else
-                        {
-                            sectorsToLoad = new List<SectorCoordinate>();
-                        }
-                    }
-                    catch
-                    {
-                        sectorsToLoad = new List<SectorCoordinate>();
-                    }
+                    sectorsToLoad = DiscoverSectors();
                 }
 
                 int currentSector = 0;
@@ -271,13 +266,19 @@ namespace AtsGpsServer.Map
                         var desc = GetOrLoadPpd(ppdPath, compositePpdFs);
                         if (desc == null || desc.NavCurves.Count == 0) continue;
 
-                        var prefabOrigin = new Vector3(prefab.Nodes[0].Position.X, prefab.Nodes[0].Position.Y, prefab.Nodes[0].Position.Z);
-                        var prefabRot = prefab.Nodes[0].Rotation;
+                        int origIdx = (int)prefab.Origin;
+                        if (origIdx >= desc.Nodes.Count || origIdx >= prefab.Nodes.Count) origIdx = 0;
+                        var ppdOriginPos = desc.Nodes[origIdx].Position;
+                        var worldOrigNode = prefab.Nodes[origIdx];
+                        if (worldOrigNode == null) continue;
+                        var worldOrigin = new Vector3(worldOrigNode.Position.X, worldOrigNode.Position.Y, worldOrigNode.Position.Z);
+                        var prefabRot = worldOrigNode.Rotation;
 
                         foreach (var nc in desc.NavCurves)
                         {
-                            int pStartIdx = nc.LeadsToNodes.Item1 - 1;
-                            int pEndIdx = nc.LeadsToNodes.Item3 - 1;
+                            // En formato SCS PPD, LeadsToNodes.Item1 y Item3 son bitmasks (1 << nodeIndex)
+                            int pStartIdx = nc.LeadsToNodes.Item1 > 0 ? System.Numerics.BitOperations.TrailingZeroCount(nc.LeadsToNodes.Item1) : -1;
+                            int pEndIdx = nc.LeadsToNodes.Item3 > 0 ? System.Numerics.BitOperations.TrailingZeroCount(nc.LeadsToNodes.Item3) : -1;
 
                             if (pStartIdx >= 0 && pStartIdx < prefab.Nodes.Count &&
                                 pEndIdx >= 0 && pEndIdx < prefab.Nodes.Count &&
@@ -290,10 +291,13 @@ namespace AtsGpsServer.Map
                                 uint globalA = GetOrAddNode(graph, uidToNodeIndex, nodeA);
                                 uint globalB = GetOrAddNode(graph, uidToNodeIndex, nodeB);
 
-                                var worldStart = TransformLocalToWorld(nc.StartPosition, prefabOrigin, prefabRot);
-                                var worldEnd = TransformLocalToWorld(nc.EndPosition, prefabOrigin, prefabRot);
+                                var worldStart = TransformLocalToWorld(nc.StartPosition, ppdOriginPos, worldOrigin, prefabRot);
+                                var worldEnd = TransformLocalToWorld(nc.EndPosition, ppdOriginPos, worldOrigin, prefabRot);
 
-                                var turnPolyline = new List<Vector3> { worldStart, worldEnd };
+                                var nodeAPos = new Vector3(nodeA.Position.X, nodeA.Position.Y, nodeA.Position.Z);
+                                var nodeBPos = new Vector3(nodeB.Position.X, nodeB.Position.Y, nodeB.Position.Z);
+
+                                var turnPolyline = new List<Vector3> { nodeAPos, worldStart, worldEnd, nodeBPos };
 
                                 graph.Edges.Add(new MapEdge
                                 {
@@ -520,10 +524,11 @@ namespace AtsGpsServer.Map
             }
         }
 
-        private static Vector3 TransformLocalToWorld(Vector3 localPos, Vector3 worldOrigin, Quaternion rotation)
+        private static Vector3 TransformLocalToWorld(Vector3 localPos, Vector3 ppdOriginPos, Vector3 worldOrigin, Quaternion rotation)
         {
-            var rotated = Vector3.Transform(localPos, rotation);
-            return new Vector3(worldOrigin.X + rotated.X, worldOrigin.Y + rotated.Y, worldOrigin.Z + rotated.Z);
+            var relative = localPos - ppdOriginPos;
+            var rotated = Vector3.Transform(relative, rotation);
+            return worldOrigin + rotated;
         }
 
         private static List<Vector3> GenerateRoadPolyline(Vector3 start, Vector3 end)

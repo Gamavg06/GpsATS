@@ -552,32 +552,47 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Marcha y Velocidad
+        // Marcha y Velocidad (o Juego en Pausa)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(
-                text = if (telemetry.gear == 0) "N" else if (telemetry.gear < 0) "R" else "D${telemetry.gear}",
-                color = Color(0xFF38BDF8),
-                fontWeight = FontWeight.Black,
-                fontSize = 18.sp
-            )
-            Text(
-                text = "${telemetry.speedKmh.roundToInt()} km/h",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp
-            )
+            if (telemetry.gamePaused) {
+                Text(
+                    text = "⏸ JUEGO EN PAUSA",
+                    color = Color(0xFFFACC15),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 16.sp
+                )
+            } else {
+                Text(
+                    text = if (telemetry.gear == 0) "N" else if (telemetry.gear < 0) "R" else "D${telemetry.gear}",
+                    color = Color(0xFF38BDF8),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 18.sp
+                )
+                Text(
+                    text = "${telemetry.speedKmh.roundToInt()} km/h",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            }
         }
 
-        // Estado conexión PC
+        // Estado conexión PC y Pausa
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Box(
                 modifier = Modifier
                     .size(10.dp)
                     .clip(CircleShape)
-                    .background(if (telemetry.connected) Color(0xFF22C55E) else Color(0xFFEF4444))
+                    .background(
+                        if (telemetry.gamePaused) Color(0xFFFACC15)
+                        else if (telemetry.connected) Color(0xFF22C55E)
+                        else Color(0xFFEF4444)
+                    )
             )
             Text(
-                text = if (telemetry.connected) "PC Conectada" else "ATS en Pausa",
+                text = if (telemetry.gamePaused) "Juego en Pausa"
+                else if (telemetry.connected) "PC Conectada"
+                else "Desconectado",
                 color = Color(0xFF94A3B8),
                 fontSize = 12.sp
             )

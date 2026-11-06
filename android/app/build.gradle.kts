@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -12,20 +15,41 @@ android {
         applicationId = "com.ats.gps"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 3
+        versionName = "1.2.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
         create("release") {
-            val keystoreFile = file("../release.keystore")
+            val keystorePropertiesFile = rootProject.file("signing.properties")
+            val keystoreProperties = Properties()
+            if (keystorePropertiesFile.exists()) {
+                FileInputStream(keystorePropertiesFile).use { fis ->
+                    keystoreProperties.load(fis)
+                }
+            }
+
+            val keystorePath = System.getenv("ATS_KEYSTORE_PATH")
+                ?: keystoreProperties.getProperty("storeFile")
+                ?: "../release.keystore"
+            val storePass = System.getenv("ATS_KEYSTORE_PASSWORD")
+                ?: keystoreProperties.getProperty("storePassword")
+                ?: "atsgpspassword123"
+            val keyAl = System.getenv("ATS_KEY_ALIAS")
+                ?: keystoreProperties.getProperty("keyAlias")
+                ?: "atsgps"
+            val keyPass = System.getenv("ATS_KEY_PASSWORD")
+                ?: keystoreProperties.getProperty("keyPassword")
+                ?: "atsgpspassword123"
+
+            val keystoreFile = file(keystorePath)
             if (keystoreFile.exists()) {
                 storeFile = keystoreFile
-                storePassword = "atsgpspassword123"
-                keyAlias = "atsgps"
-                keyPassword = "atsgpspassword123"
+                storePassword = storePass
+                keyAlias = keyAl
+                keyPassword = keyPass
             }
         }
     }

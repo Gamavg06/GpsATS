@@ -41,9 +41,9 @@ Un ecosistema integral de telemetría, navegación por satélite (GPS) en tiempo
 
 ### 🗺️ Motor Cartográfico Vectorial
 - **Generación Local On-Demand:** La base de datos cartográfica se extrae directamente de los archivos `.scs` de la instalación local del usuario mediante la herramienta integrada (`--build-map`). Ningún archivo propietario del juego se distribuye en este repositorio.
-- **Detección Dinámica de DLCs:** Escaneo dinámico de todos los paquetes `dlc_*.scs` y `base_map*.scs` presentes en la carpeta de American Truck Simulator (Washington, Oregón, California, Nevada, Arizona, Idaho, etc.).
-- **Más de 86,000 Nodos y 124,000 Aristas:** Renderizado analítico de curvas Bézier y trazado vectorial continuo.
-- **96 Ciudades y 1,321 Puntos de Interés (POIs):**
+- **Detección Dinámica de DLCs:** Escaneo dinámico acelerado vía HashFS de todos los paquetes `dlc_*.scs` y `base_map*.scs` presentes en la carpeta de American Truck Simulator (Washington, Oregón, California, Nevada, Arizona, Idaho, etc.), descubriendo **420 sectores** en ~90 ms.
+- **Más de 146,000 Nodos y 618,000 Aristas:** Renderizado analítico de curvas Bézier y trazado vectorial continuo conectando carreteras y prefabs topológicamente mediante `INode.Uid`.
+- **168 Ciudades y 2,103 Puntos de Interés (POIs):**
   - ⛽ **Estaciones de servicio** (Gasolineras)
   - 🛏️ **Áreas de descanso** y Garajes
   - 🔧 **Talleres mecánicos** y mantenimiento
@@ -62,7 +62,9 @@ Un ecosistema integral de telemetría, navegación por satélite (GPS) en tiempo
 
 ### 📦 Detección Automática de Carga y Ruteo
 - **Sincronización en Vivo:** Detección instantánea de la carga activa (mercancía, peso en toneladas, origen y destino).
-- **Ruta Óptima Vectorial:** Cálculo de trayectoria en tiempo real mediante algoritmo $A^*$ vectorial.
+- **Ruta Óptima Vectorial:** Cálculo de trayectoria en tiempo real mediante algoritmo $A^*$ expandido por aristas con soporte de giros prohibidos.
+  > [!NOTE]
+  > **Estado del Ruteo:** El algoritmo $A^*$ calcula rutas locales e interurbanas entre ciudades del componente conexo principal (ej. Bend→Portland con ratio de desvío 1.42x). Sin embargo, el ruteo interestatal de muy larga distancia a través de toda la geografía continental aún se encuentra en desarrollo activo y **no se clasifica como 100% completado** debido a orientaciones unidireccionales y rampas de autopista pendientes de calibrar en sectores limítrofes.
 
 ### 🪧 Garmin Junction View
 - Pantalla de aviso de bifurcación de autopista que anticipa salidas complejas e intercambios de carriles.

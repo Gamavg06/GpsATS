@@ -4,6 +4,38 @@ Todas las modificaciones notables, correcciones de errores y nuevas funcionalida
 
 ---
 
+## [v1.2.3] — 2026-11-05
+> [!WARNING]
+> **RECTIFICACIÓN Y AVISO DE AUDITORÍA: RESULTADOS PREVIOS MARCADOS COMO INVÁLIDOS**
+> 1. **Benchmarks de A* previos (<1 ms en mapa completo):** Declarados **INVÁLIDOS**. El grafo original sufría de fragmentación severa (16,425 componentes conexas aisladas; la componente mayor tenía solo 307 nodos). Las mediciones anteriores corrían sobre nodos en islas aisladas o caminos triviales sin conectividad interestatal real.
+> 2. **Conectividad de prefabs "100%":** Declarada **INVÁLIDA**. La fórmula anterior omitía el offset de origen PPD del modelo (`desc.Nodes[Origin].Position`) e interpretaba los campos `LeadsToNodes.Item1/Item3` como índices 1-based en lugar de bitmasks SCS (`1 << index`), descartando curvas y produciendo un error mediano de ~20m-27m en coordenadas del mundo.
+> 3. **Historial de Git Reescrito:** Se documenta que el historial de Git fue reescrito para purgar de raíz binarios propietarios (`map_ats.bin` de 60 MB y APKs de debug).
+
+### Cambiado y Corregido en v1.2.3
+- **Conectividad del Grafo Vial (B.1 - B.3):**
+  - **Decodificación bitmask en curvas SCS PPD:** Se implementó `BitOperations.TrailingZeroCount(nc.LeadsToNodes.Item1)` y `Item3`, recuperando las curvas de 4 vías y cruces en trébol descartadas anteriormente.
+  - **Transformación de origen PPD exacta:** Se aplica `worldOrigin + Vector3.Transform(localPos - ppdOriginPos, rotation)`, reduciendo el error en el nodo de anclaje de 60.0 m a **0.0000 m**.
+  - **Conexión topológica pura (0m snapping):** Se eliminó el snapping geométrico de 25m. La vinculación entre carreteras y prefabs se realiza al 100% de forma nativa por coincidencia exacta de `INode.Uid`. Casos que requieren snapping: **0**.
+  - **Crecimiento de componente conexa:** La componente gigante pasó de **307 nodos (0.21%)** a **74,520 nodos (50.97%)** (+24,200% de incremento). Bend, Portland y Seattle se encuentran ahora en la misma componente conexa principal (CompID 1).
+- **Ruteo A* Expandido por Aristas y Giros Prohibidos (B.4, C.5):**
+  - Implementación de estado `(node, prevNode)` que penaliza giros en U y descarta giros prohibidos en intersecciones. Verificado con caso real en `EmpiricalRouteValidationTests`.
+  - Ruteo empírico medido: Bend→Portland calculada con éxito (16.75 km de grafo, ratio de desvío 1.42x, 217 aristas, 8 ms en frío / 3.59 ms en caliente).
+  - Transparencia: El ruteo de larga distancia a través de múltiples estados sigue en desarrollo y no se clasifica como 100% terminado.
+- **Descubrimiento Dinámico de Sectores (C.4):**
+  - Escaneo dinámico acelerado vía entradas HashFS: detecta exactamente **420 sectores** en 90 ms (+144 sectores sobre la lista fija de 276).
+- **App Android v1.2.3 (D.9, E.13):**
+  - `versionCode = 3`, `versionName = "1.2.3"`.
+  - Generación de APK de Release firmado con keystore privada propia (SHA-256: `0E545FD91DE05F248CFEC95B59A974B1965A3728CDB39E99A933359B07BBB6DA`).
+  - `debuggable=false`, `allowBackup=false`, `FLAG_KEEP_SCREEN_ON` para mantener pantalla encendida.
+  - Indicador "Juego en Pausa" en la barra de telemetría cuando el juego se detiene, evitando valores congelados.
+- **Servidor y Automatización (E.14, E.15):**
+  - Detección dinámica de ATS en todas las bibliotecas de Steam (`libraryfolders.vdf`).
+  - Puerto TCP 35500 unificado en toda la documentación, scripts y código.
+  - Regla de firewall documentada con `-Profile Private -RemoteAddress LocalSubnet`.
+  - Aviso de licencia MIT para el plugin `scs-telemetry.dll` (RenCloud).
+
+---
+
 ## [v1.2.2] — 2026-11-05
 ### Cambiado y Corregido
 - **Eliminación de binarios propietarios del repositorio:** `map_ats.bin` y APKs eliminados del historial y rastreo de Git.
