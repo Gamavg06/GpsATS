@@ -94,14 +94,15 @@ if %ERRORLEVEL% EQU 0 (
     echo [FIREWALL] Permisos de Administrador detectados. Verificando regla del puerto 35500...
     netsh advfirewall firewall show rule name="ATS GPS Server" >nul 2>&1
     if %ERRORLEVEL% NEQ 0 (
-        netsh advfirewall firewall add rule name="ATS GPS Server" dir=in action=allow protocol=TCP localport=35500 profile=private >nul 2>&1
-        echo [FIREWALL] Regla 'ATS GPS Server' agregada exitosamente para puerto 35500 TCP.
+        netsh advfirewall firewall add rule name="ATS GPS Server" dir=in action=allow protocol=TCP localport=35500 profile=private remoteip=LocalSubnet >nul 2>&1
+        echo [FIREWALL] Regla 'ATS GPS Server' agregada exitosamente para puerto 35500 TCP (profile=private, remoteip=LocalSubnet).
     ) else (
         echo [FIREWALL] Regla 'ATS GPS Server' ya configurada en el Firewall de Windows.
     )
 ) else (
-    echo [FIREWALL] Ejecutando sin privilegios de Administrador.
-    echo            Si la app móvil no conecta, ejecuta como Administrador para abrir el puerto 35500 TCP.
+    echo [AVISO] Ejecutando sin privilegios de Administrador. No se pudo verificar ni crear la regla en el Firewall de Windows.
+    echo         Si la app Android no logra conectar en la red local, cierra esta ventana y ejecuta 'Iniciar_Servidor.bat' como Administrador
+    echo         para habilitar el puerto 35500 TCP (profile=private, remoteip=LocalSubnet).
 )
 echo.
 

@@ -40,6 +40,8 @@ local.properties
 
 # Map Binaries & Large Generated Assets (Generate locally via: AtsGpsServer --build-map)
 server/data/*.bin
+server/data/*.csv
+server/data/detour_svgs/
 data/*.bin
 *.bin
 
