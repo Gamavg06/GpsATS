@@ -402,14 +402,23 @@ namespace AtsGpsServer.Map
                     }
                 }
 
+                // Calcular grados de entrada y salida para anclaje transitable (Punto 2)
+                var inDegree = new Dictionary<uint, int>();
+                var outDegree = new Dictionary<uint, int>();
+                foreach (var edge in graph.Edges)
+                {
+                    outDegree[edge.FromNodeIndex] = outDegree.GetValueOrDefault(edge.FromNodeIndex) + 1;
+                    inDegree[edge.ToNodeIndex] = inDegree.GetValueOrDefault(edge.ToNodeIndex) + 1;
+                }
+
                 foreach (var c in graph.Cities)
                 {
-                    c.NearestNodeIndex = graph.FindNearestNode(c.X, c.Z);
+                    c.NearestNodeIndex = FindBestAnchorNode(graph, c.X, c.Z, inDegree, outDegree);
                 }
 
                 foreach (var comp in graph.Companies)
                 {
-                    comp.NearestNodeIndex = graph.FindNearestNode(comp.X, comp.Z);
+                    comp.NearestNodeIndex = FindBestAnchorNode(graph, comp.X, comp.Z, inDegree, outDegree);
                 }
 
                 graph.MinX = minX;
@@ -427,6 +436,44 @@ namespace AtsGpsServer.Map
                     try { r.Dispose(); } catch { }
                 }
             }
+        }
+
+        private static uint FindBestAnchorNode(MapGraph graph, float x, float z, Dictionary<uint, int> inDegree, Dictionary<uint, int> outDegree)
+        {
+            uint bestNode = 0;
+            double bestDistSq = double.MaxValue;
+            double bestTransitableDistSq = double.MaxValue;
+            uint bestTransitableNode = 0;
+
+            for (int i = 0; i < graph.Nodes.Count; i++)
+            {
+                var n = graph.Nodes[i];
+                double dx = n.X - x;
+                double dz = n.Z - z;
+                double dSq = dx * dx + dz * dz;
+
+                if (dSq < bestDistSq)
+                {
+                    bestDistSq = dSq;
+                    bestNode = (uint)i;
+                }
+
+                inDegree.TryGetValue((uint)i, out int inD);
+                outDegree.TryGetValue((uint)i, out int outD);
+                if (inD > 0 && outD > 0 && dSq < bestTransitableDistSq)
+                {
+                    bestTransitableDistSq = dSq;
+                    bestTransitableNode = (uint)i;
+                }
+            }
+
+            // Preferir nodo transitable si está a menos de 4.0 km del centro de ciudad/empresa
+            if (bestTransitableNode != 0 && bestTransitableDistSq < 16_000_000)
+            {
+                return bestTransitableNode;
+            }
+
+            return bestNode;
         }
 
         private static void AddPoiDeduplicated(List<MapPoi> pois, byte poiType, string name, float x, float y, float z)

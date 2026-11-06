@@ -119,15 +119,10 @@ private fun DrawScope.drawMap2D(
     rotate(rotationAngle, pivot = Offset(cx, cy)) {
         val viewRadius = (max(size.width, size.height) / baseScale) * 1.5f
 
-        // 1. Dibujar red vial (capa arcén y asfalto)
-        for (edge in graph.edges) {
+        // 1. Dibujar red vial indexada por Rejilla Espacial (Spatial Grid O(1))
+        val visibleEdges = graph.getEdgesNear(viewCenterX, viewCenterZ, viewRadius)
+        for (edge in visibleEdges) {
             if (edge.polyline.size < 2) continue
-
-            // Comprobación de visibilidad respecto al centro de vista real
-            val inView = edge.polyline.any { pt ->
-                abs(pt.x - viewCenterX) <= viewRadius && abs(pt.z - viewCenterZ) <= viewRadius
-            }
-            if (!inView) continue
 
             val isHighway = edge.roadType.toInt() == 0
             val isRamp = edge.roadType.toInt() == 3
@@ -379,10 +374,8 @@ private fun DrawScope.drawMap3D(
         )
     )
 
-    // 5. Dibujar Carreteras en 3D con recorte geométrico de plano cercano
-    val nearbyEdges = graph.edges.filter { edge ->
-        edge.polyline.any { abs(it.x - truckX) < 650f && abs(it.z - truckZ) < 650f }
-    }
+    // 5. Dibujar Carreteras en 3D con Spatial Grid y recorte geométrico de plano cercano
+    val nearbyEdges = graph.getEdgesNear(truckX, truckZ, 650f)
 
     for (edge in nearbyEdges) {
         val isHwy = edge.roadType.toInt() == 0

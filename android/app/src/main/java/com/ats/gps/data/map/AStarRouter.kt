@@ -33,10 +33,17 @@ object AStarRouter {
         val gScore = HashMap<Int, Float>()
 
         gScore[startNode] = 0f
-        openSet.add(NodeScore(startNode, heuristic(graph, startNode, targetNode)))
+        openSet.add(NodeScore(startNode, 0f, heuristic(graph, startNode, targetNode)))
 
         while (!openSet.isEmpty()) {
-            val current = openSet.poll()?.nodeIndex ?: break
+            val currentScore = openSet.poll() ?: break
+            val current = currentScore.nodeIndex
+
+            // Poda de entrada obsoleta al extraer de la cola de prioridad
+            val bestKnownG = gScore[current] ?: Float.MAX_VALUE
+            if (currentScore.gScore > bestKnownG) {
+                continue
+            }
 
             if (current == targetNode) {
                 // Reconstruir camino
@@ -78,7 +85,7 @@ object AStarRouter {
                     cameFromEdge[neighbor] = edge
                     gScore[neighbor] = tentativeG
                     val fScore = tentativeG + heuristic(graph, neighbor, targetNode)
-                    openSet.add(NodeScore(neighbor, fScore))
+                    openSet.add(NodeScore(neighbor, tentativeG, fScore))
                 }
             }
         }
@@ -96,5 +103,5 @@ object AStarRouter {
 
     private fun MapGraph.NodesSafe(index: Int) = nodes.getOrElse(index) { nodes[0] }
 
-    private data class NodeScore(val nodeIndex: Int, val fScore: Float)
+    private data class NodeScore(val nodeIndex: Int, val gScore: Float, val fScore: Float)
 }

@@ -81,57 +81,65 @@ namespace AtsGpsServer.Map
 
             // A* expandido por aristas (line graph state: (currentNode, incomingNode))
             // para evaluar giros prohibidos (prevNode -> currentNode -> nextNode)
-            var openSet = new PriorityQueue<(uint node, uint prevNode), float>();
+            // Se incluye enqueuedG para poda inmediata de entradas obsoletas en cola
+            var openSet = new PriorityQueue<(uint node, uint prevNode, float enqueuedG), float>();
             var cameFrom = new Dictionary<(uint node, uint prevNode), (uint node, uint prevNode)>();
             var cameFromEdge = new Dictionary<(uint node, uint prevNode), MapEdge>();
             var gScore = new Dictionary<(uint node, uint prevNode), float>();
 
             var initialKey = (node: startNodeIndex, prevNode: uint.MaxValue);
             gScore[initialKey] = 0f;
-            openSet.Enqueue(initialKey, euclideanDist);
+            openSet.Enqueue((startNodeIndex, uint.MaxValue, 0f), euclideanDist);
 
             int expandedCount = 0;
             (uint node, uint prevNode)? goalKey = null;
 
             while (openSet.Count > 0)
             {
-                var current = openSet.Dequeue();
+                var (currNode, prevNode, g) = openSet.Dequeue();
+
+                // Poda de entrada obsoleta: si ya se encontró un camino mejor a este estado, descartar
+                if (gScore.TryGetValue((currNode, prevNode), out float currentBestG) && g > currentBestG)
+                {
+                    continue;
+                }
+
                 expandedCount++;
 
-                if (current.node == targetNodeIndex)
+                if (currNode == targetNodeIndex)
                 {
-                    goalKey = current;
+                    goalKey = (currNode, prevNode);
                     break;
                 }
 
-                if (!_adjacency.TryGetValue(current.node, out var edges)) continue;
+                if (!_adjacency.TryGetValue(currNode, out var edges)) continue;
 
-                var currNodeObj = _graph.Nodes[(int)current.node];
+                var currNodeObj = _graph.Nodes[(int)currNode];
 
                 foreach (var edge in edges)
                 {
                     uint neighbor = edge.ToNodeIndex;
                     if (neighbor >= _graph.Nodes.Count) continue;
 
-                    // Validación de giro prohibido: (prevNode -> current.node -> neighbor)
-                    if (current.prevNode != uint.MaxValue && _forbiddenTurns.Contains((current.prevNode, current.node, neighbor)))
+                    // Validación de giro prohibido: (prevNode -> currNode -> neighbor)
+                    if (prevNode != uint.MaxValue && _forbiddenTurns.Contains((prevNode, currNode, neighbor)))
                     {
                         continue;
                     }
 
                     // Penalización de U-turn (no regresar inmediatamente por donde vino salvo que no haya alternativa)
                     float turnPenalty = 0f;
-                    if (neighbor == current.prevNode)
+                    if (neighbor == prevNode)
                     {
                         turnPenalty = 1000f; // Fuerte desincentivo a U-turn inmediato
                     }
 
-                    var neighborKey = (node: neighbor, prevNode: current.node);
-                    float tentativeG = gScore[current] + edge.Length + turnPenalty;
+                    var neighborKey = (node: neighbor, prevNode: currNode);
+                    float tentativeG = gScore[(currNode, prevNode)] + edge.Length + turnPenalty;
 
                     if (!gScore.TryGetValue(neighborKey, out float curG) || tentativeG < curG)
                     {
-                        cameFrom[neighborKey] = current;
+                        cameFrom[neighborKey] = (currNode, prevNode);
                         cameFromEdge[neighborKey] = edge;
                         gScore[neighborKey] = tentativeG;
 
@@ -140,7 +148,7 @@ namespace AtsGpsServer.Map
                             new Vector3(neighborObj.X, neighborObj.Y, neighborObj.Z),
                             new Vector3(targetNode.X, targetNode.Y, targetNode.Z));
 
-                        openSet.Enqueue(neighborKey, tentativeG + h);
+                        openSet.Enqueue((neighbor, currNode, tentativeG), tentativeG + h);
                     }
                 }
             }

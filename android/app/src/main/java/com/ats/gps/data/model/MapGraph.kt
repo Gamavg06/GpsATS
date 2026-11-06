@@ -60,6 +60,14 @@ data class MapGraph(
     val minZ: Float,
     val maxZ: Float
 ) {
+    val spatialGrid: SpatialGrid by lazy {
+        SpatialGrid(1000f).apply { populate(edges) }
+    }
+
+    fun getEdgesNear(centerX: Float, centerZ: Float, radius: Float): List<MapEdge> {
+        return spatialGrid.query(centerX, centerZ, radius)
+    }
+
     fun findNearestNode(x: Float, z: Float): Int {
         if (nodes.isEmpty()) return 0
         var bestIndex = 0
@@ -90,5 +98,53 @@ data class MapGraph(
             }
         }
         return bestCity
+    }
+}
+
+class SpatialGrid(val cellSize: Float = 1000f) {
+    private val cellMap = HashMap<Long, MutableList<MapEdge>>()
+
+    fun populate(edges: List<MapEdge>) {
+        cellMap.clear()
+        for (edge in edges) {
+            if (edge.polyline.isEmpty()) continue
+            var minX = Float.MAX_VALUE
+            var maxX = -Float.MAX_VALUE
+            var minZ = Float.MAX_VALUE
+            var maxZ = -Float.MAX_VALUE
+            for (pt in edge.polyline) {
+                if (pt.x < minX) minX = pt.x
+                if (pt.x > maxX) maxX = pt.x
+                if (pt.z < minZ) minZ = pt.z
+                if (pt.z > maxZ) maxZ = pt.z
+            }
+            val minCx = kotlin.math.floor(minX / cellSize).toInt()
+            val maxCx = kotlin.math.floor(maxX / cellSize).toInt()
+            val minCz = kotlin.math.floor(minZ / cellSize).toInt()
+            val maxCz = kotlin.math.floor(maxZ / cellSize).toInt()
+
+            for (cx in minCx..maxCx) {
+                for (cz in minCz..maxCz) {
+                    val key = (cx.toLong() shl 32) or (cz.toLong() and 0xFFFFFFFFL)
+                    cellMap.getOrPut(key) { ArrayList() }.add(edge)
+                }
+            }
+        }
+    }
+
+    fun query(centerX: Float, centerZ: Float, radius: Float): List<MapEdge> {
+        val minCx = kotlin.math.floor((centerX - radius) / cellSize).toInt()
+        val maxCx = kotlin.math.floor((centerX + radius) / cellSize).toInt()
+        val minCz = kotlin.math.floor((centerZ - radius) / cellSize).toInt()
+        val maxCz = kotlin.math.floor((centerZ + radius) / cellSize).toInt()
+
+        val resultSet = HashSet<MapEdge>()
+        for (cx in minCx..maxCx) {
+            for (cz in minCz..maxCz) {
+                val key = (cx.toLong() shl 32) or (cz.toLong() and 0xFFFFFFFFL)
+                cellMap[key]?.let { resultSet.addAll(it) }
+            }
+        }
+        return resultSet.toList()
     }
 }
