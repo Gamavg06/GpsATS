@@ -24,12 +24,20 @@ data class TelemetryData(
     val fuelCapacity: Float = 400f,
     val fuelAvgConsumption: Float = 0f,
 
-    // 5 Canales Reales de Desgaste del SDK
+    // 5 Canales Reales de Desgaste del Camión (SDK)
     val wearEngine: Float = 0f,
     val wearTransmission: Float = 0f,
     val wearCabin: Float = 0f,
     val wearChassis: Float = 0f,
     val wearWheels: Float = 0f,
+
+    // Desgaste de Remolque y Daño de Carga (SDK)
+    val trailerAttached: Boolean = false,
+    val trailerWearChassis: Float = 0f,
+    val trailerWearWheels: Float = 0f,
+    val trailerWearBody: Float = 0f,
+    val trailerCargoDamage: Float = 0f,
+    val cargoDamage: Float = 0f,
 
     // Luces e Indicadores
     val blinkerLeft: Boolean = false,
@@ -48,10 +56,19 @@ data class TelemetryData(
     val cargoId: String = "",
     val cargoMassKg: Float = 0f,
     val sourceCity: String = "",
+    val sourceCityId: String = "",
     val sourceCompany: String = "",
+    val sourceCompanyId: String = "",
     val destinationCity: String = "",
+    val destinationCityId: String = "",
     val destinationCompany: String = "",
+    val destinationCompanyId: String = "",
     val jobIncome: Long = 0L,
+    val timeAbsDelivery: Long = 0L,
+    val isCargoLoaded: Boolean = false,
+    val specialJob: Boolean = false,
+    val onJob: Boolean = false,
+    val jobMarket: String = "",
 
     // Destino resuelto en el mapa
     val targetNodeIndex: Long? = null,

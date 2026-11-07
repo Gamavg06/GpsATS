@@ -28,6 +28,7 @@ import com.ats.gps.data.model.MapGraph
 import com.ats.gps.data.model.TelemetryData
 import com.ats.gps.data.network.AtsNetworkClient
 import com.ats.gps.ui.dashboard.DashboardScreen
+import com.ats.gps.ui.diagnostic.TelemetryDiagnosticScreen
 import com.ats.gps.ui.junction.GarminJunctionView
 import com.ats.gps.ui.map.GpsMapCanvas
 import com.ats.gps.ui.map.MapViewMode
@@ -85,6 +86,7 @@ fun AtsNavMainApp(
     var selectedTab by remember { mutableStateOf(AppTab.MAPA_GPS) }
     var viewMode by remember { mutableStateOf(MapViewMode.MODE_3D_PERSPECTIVE) }
     var showDestSelector by remember { mutableStateOf(false) }
+    var showDiagnostics by remember { mutableStateOf(false) }
 
     // Control táctil de Zoom y Desplazamiento (Pan)
     var zoomScale by remember { mutableStateOf(1.0f) }
@@ -93,7 +95,7 @@ fun AtsNavMainApp(
 
     val coroutineScope = rememberCoroutineScope()
 
-    // Recalcular ruta automáticamente: autodetecta trabajo de ATS o destino manual
+    // Recalcular ruta automáticamente: autodetecta trabajo de ATS o destino manual (G1)
     LaunchedEffect(
         telemetry.posX,
         telemetry.posZ,
@@ -224,25 +226,25 @@ fun AtsNavMainApp(
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
-                                        .padding(top = 70.dp, end = 16.dp)
+                                        .padding(top = 90.dp, end = 16.dp)
                                 ) {
                                     GarminJunctionView(
                                         exitName = "Exit 45B",
-                                        destinationName = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "ONTARIO",
+                                        destinationName = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "DESTINO",
                                         distanceMeters = telemetry.navDistanceMeters,
                                         speedLimitKmh = telemetry.speedLimitKmh
                                     )
                                 }
                             }
 
-                            // 3. Botones Flotantes de Control (Zoom +, Zoom -, Recentrar, 2D/3D, Destino)
+                            // 3. Botones Flotantes de Control (G8: muestra el modo al que CAMBIARÁ)
                             Column(
                                 modifier = Modifier
                                     .align(Alignment.CenterEnd)
                                     .padding(end = 16.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                // Alternar 3D / 2D
+                                // G8: Botón 2D/3D muestra el modo destino
                                 FloatingActionButton(
                                     onClick = {
                                         viewMode = if (viewMode == MapViewMode.MODE_3D_PERSPECTIVE)
@@ -255,11 +257,19 @@ fun AtsNavMainApp(
                                     shape = CircleShape,
                                     modifier = Modifier.size(50.dp)
                                 ) {
-                                    Text(
-                                        text = if (viewMode == MapViewMode.MODE_3D_PERSPECTIVE) "3D" else "2D",
-                                        fontWeight = FontWeight.Black,
-                                        fontSize = 15.sp
-                                    )
+                                    // Si está en 3D muestra "2D" (para cambiar a 2D); si está en 2D muestra "3D" (para cambiar a 3D)
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            text = if (viewMode == MapViewMode.MODE_3D_PERSPECTIVE) "2D" else "3D",
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 14.sp
+                                        )
+                                        Text(
+                                            text = if (viewMode == MapViewMode.MODE_3D_PERSPECTIVE) "Plano" else "Persp",
+                                            fontSize = 9.sp,
+                                            color = Color(0xFF94A3B8)
+                                        )
+                                    }
                                 }
 
                                 // Botón Zoom +
@@ -313,6 +323,17 @@ fun AtsNavMainApp(
                                 ) {
                                     Text("📍", fontSize = 20.sp)
                                 }
+
+                                // Botón de Diagnóstico Rápido G1
+                                FloatingActionButton(
+                                    onClick = { showDiagnostics = true },
+                                    containerColor = Color(0xFF1E293B),
+                                    contentColor = Color(0xFF38BDF8),
+                                    shape = CircleShape,
+                                    modifier = Modifier.size(50.dp)
+                                ) {
+                                    Text("⚙️", fontSize = 20.sp)
+                                }
                             }
 
                             // 4. Pastilla flotante de aviso si se desplazó el mapa libremente
@@ -340,7 +361,10 @@ fun AtsNavMainApp(
                         }
                     }
                     AppTab.TABLERO -> {
-                        DashboardScreen(telemetry = telemetry)
+                        DashboardScreen(
+                            telemetry = telemetry,
+                            onOpenDiagnostics = { showDiagnostics = true }
+                        )
                     }
                 }
 
@@ -349,7 +373,8 @@ fun AtsNavMainApp(
                     selectedTab = selectedTab,
                     onTabSelected = { selectedTab = it },
                     telemetry = telemetry,
-                    graph = mapGraph
+                    graph = mapGraph,
+                    onOpenDiagnostics = { showDiagnostics = true }
                 )
 
                 // Barra Inferior de Estado
@@ -369,6 +394,14 @@ fun AtsNavMainApp(
                         }
                     )
                 }
+
+                // Pantalla de Diagnóstico G1
+                if (showDiagnostics) {
+                    TelemetryDiagnosticScreen(
+                        telemetry = telemetry,
+                        onClose = { showDiagnostics = false }
+                    )
+                }
             }
         }
     }
@@ -383,7 +416,8 @@ fun TopNavigationBar(
     selectedTab: AppTab,
     onTabSelected: (AppTab) -> Unit,
     telemetry: TelemetryData,
-    graph: MapGraph?
+    graph: MapGraph?,
+    onOpenDiagnostics: () -> Unit
 ) {
     val nearestCity = remember(telemetry.posX, telemetry.posZ, graph) {
         if (graph != null && (telemetry.posX != 0.0 || telemetry.posZ != 0.0)) {
@@ -391,13 +425,20 @@ fun TopNavigationBar(
         } else null
     }
 
-    val hasActiveJob = telemetry.destinationCity.isNotEmpty() || telemetry.targetNodeIndex != null
+    // Detección robusta de trabajo activo (G1): soporta Customer Priority, carga oculta o campos vacíos
+    val hasActiveJob = telemetry.destinationCity.isNotEmpty() ||
+            telemetry.targetNodeIndex != null ||
+            telemetry.onJob ||
+            telemetry.isCargoLoaded ||
+            telemetry.jobIncome > 0 ||
+            (telemetry.navDistanceMeters > 50f && telemetry.speedLimitKmh > 0f)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xE60A0F1D))
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .statusBarsPadding()
+            .padding(horizontal = 14.dp, vertical = 6.dp)
     ) {
         // Fila 1: Pestañas de control y estado de velocidad
         Row(
@@ -421,7 +462,21 @@ fun TopNavigationBar(
                     )
                 }
 
-                if (telemetry.speedLimitKmh > 5f) {
+                if (telemetry.gamePaused) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0xFF854D0E))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "⏸ PAUSA",
+                            color = Color(0xFFFDE047),
+                            fontWeight = FontWeight.Black,
+                            fontSize = 11.sp
+                        )
+                    }
+                } else if (telemetry.speedLimitKmh > 5f) {
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
@@ -447,7 +502,7 @@ fun TopNavigationBar(
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // Fila 2: Tarjeta informativa de la Carga y Ruta
+        // Fila 2: Tarjeta informativa de la Carga y Ruta (G1)
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = Color(0xCC1E293B)),
@@ -456,7 +511,11 @@ fun TopNavigationBar(
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 if (hasActiveJob) {
                     // Detalle de la Carga
-                    val cargoTitle = if (telemetry.cargoName.isNotEmpty()) telemetry.cargoName else "Carga Asignada"
+                    val cargoTitle = if (telemetry.cargoName.isNotEmpty()) telemetry.cargoName
+                    else if (telemetry.specialJob) "Transporte Especial"
+                    else if (telemetry.isCargoLoaded) "Envío Prioritario"
+                    else "Carga Asignada"
+
                     val massTons = if (telemetry.cargoMassKg > 0f) String.format(" • %.1f t", telemetry.cargoMassKg / 1000f) else ""
                     val incomeStr = if (telemetry.jobIncome > 0) String.format(" • \$%,d", telemetry.jobIncome) else ""
 
@@ -548,18 +607,19 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
         modifier = modifier
             .fillMaxWidth()
             .background(Color(0xE60A0F1D))
+            .navigationBarsPadding()
             .padding(horizontal = 16.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Marcha y Velocidad (o Juego en Pausa)
+        // Marcha y Velocidad (o Aviso de Juego en Pausa G2)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (telemetry.gamePaused) {
                 Text(
                     text = "⏸ JUEGO EN PAUSA",
                     color = Color(0xFFFACC15),
                     fontWeight = FontWeight.Black,
-                    fontSize = 16.sp
+                    fontSize = 15.sp
                 )
             } else {
                 Text(
@@ -590,7 +650,7 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
                     )
             )
             Text(
-                text = if (telemetry.gamePaused) "Juego en Pausa"
+                text = if (telemetry.gamePaused) "Pausa"
                 else if (telemetry.connected) "PC Conectada"
                 else "Desconectado",
                 color = Color(0xFF94A3B8),
@@ -699,47 +759,56 @@ fun DestinationSelectorDialog(
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(450.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-            shape = RoundedCornerShape(16.dp)
+                .fillMaxHeight(0.8f),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     text = "SELECCIONAR DESTINO",
                     fontWeight = FontWeight.Black,
-                    fontSize = 16.sp,
+                    fontSize = 18.sp,
                     color = Color.White
                 )
                 Spacer(modifier = Modifier.height(12.dp))
 
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(graph.cities) { city ->
-                        Row(
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(graph.cities.sortedBy { it.name }) { city ->
+                        Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { onDestinationSelected(city.nearestNodeIndex) }
-                                .padding(vertical = 10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                                .clickable { onDestinationSelected(city.nearestNodeIndex.toInt()) },
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF334155))
                         ) {
-                            Text("🏙 ${city.name.uppercase()}", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
-                            Text("Ciudad", color = Color(0xFF64748B), fontSize = 12.sp)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = city.name,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    fontSize = 15.sp
+                                )
+                                Text("Navegar ➔", color = Color(0xFF38BDF8), fontSize = 13.sp)
+                            }
                         }
-                        HorizontalDivider(color = Color(0xFF334155))
                     }
+                }
 
-                    items(graph.companies) { comp ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onDestinationSelected(comp.nearestNodeIndex) }
-                                .padding(vertical = 10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("🏢 ${comp.name} (${comp.cityName})", color = Color(0xFF10B981))
-                            Text("Empresa", color = Color(0xFF64748B), fontSize = 12.sp)
-                        }
-                        HorizontalDivider(color = Color(0xFF334155))
-                    }
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569))
+                ) {
+                    Text("Cancelar", color = Color.White)
                 }
             }
         }

@@ -86,33 +86,11 @@ namespace AtsGpsServer.Tests
                 }
             }
 
-            // Reanclar ciudades a nodos de la mayor SCC transitable
+            // Usar directamente el campo NearestNodeIndex almacenado en map_ats.bin (lo que usa la App)
             var cityMap = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
             foreach (var city in graph.Cities)
             {
-                uint curIdx = city.NearestNodeIndex;
-                int curSccSize = nodeToSccSize[curIdx];
-                uint bestIdx = curIdx;
-                int bestSccSize = curSccSize;
-                float bestDist = float.MaxValue;
-
-                for (int i = 0; i < n; i++)
-                {
-                    var node = graph.Nodes[i];
-                    float dx = node.X - city.X;
-                    float dz = node.Z - city.Z;
-                    float dist = MathF.Sqrt(dx * dx + dz * dz);
-                    if (dist > 3500f) continue;
-
-                    int sz = nodeToSccSize[i];
-                    if (sz > bestSccSize || (sz == bestSccSize && sz > 100 && dist < bestDist))
-                    {
-                        bestSccSize = sz;
-                        bestIdx = (uint)i;
-                        bestDist = dist;
-                    }
-                }
-                cityMap[city.Name] = bestIdx;
+                cityMap[city.Name] = city.NearestNodeIndex;
             }
 
             var pf = new PathFinder(graph);

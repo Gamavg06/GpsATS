@@ -43,7 +43,7 @@ namespace AtsGpsServer.Telemetry
         public float EngineRpm { get; set; }
 
         [JsonPropertyName("engineRpmMax")]
-        public float EngineRpmMax { get; set; }
+        public float EngineRpmMax { get; set; } = 2500f;
 
         [JsonPropertyName("gear")]
         public int Gear { get; set; }
@@ -55,12 +55,12 @@ namespace AtsGpsServer.Telemetry
         public float Fuel { get; set; }
 
         [JsonPropertyName("fuelCapacity")]
-        public float FuelCapacity { get; set; }
+        public float FuelCapacity { get; set; } = 400f;
 
         [JsonPropertyName("fuelAvgConsumption")]
         public float FuelAvgConsumption { get; set; }
 
-        // 5 Canales de Desgaste Reales del SDK
+        // 5 Canales de Desgaste Reales del Camión (SDK)
         [JsonPropertyName("wearEngine")]
         public float WearEngine { get; set; }
 
@@ -75,6 +75,25 @@ namespace AtsGpsServer.Telemetry
 
         [JsonPropertyName("wearWheels")]
         public float WearWheels { get; set; }
+
+        // Desgaste de Remolque y Daño de Carga (SDK)
+        [JsonPropertyName("trailerAttached")]
+        public bool TrailerAttached { get; set; }
+
+        [JsonPropertyName("trailerWearChassis")]
+        public float TrailerWearChassis { get; set; }
+
+        [JsonPropertyName("trailerWearWheels")]
+        public float TrailerWearWheels { get; set; }
+
+        [JsonPropertyName("trailerWearBody")]
+        public float TrailerWearBody { get; set; }
+
+        [JsonPropertyName("trailerCargoDamage")]
+        public float TrailerCargoDamage { get; set; }
+
+        [JsonPropertyName("cargoDamage")]
+        public float CargoDamage { get; set; }
 
         // Luces e Indicadores
         [JsonPropertyName("blinkerLeft")]
@@ -120,17 +139,44 @@ namespace AtsGpsServer.Telemetry
         [JsonPropertyName("sourceCity")]
         public string SourceCity { get; set; } = string.Empty;
 
+        [JsonPropertyName("sourceCityId")]
+        public string SourceCityId { get; set; } = string.Empty;
+
         [JsonPropertyName("sourceCompany")]
         public string SourceCompany { get; set; } = string.Empty;
+
+        [JsonPropertyName("sourceCompanyId")]
+        public string SourceCompanyId { get; set; } = string.Empty;
 
         [JsonPropertyName("destinationCity")]
         public string DestinationCity { get; set; } = string.Empty;
 
+        [JsonPropertyName("destinationCityId")]
+        public string DestinationCityId { get; set; } = string.Empty;
+
         [JsonPropertyName("destinationCompany")]
         public string DestinationCompany { get; set; } = string.Empty;
 
+        [JsonPropertyName("destinationCompanyId")]
+        public string DestinationCompanyId { get; set; } = string.Empty;
+
         [JsonPropertyName("jobIncome")]
         public ulong JobIncome { get; set; }
+
+        [JsonPropertyName("timeAbsDelivery")]
+        public uint TimeAbsDelivery { get; set; }
+
+        [JsonPropertyName("isCargoLoaded")]
+        public bool IsCargoLoaded { get; set; }
+
+        [JsonPropertyName("specialJob")]
+        public bool SpecialJob { get; set; }
+
+        [JsonPropertyName("onJob")]
+        public bool OnJob { get; set; }
+
+        [JsonPropertyName("jobMarket")]
+        public string JobMarket { get; set; } = string.Empty;
 
         // Destino Resuelto en el Grafo
         [JsonPropertyName("targetNodeIndex")]

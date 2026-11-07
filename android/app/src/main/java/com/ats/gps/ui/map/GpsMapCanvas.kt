@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import com.ats.gps.data.map.RouteResult
+import com.ats.gps.data.model.MapEdge
 import com.ats.gps.data.model.MapGraph
 import com.ats.gps.data.model.MapPoi
 import com.ats.gps.data.model.Point3D
@@ -63,6 +64,7 @@ fun GpsMapCanvas(
         }
 
         val truckX = telemetry.posX.toFloat()
+        val truckY = telemetry.posY.toFloat()
         val truckZ = telemetry.posZ.toFloat()
         val headingDeg = telemetry.headingDegrees.toFloat()
 
@@ -83,6 +85,7 @@ fun GpsMapCanvas(
                 drawMap3D(
                     graph = graph,
                     truckX = truckX,
+                    truckY = truckY,
                     truckZ = truckZ,
                     headingDeg = headingDeg,
                     activeRoute = activeRoute,
@@ -94,7 +97,7 @@ fun GpsMapCanvas(
 }
 
 // =====================================================================
-// RENDERIZADOR 2D (VISTA AÉREA TÁCTICA)
+// RENDERIZADOR 2D (VISTA AÉREA TÁCTICA CON JERARQUÍA VIAL G6)
 // =====================================================================
 private fun DrawScope.drawMap2D(
     graph: MapGraph,
@@ -119,29 +122,57 @@ private fun DrawScope.drawMap2D(
     rotate(rotationAngle, pivot = Offset(cx, cy)) {
         val viewRadius = (max(size.width, size.height) / baseScale) * 1.5f
 
-        // 1. Dibujar red vial indexada por Rejilla Espacial (Spatial Grid O(1))
+        // 1. Obtener aristas visibles con Spatial Grid
         val visibleEdges = graph.getEdgesNear(viewCenterX, viewCenterZ, viewRadius)
+
+        // Encontrar la carretera actual más cercana al camión (G6)
+        var closestEdgeId = -1
+        var minEdgeDistSq = Float.MAX_VALUE
+        if (isFollowingTruck) {
+            for (edge in visibleEdges) {
+                for (p in edge.polyline) {
+                    val dSq = (p.x - truckX) * (p.x - truckX) + (p.z - truckZ) * (p.z - truckZ)
+                    if (dSq < minEdgeDistSq) {
+                        minEdgeDistSq = dSq
+                        closestEdgeId = edge.edgeId
+                    }
+                }
+            }
+        }
+
+        // Paso A: Dibujar capas inferiores y contornos oscuros
         for (edge in visibleEdges) {
             if (edge.polyline.size < 2) continue
 
-            val isHighway = edge.roadType.toInt() == 0
-            val isRamp = edge.roadType.toInt() == 3
+            val strokeW = getRoadStrokeWidth(edge.roadType.toInt(), zoomScale)
+            val borderColor = when (edge.roadType.toInt()) {
+                0 -> Color(0xFF0F172A) // Autopista
+                1 -> Color(0xFF1E293B) // Primaria
+                2 -> Color(0xFF0B1120) // Local
+                else -> Color(0xFF1E293B) // Rampa
+            }
+            drawPolyline2D(edge.polyline, viewCenterX, viewCenterZ, cx, cy, baseScale, borderColor, strokeW + 4f)
+        }
 
-            val strokeW = when {
-                isHighway -> 14f * zoomScale.coerceIn(0.35f, 2.2f)
-                isRamp -> 8f * zoomScale.coerceIn(0.35f, 2.2f)
-                else -> 10f * zoomScale.coerceIn(0.35f, 2.2f)
+        // Paso B: Dibujar superficies de asfalto con colores de jerarquía (G6)
+        for (edge in visibleEdges) {
+            if (edge.polyline.size < 2) continue
+
+            val strokeW = getRoadStrokeWidth(edge.roadType.toInt(), zoomScale)
+            val isCurrentRoad = (edge.edgeId == closestEdgeId && minEdgeDistSq < 1600f) // <40 metros
+
+            val surfaceColor = if (isCurrentRoad) {
+                Color(0xFF38BDF8) // Carretera actual resaltada en Cyan de navegación
+            } else {
+                when (edge.roadType.toInt()) {
+                    0 -> Color(0xFF475569) // Autopista Interestatal (Gris pizarra destacado)
+                    1 -> Color(0xFF334155) // Carretera estatal principal
+                    2 -> Color(0xFF1E293B) // Vía urbana / local
+                    else -> Color(0xFF3B4A5E) // Rampa o enlace
+                }
             }
 
-            val edgeColor = if (isHighway) Color(0xFF1E293B) else Color(0xFF0F172A)
-            val roadColor = when {
-                isHighway -> Color(0xFF475569)
-                isRamp -> Color(0xFF334155)
-                else -> Color(0xFF3B4A5E)
-            }
-
-            drawPolyline2D(edge.polyline, viewCenterX, viewCenterZ, cx, cy, baseScale, edgeColor, strokeW + 3f)
-            drawPolyline2D(edge.polyline, viewCenterX, viewCenterZ, cx, cy, baseScale, roadColor, strokeW)
+            drawPolyline2D(edge.polyline, viewCenterX, viewCenterZ, cx, cy, baseScale, surfaceColor, strokeW)
         }
 
         // 2. Ruta activa GPS (Glow cyan brillante)
@@ -175,7 +206,7 @@ private fun DrawScope.drawMap2D(
             }
         }
 
-        // 4. Dibujar POIs (Gasolineras, Descanso, Talleres, Concesionarios, Empresas)
+        // 4. Dibujar POIs
         val poiDrawRadius = viewRadius * 1.1f
         for (poi in graph.pois) {
             val dist = sqrt((poi.x - viewCenterX).pow(2) + (poi.z - viewCenterZ).pow(2))
@@ -195,6 +226,16 @@ private fun DrawScope.drawMap2D(
         val truckSx = cx + (truckX - viewCenterX) * baseScale
         val truckSy = cy + (truckZ - viewCenterZ) * baseScale
         drawTruckCursor(truckSx, truckSy, headingDeg)
+    }
+}
+
+private fun getRoadStrokeWidth(roadType: Int, zoomScale: Float): Float {
+    val z = zoomScale.coerceIn(0.35f, 2.2f)
+    return when (roadType) {
+        0 -> 15f * z // Autopista
+        1 -> 11f * z // Carretera estatal
+        2 -> 7f * z  // Calle local
+        else -> 8f * z // Rampa
     }
 }
 
@@ -240,11 +281,12 @@ private fun DrawScope.drawPoiMarker2D(poi: MapPoi, sx: Float, sy: Float, scale: 
 }
 
 // =====================================================================
-// RENDERIZADOR 3D PERSPECTIVA REAL (CHASE CAMERA CON REJILLA VIRTUAL)
+// RENDERIZADOR 3D PERSPECTIVA REAL (CORRECCIÓN DE ELEVACIÓN Y RECORTE G7)
 // =====================================================================
 private fun DrawScope.drawMap3D(
     graph: MapGraph,
     truckX: Float,
+    truckY: Float,
     truckZ: Float,
     headingDeg: Float,
     activeRoute: RouteResult?,
@@ -252,7 +294,7 @@ private fun DrawScope.drawMap3D(
 ) {
     val w = size.width
     val h = size.height
-    val horizonY = h * 0.35f
+    val horizonY = h * 0.38f
 
     // 1. Cielo crepuscular
     drawRect(
@@ -278,26 +320,27 @@ private fun DrawScope.drawMap3D(
         size = Size(w, h - horizonY)
     )
 
-    // Cámara en 3.ª persona detrás del camión
+    // Cámara en 3.ª persona detrás del camión (G7: referenciada a la altitud real truckY)
     val camHeadingRad = Math.toRadians(headingDeg.toDouble()).toFloat()
     val cosH = cos(camHeadingRad)
     val sinH = sin(camHeadingRad)
 
-    val camFollowDist = 14f
-    val camHeight = 6.0f
-    val focalLength = h * 0.70f * zoomScale.coerceIn(0.5f, 2.5f)
-    val viewDistMax = 500f
+    val camFollowDist = 12f
+    val camHeight = 5.2f // 5.2 metros sobre la altura del camión
+    val camY = truckY + camHeight // Elevación absoluta en el mundo de SCS
 
-    // El camión se desplaza hacia (-sinH, -cosH). La cámara se sitúa DETRÁS del camión:
+    val focalLength = h * 0.72f * zoomScale.coerceIn(0.5f, 2.5f)
+    val viewDistMax = 550f
+    val zNear = 0.5f // Plano cercano para no cortar carreteras bajo el camión
+
+    // La cámara se sitúa DETRÁS del camión:
     val camX = truckX + camFollowDist * sinH
     val camZ = truckZ + camFollowDist * cosH
 
-    val zNear = 1.0f
-
-    fun toCam(wx: Float, wz: Float, wy: Float = 0f): Triple<Float, Float, Float> {
+    fun toCam(wx: Float, wz: Float, wy: Float): Triple<Float, Float, Float> {
         val dx = wx - camX
         val dz = wz - camZ
-        val dy = wy
+        val dy = wy - camY // Altura relativa a la lente de la cámara (G7)
         val xCam = dx * cosH - dz * sinH
         val zCam = -dx * sinH - dz * cosH
         return Triple(xCam, dy, zCam)
@@ -305,15 +348,16 @@ private fun DrawScope.drawMap3D(
 
     fun projectCam(xCam: Float, dy: Float, zCam: Float): Offset {
         val pX = (w * 0.5f) + (xCam * focalLength / zCam)
-        val pY = horizonY + ((camHeight - dy) * focalLength / zCam)
+        // dy es negativo cuando el objeto está bajo la cámara, por lo que -dy es positivo (hacia abajo en pantalla)
+        val pY = horizonY + ((-dy) * focalLength / zCam)
         return Offset(pX, pY)
     }
 
-    fun project3D(wx: Float, wz: Float, wy: Float = 0f): Offset? {
+    fun project3D(wx: Float, wz: Float, wy: Float = truckY): Offset? {
         val (xCam, dy, zCam) = toCam(wx, wz, wy)
         if (zCam < zNear || zCam > viewDistMax) return null
-        val pY = horizonY + ((camHeight - dy) * focalLength / zCam)
-        if (pY < horizonY - 30f || pY > h + 200f) return null
+        val pY = horizonY + ((-dy) * focalLength / zCam)
+        if (pY < horizonY - 40f || pY > h + 300f) return null
         return Offset((w * 0.5f) + (xCam * focalLength / zCam), pY)
     }
 
@@ -348,40 +392,49 @@ private fun DrawScope.drawMap3D(
         val proj2 = projectCam(cx2, cy2, cz2)
 
         val avgDist = (cz1 + cz2) * 0.5f
-        val strokeW = (focalLength * widthMult / max(avgDist, 4f)).coerceIn(2.5f, 54f)
+        val strokeW = (focalLength * widthMult / max(avgDist, 2.5f)).coerceIn(2.5f, 65f)
 
         drawLine(edgeColor, proj1, proj2, strokeWidth = strokeW + 4f, cap = StrokeCap.Round)
         drawLine(roadColor, proj1, proj2, strokeWidth = strokeW, cap = StrokeCap.Round)
     }
 
     // 3. Rejilla virtual de perspectiva en el suelo
-    drawGroundGrid3D(truckX, truckZ, headingDeg, w, h, horizonY, ::project3D)
+    drawGroundGrid3D(truckX, truckZ, truckY, headingDeg, w, h, horizonY, ::project3D)
 
     // 4. Cono sutil de faros delanteros
-    val truckProj = project3D(truckX, truckZ) ?: Offset(w * 0.5f, h * 0.70f)
+    val truckProj = project3D(truckX, truckZ, truckY) ?: Offset(w * 0.5f, h * 0.72f)
     val headlightPath = Path().apply {
         moveTo(truckProj.x, truckProj.y)
-        lineTo(w * 0.22f, horizonY + 30f)
-        lineTo(w * 0.78f, horizonY + 30f)
+        lineTo(w * 0.22f, horizonY + 25f)
+        lineTo(w * 0.78f, horizonY + 25f)
         close()
     }
     drawPath(
         path = headlightPath,
         brush = Brush.verticalGradient(
             colors = listOf(Color(0x00FFFFFF), Color(0x12FFF8E1), Color(0x28FFE082)),
-            startY = horizonY + 30f,
+            startY = horizonY + 25f,
             endY = truckProj.y
         )
     )
 
-    // 5. Dibujar Carreteras en 3D con Spatial Grid y recorte geométrico de plano cercano
-    val nearbyEdges = graph.getEdgesNear(truckX, truckZ, 650f)
+    // 5. Dibujar Carreteras en 3D con Spatial Grid y elevación precisa (G7)
+    val nearbyEdges = graph.getEdgesNear(truckX, truckZ, 700f)
 
     for (edge in nearbyEdges) {
         val isHwy = edge.roadType.toInt() == 0
-        val roadColor = if (isHwy) Color(0xFF475569) else Color(0xFF334155)
-        val edgeColor = Color(0xFF1E293B)
-        val widthMult = if (isHwy) 12f else 9f
+        val isRamp = edge.roadType.toInt() == 3
+        val roadColor = when {
+            isHwy -> Color(0xFF475569)
+            isRamp -> Color(0xFF334155)
+            else -> Color(0xFF384758)
+        }
+        val edgeColor = Color(0xFF0F172A)
+        val widthMult = when {
+            isHwy -> 14f
+            isRamp -> 8f
+            else -> 10f
+        }
 
         for (i in 0 until edge.polyline.size - 1) {
             drawSegmentClipped(edge.polyline[i], edge.polyline[i + 1], edgeColor, roadColor, widthMult)
@@ -392,175 +445,126 @@ private fun DrawScope.drawMap3D(
     if (activeRoute != null) {
         for (edge in activeRoute.edgePath) {
             for (i in 0 until edge.polyline.size - 1) {
-                drawSegmentClipped(edge.polyline[i], edge.polyline[i + 1], Color(0x5500E5FF), Color(0xFF00E5FF), 11f)
+                drawSegmentClipped(edge.polyline[i], edge.polyline[i + 1], Color(0x6600E5FF), Color(0xFF00E5FF), 13f)
             }
         }
     }
 
-    // 7. Dibujar POIs en 3D
-    val nearbyPois = graph.pois.filter { poi ->
-        abs(poi.x - truckX) < 450f && abs(poi.z - truckZ) < 450f
-    }.sortedByDescending { poi ->
-        (poi.x - camX).pow(2) + (poi.z - camZ).pow(2)
-    }
-
-    for (poi in nearbyPois) {
-        val groundProj = project3D(poi.x, poi.z, wy = 0f) ?: continue
-        val floatProj = project3D(poi.x, poi.z, wy = 4.5f) ?: continue
-
-        val dist = sqrt((poi.x - camX).pow(2) + (poi.z - camZ).pow(2))
-        val badgeScale = (focalLength / max(dist, 10f)).coerceIn(0.5f, 1.8f)
-
-        drawPoiBillboard3D(poi, groundProj, floatProj, badgeScale)
-    }
-
-    // 8. Camión en perspectiva 3D
-    drawTruck3D(truckProj.x, truckProj.y)
+    // 7. Cursor 3D del camión
+    drawTruckCursor3D(truckProj.x, truckProj.y)
 }
 
+// Rejilla de perspectiva virtual terrestre
 private fun DrawScope.drawGroundGrid3D(
     truckX: Float,
     truckZ: Float,
+    truckY: Float,
     headingDeg: Float,
     w: Float,
     h: Float,
     horizonY: Float,
-    project3D: (Float, Float, Float) -> Offset?
+    projector: (Float, Float, Float) -> Offset?
 ) {
-    val rad = Math.toRadians(headingDeg.toDouble()).toFloat()
-    val fwdX = -sin(rad)
-    val fwdZ = -cos(rad)
-    val rightX = cos(rad)
-    val rightZ = -sin(rad)
+    val gridSpacing = 20f
+    val gridRange = 140f
 
-    val gridColor = Color(0x1838BDF8)
+    val startX = (floor((truckX - gridRange) / gridSpacing) * gridSpacing)
+    val endX = (ceil((truckX + gridRange) / gridSpacing) * gridSpacing)
+    val startZ = (floor((truckZ - gridRange) / gridSpacing) * gridSpacing)
+    val endZ = (ceil((truckZ + gridRange) / gridSpacing) * gridSpacing)
 
-    for (d in 10..180 step 20) {
-        val centerDistX = truckX + fwdX * d
-        val centerDistZ = truckZ + fwdZ * d
-        val pLeft = project3D(centerDistX - rightX * 70f, centerDistZ - rightZ * 70f, 0f)
-        val pRight = project3D(centerDistX + rightX * 70f, centerDistZ + rightZ * 70f, 0f)
-        if (pLeft != null && pRight != null) {
-            drawLine(gridColor, pLeft, pRight, strokeWidth = 1.2f)
+    var curX = startX
+    while (curX <= endX) {
+        val p1 = projector(curX, truckZ - gridRange, truckY)
+        val p2 = projector(curX, truckZ + gridRange, truckY)
+        if (p1 != null && p2 != null) {
+            drawLine(Color(0x1838BDF8), p1, p2, strokeWidth = 1.0f)
         }
+        curX += gridSpacing
+    }
+
+    var curZ = startZ
+    while (curZ <= endZ) {
+        val p1 = projector(truckX - gridRange, curZ, truckY)
+        val p2 = projector(truckX + gridRange, curZ, truckY)
+        if (p1 != null && p2 != null) {
+            drawLine(Color(0x1838BDF8), p1, p2, strokeWidth = 1.0f)
+        }
+        curZ += gridSpacing
     }
 }
 
-private fun DrawScope.drawPoiBillboard3D(
-    poi: MapPoi,
-    groundProj: Offset,
-    floatProj: Offset,
-    badgeScale: Float
-) {
-    val (bgColor, iconText) = when (poi.poiType.toInt()) {
-        1 -> Pair(Color(0xFF10B981), "⛽")
-        2 -> Pair(Color(0xFF6366F1), "🛏️")
-        3 -> Pair(Color(0xFFF59E0B), "🔧")
-        4 -> Pair(Color(0xFF8B5CF6), "🏬")
-        5 -> Pair(Color(0xFF0EA5E9), "🏢")
-        6 -> Pair(Color(0xFF64748B), "⚖️")
-        else -> Pair(Color(0xFF475569), "📍")
+// Cursor 3D táctico del camión
+private fun DrawScope.drawTruckCursor3D(cx: Float, cy: Float) {
+    val cursorPath = Path().apply {
+        moveTo(cx, cy - 20f)
+        lineTo(cx + 12f, cy + 12f)
+        lineTo(cx, cy + 6f)
+        lineTo(cx - 12f, cy + 12f)
+        close()
     }
+    drawCircle(Color(0x4400E5FF), radius = 24f, center = Offset(cx, cy))
+    drawPath(cursorPath, color = Color(0xFF00E5FF))
+    drawPath(cursorPath, color = Color.White, style = Stroke(width = 1.8f))
+}
 
-    drawLine(Color(0x88FFFFFF), groundProj, floatProj, strokeWidth = 1.5f)
-
-    val bRadius = (13f * badgeScale).coerceAtLeast(6f)
-
-    drawCircle(Color(0x66000000), radius = bRadius + 2f, center = floatProj)
-    drawCircle(bgColor, radius = bRadius, center = floatProj)
-    drawCircle(Color.White, radius = bRadius, center = floatProj, style = Stroke(width = 1.6f))
-
-    drawIntoCanvas { canvas ->
-        val iconPaint = android.graphics.Paint().apply {
-            textSize = (bRadius * 1.25f).coerceAtLeast(8f)
-            textAlign = android.graphics.Paint.Align.CENTER
-            isAntiAlias = true
+// Cursor 2D táctico del camión
+private fun DrawScope.drawTruckCursor(cx: Float, cy: Float, rotationDeg: Float) {
+    rotate(rotationDeg, pivot = Offset(cx, cy)) {
+        val cursorPath = Path().apply {
+            moveTo(cx, cy - 16f)
+            lineTo(cx + 10f, cy + 10f)
+            lineTo(cx, cy + 5f)
+            lineTo(cx - 10f, cy + 10f)
+            close()
         }
-        canvas.nativeCanvas.drawText(iconText, floatProj.x, floatProj.y + bRadius * 0.45f, iconPaint)
-
-        if (poi.name.isNotEmpty() && badgeScale > 0.7f) {
-            val labelPaint = android.graphics.Paint().apply {
-                color = android.graphics.Color.WHITE
-                textSize = (9.5f * badgeScale).coerceAtLeast(8f) * density
-                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                textAlign = android.graphics.Paint.Align.CENTER
-                isAntiAlias = true
-                setShadowLayer(4f, 0f, 0f, android.graphics.Color.BLACK)
-            }
-            canvas.nativeCanvas.drawText(poi.name, floatProj.x, floatProj.y - bRadius - 4f, labelPaint)
-        }
+        drawCircle(Color(0x550284C7), radius = 20f, center = Offset(cx, cy))
+        drawPath(cursorPath, color = Color(0xFF38BDF8))
+        drawPath(cursorPath, color = Color.White, style = Stroke(width = 1.8f))
     }
 }
 
 private fun DrawScope.drawPolyline2D(
-    polyline: List<Point3D>,
-    truckX: Float,
-    truckZ: Float,
+    points: List<Point3D>,
+    viewCenterX: Float,
+    viewCenterZ: Float,
     cx: Float,
     cy: Float,
     scale: Float,
     color: Color,
     strokeWidth: Float
 ) {
-    if (polyline.size < 2) return
+    if (points.size < 2) return
+
     val path = Path()
-    val p0 = polyline[0]
-    path.moveTo(cx + (p0.x - truckX) * scale, cy + (p0.z - truckZ) * scale)
+    var first = true
 
-    for (i in 1 until polyline.size) {
-        val pt = polyline[i]
-        path.lineTo(cx + (pt.x - truckX) * scale, cy + (pt.z - truckZ) * scale)
-    }
-
-    drawPath(path, color, style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round))
-}
-
-private fun DrawScope.drawTruckCursor(x: Float, y: Float, rotationDeg: Float) {
-    rotate(rotationDeg, pivot = Offset(x, y)) {
-        val path = Path().apply {
-            moveTo(x, y - 22f)
-            lineTo(x + 14f, y + 16f)
-            lineTo(x, y + 10f)
-            lineTo(x - 14f, y + 16f)
-            close()
+    for (p in points) {
+        val sx = cx + (p.x - viewCenterX) * scale
+        val sy = cy + (p.z - viewCenterZ) * scale
+        if (first) {
+            path.moveTo(sx, sy)
+            first = false
+        } else {
+            path.lineTo(sx, sy)
         }
-        drawCircle(Color(0x5500E5FF), radius = 26f, center = Offset(x, y))
-        drawPath(path, Color(0xFF00E5FF))
-        drawPath(path, Color.White, style = Stroke(width = 2.5f))
     }
-}
 
-private fun DrawScope.drawTruck3D(x: Float, y: Float) {
-    val wCab = 56f
-    val hCab = 40f
-    val topLeft = Offset(x - wCab / 2f, y - hCab / 2f)
-
-    drawOval(Color(0x77000000), topLeft = Offset(x - wCab * 0.7f, y + hCab * 0.15f), size = Size(wCab * 1.4f, 18f))
-
-    drawRoundRect(
-        color = Color(0xFF1E3A8A),
-        topLeft = topLeft,
-        size = Size(wCab, hCab),
-        cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f, 6f)
+    drawPath(
+        path = path,
+        color = color,
+        style = Stroke(width = strokeWidth, cap = StrokeCap.Round, join = StrokeJoin.Round)
     )
-    drawRoundRect(
-        color = Color(0xFF38BDF8),
-        topLeft = topLeft,
-        size = Size(wCab, hCab),
-        cornerRadius = androidx.compose.ui.geometry.CornerRadius(6f, 6f),
-        style = Stroke(width = 2f)
-    )
-
-    drawRect(
-        color = Color(0xFF0F172A),
-        topLeft = Offset(x - wCab * 0.35f, y - hCab * 0.35f),
-        size = Size(wCab * 0.7f, hCab * 0.35f)
-    )
-
-    drawCircle(Color(0xFFFF1744), radius = 4.5f, center = Offset(x - wCab * 0.38f, y + hCab * 0.28f))
-    drawCircle(Color(0xFFFF1744), radius = 4.5f, center = Offset(x + wCab * 0.38f, y + hCab * 0.28f))
 }
 
 private fun DrawScope.drawEmptyState() {
-    drawCircle(Color(0xFF334155), radius = 30f, center = Offset(size.width / 2f, size.height / 2f))
+    drawIntoCanvas { canvas ->
+        val paint = android.graphics.Paint().apply {
+            color = android.graphics.Color.WHITE
+            textSize = 15f * density
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+        }
+        canvas.nativeCanvas.drawText("Descargando mapa vial desde la PC...", size.width / 2f, size.height / 2f, paint)
+    }
 }

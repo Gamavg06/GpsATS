@@ -41,8 +41,8 @@ Un ecosistema integral de telemetría, navegación por satélite (GPS) en tiempo
 
 ### 🗺️ Motor Cartográfico Vectorial
 - **Generación Local On-Demand:** La base de datos cartográfica se extrae directamente de los archivos `.scs` de la instalación local del usuario mediante la herramienta integrada (`--build-map`). Ningún archivo propietario del juego se distribuye en este repositorio.
-- **Detección Dinámica de DLCs:** Escaneo dinámico acelerado vía HashFS de todos los paquetes `dlc_*.scs` y `base_map*.scs` presentes en la carpeta de American Truck Simulator (Washington, Oregón, California, Nevada, Arizona, Idaho, etc.), descubriendo **420 sectores** en ~90 ms.
-- **Más de 146,000 Nodos y 618,000 Aristas:** Renderizado analítico de curvas Bézier y trazado vectorial continuo conectando carreteras y prefabs topológicamente mediante `INode.Uid`.
+- **Detección Dinámica de DLCs:** Escaneo dinámico acelerado vía HashFS de todos los paquetes `dlc_*.scs` y `base_map*.scs` presentes en la carpeta de American Truck Simulator (Washington, Oregón, California, Nevada, Arizona, Idaho, etc.), descubriendo **420 sectores** en ~90 ms y extrayendo 1,894 definiciones de prefabs.
+- **147,268 Nodos y 653,410 Aristas:** Renderizado analítico de curvas Bézier y trazado vectorial continuo conectando carreteras y prefabs topológicamente mediante `INode.Uid`, con garantía matemática del invariante de distancia euclidiana (`Length >= Euclidean(endpoints)` al 100%).
 - **168 Ciudades y 2,103 Puntos de Interés (POIs):**
   - ⛽ **Estaciones de servicio** (Gasolineras)
   - 🛏️ **Áreas de descanso** y Garajes
@@ -58,13 +58,14 @@ Un ecosistema integral de telemetría, navegación por satélite (GPS) en tiempo
   - Carteles flotantes (*billboards*) en perspectiva 3D anclados al asfalto.
 - **Perspectiva 2D Táctica:**
   - Vista cenital ortográfica con orientación *Heading-Up* (vehículo apuntando hacia arriba) o Norte fijo.
+  - Rejilla espacial optimizada para renderizado sub-3 ms a 60 FPS estables.
   - Gestos táctiles de pellizco (*pinch-to-zoom* de $0.10\times$ a $4.5\times$), desplazamiento libre (*drag-to-pan*) y botón de recentrado inmediato `[🎯]`.
 
 ### 📦 Detección Automática de Carga y Ruteo
 - **Sincronización en Vivo:** Detección instantánea de la carga activa (mercancía, peso en toneladas, origen y destino).
-- **Ruta Óptima Vectorial:** Cálculo de trayectoria en tiempo real mediante algoritmo $A^*$ expandido por aristas con soporte de giros prohibidos.
+- **Ruta Óptima Vectorial:** Cálculo de trayectoria en tiempo real mediante algoritmo $A^*$ expandido por aristas con soporte de giros prohibidos, poda en cola (`enqueuedG`) y anclaje por Componentes Fuertemente Conexas (Tarjan SCC $\ge 1000$ nodos).
   > [!NOTE]
-  > **Estado del Ruteo:** El algoritmo $A^*$ calcula rutas locales e interurbanas entre ciudades del componente conexo principal (ej. Bend→Portland con ratio de desvío 1.42x). Sin embargo, el ruteo interestatal de muy larga distancia a través de toda la geografía continental aún se encuentra en desarrollo activo y **no se clasifica como 100% completado** debido a orientaciones unidireccionales y rampas de autopista pendientes de calibrar en sectores limítrofes.
+  > **Estado del Ruteo (v1.2.4):** Éxito comprobado del **97.2% (35 de 36 pares de ciudades)** en benchmark exhaustivo en ambos sentidos (incluyendo Seattle ↔ Portland, Bend ↔ Portland, Bend ↔ Seattle, Eugene ↔ Medford y Bend ↔ Burns). Los conectores de mediana en plantillas de calzada dividida y el anclaje a la SCC gigante eliminaron los cuellos de botella históricos del grafo.
 
 ### 🪧 Garmin Junction View
 - Pantalla de aviso de bifurcación de autopista que anticipa salidas complejas e intercambios de carriles.
@@ -186,8 +187,8 @@ La consola mostrará:
 ---
 
 ### 4. Instalación del Cliente Android
-1. Descarga el paquete firmado oficial desde [Releases](https://github.com/Gamavg06/GpsATS/releases) junto con su suma de verificación SHA-256.
-2. Instálalo en tu dispositivo Android.
+1. Descarga el paquete firmado oficial `AtsGpsApp_v1.2.4.apk` desde [Releases](https://github.com/Gamavg06/GpsATS/releases) junto con su suma de verificación SHA-256 (`B2957E9C72EBD07DA1ABE567BE4E4A154C8B5FCA4EDBA3B3526F6B9F878C7711`).
+2. Instálalo en tu dispositivo Android (versión 1.2.4, versionCode 4).
 3. Abre la app, introduce la **IP local** de tu PC, el puerto (`35500`) y el **código PIN de 6 dígitos**.
 4. Pulsa **CONECTAR**. ¡A rodar! 🚚💨
 

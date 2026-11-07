@@ -71,7 +71,24 @@ namespace AtsGpsServer.Map
             {
                 try
                 {
-                    if (reader.EntryExists("/def/world/prefab.sii") != EntryType.NotFound)
+                    if (reader.DirectoryExists("/def/world"))
+                    {
+                        var files = reader.GetFiles("/def/world");
+                        foreach (var f in files)
+                        {
+                            var fname = Path.GetFileName(f);
+                            if (fname.StartsWith("prefab", StringComparison.OrdinalIgnoreCase) && fname.EndsWith(".sii", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var bytes = reader.Extract(f)[0];
+                                string content = System.Text.Encoding.UTF8.GetString(bytes);
+                                foreach (System.Text.RegularExpressions.Match m in regex.Matches(content))
+                                {
+                                    _prefabDescMap[m.Groups[1].Value] = m.Groups[2].Value;
+                                }
+                            }
+                        }
+                    }
+                    else if (reader.EntryExists("/def/world/prefab.sii") != EntryType.NotFound)
                     {
                         var bytes = reader.Extract("/def/world/prefab.sii")[0];
                         string content = System.Text.Encoding.UTF8.GetString(bytes);
@@ -298,19 +315,67 @@ namespace AtsGpsServer.Map
                                 var nodeBPos = new Vector3(nodeB.Position.X, nodeB.Position.Y, nodeB.Position.Z);
 
                                 var turnPolyline = new List<Vector3> { nodeAPos, worldStart, worldEnd, nodeBPos };
+                                float straightDist = Vector3.Distance(nodeAPos, nodeBPos);
+                                float polyDist = Vector3.Distance(nodeAPos, worldStart) + (nc.Length > 0 ? nc.Length : Vector3.Distance(worldStart, worldEnd)) + Vector3.Distance(worldEnd, nodeBPos);
+                                float edgeLength = Math.Max(straightDist, polyDist);
 
                                 graph.Edges.Add(new MapEdge
                                 {
                                     EdgeId = (uint)graph.Edges.Count,
                                     FromNodeIndex = globalA,
                                     ToNodeIndex = globalB,
-                                    Length = nc.Length > 0 ? nc.Length : Vector3.Distance(worldStart, worldEnd),
+                                    Length = edgeLength,
                                     SpeedLimitKmh = 45.0f,
                                     RoadType = 3,
                                     Lanes = 1,
                                     Flags = (byte)(nc.SemaphoreId >= 0 ? 2 : 0),
                                     Polyline = turnPolyline
                                 });
+                            }
+                        }
+
+                        // Conector de mediana en plantillas de calzada dividida (crossovers)
+                        // Conecta pares de puertos a menos de 15 m de distancia (como el hueco entre calzadas en us_293)
+                        for (int i = 0; i < prefab.Nodes.Count; i++)
+                        {
+                            var nI = prefab.Nodes[i];
+                            if (nI == null) continue;
+                            var pI = new Vector3(nI.Position.X, nI.Position.Y, nI.Position.Z);
+                            for (int j = i + 1; j < prefab.Nodes.Count; j++)
+                            {
+                                var nJ = prefab.Nodes[j];
+                                if (nJ == null) continue;
+                                var pJ = new Vector3(nJ.Position.X, nJ.Position.Y, nJ.Position.Z);
+                                float dIJ = Vector3.Distance(pI, pJ);
+                                if (dIJ > 0.5f && dIJ <= 15.0f)
+                                {
+                                    uint gI = GetOrAddNode(graph, uidToNodeIndex, nI);
+                                    uint gJ = GetOrAddNode(graph, uidToNodeIndex, nJ);
+                                    graph.Edges.Add(new MapEdge
+                                    {
+                                        EdgeId = (uint)graph.Edges.Count,
+                                        FromNodeIndex = gI,
+                                        ToNodeIndex = gJ,
+                                        Length = dIJ,
+                                        SpeedLimitKmh = 45.0f,
+                                        RoadType = 3,
+                                        Lanes = 1,
+                                        Flags = 0,
+                                        Polyline = new List<Vector3> { pI, pJ }
+                                    });
+                                    graph.Edges.Add(new MapEdge
+                                    {
+                                        EdgeId = (uint)graph.Edges.Count,
+                                        FromNodeIndex = gJ,
+                                        ToNodeIndex = gI,
+                                        Length = dIJ,
+                                        SpeedLimitKmh = 45.0f,
+                                        RoadType = 3,
+                                        Lanes = 1,
+                                        Flags = 0,
+                                        Polyline = new List<Vector3> { pJ, pI }
+                                    });
+                                }
                             }
                         }
                     }
@@ -402,23 +467,18 @@ namespace AtsGpsServer.Map
                     }
                 }
 
-                // Calcular grados de entrada y salida para anclaje transitable (Punto 2)
-                var inDegree = new Dictionary<uint, int>();
-                var outDegree = new Dictionary<uint, int>();
-                foreach (var edge in graph.Edges)
-                {
-                    outDegree[edge.FromNodeIndex] = outDegree.GetValueOrDefault(edge.FromNodeIndex) + 1;
-                    inDegree[edge.ToNodeIndex] = inDegree.GetValueOrDefault(edge.ToNodeIndex) + 1;
-                }
+                // Anclaje a la componente fuertemente conexa principal (SCC grande >= 1000 nodos)
+                progressCallback?.Invoke("Calculando componentes fuertemente conexas (SCC) para anclaje...", totalSectors, totalSectors);
+                var nodeToSccSize = ComputeSccSizes(graph);
 
                 foreach (var c in graph.Cities)
                 {
-                    c.NearestNodeIndex = FindBestAnchorNode(graph, c.X, c.Z, inDegree, outDegree);
+                    c.NearestNodeIndex = FindBestSccAnchorNode(graph, c.X, c.Z, nodeToSccSize, maxSearchRadiusMeters: 4000f, minSccSize: 1000);
                 }
 
                 foreach (var comp in graph.Companies)
                 {
-                    comp.NearestNodeIndex = FindBestAnchorNode(graph, comp.X, comp.Z, inDegree, outDegree);
+                    comp.NearestNodeIndex = FindBestSccAnchorNode(graph, comp.X, comp.Z, nodeToSccSize, maxSearchRadiusMeters: 1000f, minSccSize: 1000);
                 }
 
                 graph.MinX = minX;
@@ -438,12 +498,112 @@ namespace AtsGpsServer.Map
             }
         }
 
-        private static uint FindBestAnchorNode(MapGraph graph, float x, float z, Dictionary<uint, int> inDegree, Dictionary<uint, int> outDegree)
+        private static int[] ComputeSccSizes(MapGraph graph)
+        {
+            int n = graph.Nodes.Count;
+            var adj = new List<uint>[n];
+            var revAdj = new List<uint>[n];
+            for (int i = 0; i < n; i++)
+            {
+                adj[i] = new List<uint>();
+                revAdj[i] = new List<uint>();
+            }
+            foreach (var e in graph.Edges)
+            {
+                if (e.FromNodeIndex < n && e.ToNodeIndex < n)
+                {
+                    adj[e.FromNodeIndex].Add(e.ToNodeIndex);
+                    revAdj[e.ToNodeIndex].Add(e.FromNodeIndex);
+                }
+            }
+
+            var visited = new bool[n];
+            var order = new List<int>(n);
+            var dfsStack = new Stack<(int node, int neighborIdx)>();
+
+            for (int i = 0; i < n; i++)
+            {
+                if (visited[i]) continue;
+                dfsStack.Push((i, 0));
+                visited[i] = true;
+
+                while (dfsStack.Count > 0)
+                {
+                    var (curr, nextIdx) = dfsStack.Pop();
+                    var neighbors = adj[curr];
+                    bool pushedChild = false;
+
+                    for (int k = nextIdx; k < neighbors.Count; k++)
+                    {
+                        int nextNode = (int)neighbors[k];
+                        if (!visited[nextNode])
+                        {
+                            visited[nextNode] = true;
+                            dfsStack.Push((curr, k + 1));
+                            dfsStack.Push((nextNode, 0));
+                            pushedChild = true;
+                            break;
+                        }
+                    }
+
+                    if (!pushedChild)
+                    {
+                        order.Add(curr);
+                    }
+                }
+            }
+
+            Array.Fill(visited, false);
+            var componentSizes = new List<int>();
+            var nodeToComponent = new int[n];
+            var compBfsQueue = new Queue<int>();
+
+            for (int i = order.Count - 1; i >= 0; i--)
+            {
+                int root = order[i];
+                if (visited[root]) continue;
+
+                int compId = componentSizes.Count;
+                int compSize = 0;
+                visited[root] = true;
+                compBfsQueue.Enqueue(root);
+
+                while (compBfsQueue.Count > 0)
+                {
+                    int curr = compBfsQueue.Dequeue();
+                    nodeToComponent[curr] = compId;
+                    compSize++;
+
+                    foreach (var neighbor in revAdj[curr])
+                    {
+                        int nextNode = (int)neighbor;
+                        if (!visited[nextNode])
+                        {
+                            visited[nextNode] = true;
+                            compBfsQueue.Enqueue(nextNode);
+                        }
+                    }
+                }
+
+                componentSizes.Add(compSize);
+            }
+
+            var nodeToSccSize = new int[n];
+            for (int i = 0; i < n; i++)
+            {
+                nodeToSccSize[i] = componentSizes[nodeToComponent[i]];
+            }
+            return nodeToSccSize;
+        }
+
+        private static uint FindBestSccAnchorNode(MapGraph graph, float x, float z, int[] nodeToSccSize, float maxSearchRadiusMeters = 4000f, int minSccSize = 1000)
         {
             uint bestNode = 0;
             double bestDistSq = double.MaxValue;
-            double bestTransitableDistSq = double.MaxValue;
-            uint bestTransitableNode = 0;
+            double maxDistSq = (double)maxSearchRadiusMeters * maxSearchRadiusMeters;
+
+            uint bestSccNode = 0;
+            double bestSccDistSq = double.MaxValue;
 
             for (int i = 0; i < graph.Nodes.Count; i++)
             {
@@ -458,19 +618,19 @@ namespace AtsGpsServer.Map
                     bestNode = (uint)i;
                 }
 
-                inDegree.TryGetValue((uint)i, out int inD);
-                outDegree.TryGetValue((uint)i, out int outD);
-                if (inD > 0 && outD > 0 && dSq < bestTransitableDistSq)
+                if (nodeToSccSize[i] >= minSccSize && dSq <= maxDistSq)
                 {
-                    bestTransitableDistSq = dSq;
-                    bestTransitableNode = (uint)i;
+                    if (dSq < bestSccDistSq)
+                    {
+                        bestSccDistSq = dSq;
+                        bestSccNode = (uint)i;
+                    }
                 }
             }
 
-            // Preferir nodo transitable si está a menos de 4.0 km del centro de ciudad/empresa
-            if (bestTransitableNode != 0 && bestTransitableDistSq < 16_000_000)
+            if (bestSccNode != 0)
             {
-                return bestTransitableNode;
+                return bestSccNode;
             }
 
             return bestNode;

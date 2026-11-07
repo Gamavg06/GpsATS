@@ -48,6 +48,9 @@ namespace AtsGpsServer.Telemetry
                     return snapshot;
                 }
 
+                // Zona 2: Enteros de Configuración
+                snapshot.TimeAbsDelivery = _accessor.ReadUInt32(88);
+
                 // Zona 3: Enteros (Truck_i)
                 snapshot.Gear = _accessor.ReadInt32(504);
                 snapshot.GearDashboard = _accessor.ReadInt32(508);
@@ -80,7 +83,12 @@ namespace AtsGpsServer.Telemetry
                 float speedLimitMs = _accessor.ReadSingle(1068);
                 snapshot.SpeedLimitKmh = speedLimitMs * 3.6f;
 
-                // Zona 5: Booleanos (Truck_b)
+                // Daño de Carga en Trabajo (job_f)
+                snapshot.CargoDamage = _accessor.ReadSingle(1468);
+
+                // Zona 5: Booleanos (Config_b y Truck_b)
+                snapshot.IsCargoLoaded = _accessor.ReadBoolean(1564);
+                snapshot.SpecialJob = _accessor.ReadBoolean(1565);
                 snapshot.ParkingBrake = _accessor.ReadBoolean(1566);
                 snapshot.BlinkerLeft = _accessor.ReadBoolean(1578);
                 snapshot.BlinkerRight = _accessor.ReadBoolean(1579);
@@ -99,34 +107,67 @@ namespace AtsGpsServer.Telemetry
                 snapshot.HeadingDegrees = heading * 360.0;
                 snapshot.Roll = _accessor.ReadDouble(2240);
 
-                // Zona 9: Cadenas de Texto (Carga, Trabajo y Destino)
-                string cargoId = ReadString(2656);
-                string cargoName = ReadString(2720);
+                // Zona 9: Cadenas de Texto (Carga, Trabajo y Destino con Offsets Exactos)
+                string cargoId = ReadString(2556);
+                string cargoName = ReadString(2620);
                 snapshot.CargoId = cargoId;
                 snapshot.CargoName = !string.IsNullOrWhiteSpace(cargoName) ? cargoName : cargoId;
 
-                string dstCityId = ReadString(2784);
-                string dstCity = ReadString(2848);
-                if (string.IsNullOrWhiteSpace(dstCity)) dstCity = ReadString(2748);
+                string dstCityId = ReadString(2684);
+                string dstCity = ReadString(2748);
+                snapshot.DestinationCityId = dstCityId;
                 snapshot.DestinationCity = !string.IsNullOrWhiteSpace(dstCity) ? dstCity : dstCityId;
 
-                string dstCompId = ReadString(2912);
-                string dstComp = ReadString(2976);
-                if (string.IsNullOrWhiteSpace(dstComp)) dstComp = ReadString(2876);
+                string dstCompId = ReadString(2812);
+                string dstComp = ReadString(2876);
+                snapshot.DestinationCompanyId = dstCompId;
                 snapshot.DestinationCompany = !string.IsNullOrWhiteSpace(dstComp) ? dstComp : dstCompId;
 
-                string srcCityId = ReadString(3040);
-                string srcCity = ReadString(3104);
-                if (string.IsNullOrWhiteSpace(srcCity)) srcCity = ReadString(3004);
+                string srcCityId = ReadString(2940);
+                string srcCity = ReadString(3004);
+                snapshot.SourceCityId = srcCityId;
                 snapshot.SourceCity = !string.IsNullOrWhiteSpace(srcCity) ? srcCity : srcCityId;
 
-                string srcCompId = ReadString(3168);
-                string srcComp = ReadString(3232);
-                if (string.IsNullOrWhiteSpace(srcComp)) srcComp = ReadString(3132);
+                string srcCompId = ReadString(3068);
+                string srcComp = ReadString(3132);
+                snapshot.SourceCompanyId = srcCompId;
                 snapshot.SourceCompany = !string.IsNullOrWhiteSpace(srcComp) ? srcComp : srcCompId;
+
+                snapshot.JobMarket = ReadString(3404, 32);
 
                 // Zona 10: ULL (JobIncome)
                 snapshot.JobIncome = _accessor.ReadUInt64(4000);
+
+                // Zona 12: Eventos Especiales
+                snapshot.OnJob = _accessor.ReadBoolean(4300);
+
+                // Zona 14: Trailer 0 (Offset 6000)
+                snapshot.TrailerAttached = _accessor.ReadBoolean(6058);
+                if (snapshot.TrailerAttached)
+                {
+                    snapshot.TrailerCargoDamage = _accessor.ReadSingle(6152);
+                    snapshot.TrailerWearChassis = _accessor.ReadSingle(6156);
+                    snapshot.TrailerWearWheels = _accessor.ReadSingle(6160);
+                    snapshot.TrailerWearBody = _accessor.ReadSingle(6164);
+                }
+
+                // Soporte robusto de trabajos con carga oculta o campos vacíos (Customer Priority / Quick Job):
+                // Si el juego tiene una ruta de navegación activa o flag onJob/isCargoLoaded pero el nombre de la carga está vacío
+                if (string.IsNullOrWhiteSpace(snapshot.CargoName))
+                {
+                    if (snapshot.SpecialJob)
+                    {
+                        snapshot.CargoName = "Transporte Especial";
+                    }
+                    else if (snapshot.IsCargoLoaded || snapshot.OnJob)
+                    {
+                        snapshot.CargoName = "Envío Prioritario / General";
+                    }
+                    else if (snapshot.NavDistanceMeters > 50f && !string.IsNullOrWhiteSpace(snapshot.DestinationCity))
+                    {
+                        snapshot.CargoName = "Carga en Tránsito";
+                    }
+                }
             }
             catch (Exception)
             {
@@ -138,13 +179,14 @@ namespace AtsGpsServer.Telemetry
             return snapshot;
         }
 
-        private string ReadString(long offset)
+        private string ReadString(long offset, int maxLen = 64)
         {
             if (_accessor == null) return string.Empty;
-            _accessor.ReadArray(offset, _stringBuffer, 0, 64);
+            int bufSize = Math.Min(maxLen, _stringBuffer.Length);
+            _accessor.ReadArray(offset, _stringBuffer, 0, bufSize);
             int len = 0;
-            while (len < 64 && _stringBuffer[len] != 0) len++;
-            return len > 0 ? Encoding.UTF8.GetString(_stringBuffer, 0, len) : string.Empty;
+            while (len < bufSize && _stringBuffer[len] != 0) len++;
+            return len > 0 ? Encoding.UTF8.GetString(_stringBuffer, 0, len).Trim() : string.Empty;
         }
 
         private void TryConnect()

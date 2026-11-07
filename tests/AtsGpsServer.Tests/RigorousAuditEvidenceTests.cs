@@ -371,9 +371,16 @@ namespace AtsGpsServer.Tests
             _output.WriteLine($"Esto DEMUESTRA que la ruta inversa Portland ➔ Bend no puede regresar por la misma vía directa debido a {missingReverseCount} aristas unidireccionales.");
 
             // Generar SVGs para Portland->Salem, Oakland->San Jose y Portland->Bend
-            GenerateRouteDetourSvg(graph, pf, "Portland", "Salem", Path.Combine(outDir, "Portland_Salem_Detour.svg"));
-            GenerateRouteDetourSvg(graph, pf, "Oakland", "San_jose", Path.Combine(outDir, "Oakland_SanJose_Detour.svg"));
-            GenerateRouteDetourSvg(graph, pf, "Portland", "Bend", Path.Combine(outDir, "Portland_Bend_Detour.svg"));
+            string pSalem = Path.Combine(outDir, "Portland_Salem_Detour.svg");
+            string oSanJose = Path.Combine(outDir, "Oakland_SanJose_Detour.svg");
+            string pBend = Path.Combine(outDir, "Portland_Bend_Detour.svg");
+            GenerateRouteDetourSvg(graph, pf, "Portland", "Salem", pSalem);
+            GenerateRouteDetourSvg(graph, pf, "Oakland", "San_jose", oSanJose);
+            GenerateRouteDetourSvg(graph, pf, "Portland", "Bend", pBend);
+
+            File.Copy(pSalem, @"C:\Users\gmlve\Downloads\Portland_Salem_Detour.svg", true);
+            File.Copy(oSanJose, @"C:\Users\gmlve\Downloads\Oakland_SanJose_Detour.svg", true);
+            File.Copy(pBend, @"C:\Users\gmlve\Downloads\Portland_Bend_Detour.svg", true);
         }
 
         [Fact]
@@ -465,6 +472,136 @@ namespace AtsGpsServer.Tests
             _output.WriteLine($"  Ruta Puerto 2 ➔ Puerto 1: {(routeToB?.Success == true ? "PERMITIDA" : "BLOQUEADA")} ({routeToB?.TotalLengthMeters:F1}m)");
             _output.WriteLine($"  Ruta Puerto 1 ➔ Puerto 0: {(routeToA?.Success == true ? "PERMITIDA" : "BLOQUEADA")} ({routeToA?.TotalLengthMeters:F1}m)");
             _output.WriteLine($"  DICTAMEN TÉCNICO: Dado que cada puerto se mapea a un único índice de nodo y _forbiddenTurns no se pobla en MapExtractor, un vehículo que llega al Puerto 1 puede tomar inmediatamente cualquier arista de salida del Puerto 1 hacia el Puerto 0. Para impedirlo físicamente se requiere desacoplar el puerto en dos nodos (Puerto_In y Puerto_Out) o inyectar la terna (2, 1, 0) en _forbiddenTurns.");
+        }
+
+        [Fact]
+        public void Investigate_12m_Gap_Edges_233580_And_233629()
+        {
+            string mapPath = @"C:\Telemetriagps\server\data\map_ats.bin";
+            using var fs = File.OpenRead(mapPath);
+            var graph = MapBinarySerializer.Deserialize(fs);
+
+            var e1 = graph.Edges.FirstOrDefault(e => e.EdgeId == 233580);
+            var e2 = graph.Edges.FirstOrDefault(e => e.EdgeId == 233629);
+
+            Assert.NotNull(e1);
+            Assert.NotNull(e2);
+
+            var n1 = graph.Nodes[(int)e1.ToNodeIndex];
+            var n2 = graph.Nodes[(int)e2.FromNodeIndex];
+
+            _output.WriteLine($"ARISTA 233580: From={e1.FromNodeIndex}, To={e1.ToNodeIndex}, Type={e1.RoadType}, Len={e1.Length:F1}m, Flags={e1.Flags}");
+            _output.WriteLine($"NODO 55319 (To de 233580): UID=0x{n1.Uid:X}, Pos=({n1.X:F2}, {n1.Y:F2}, {n1.Z:F2})");
+
+            _output.WriteLine($"ARISTA 233629: From={e2.FromNodeIndex}, To={e2.ToNodeIndex}, Type={e2.RoadType}, Len={e2.Length:F1}m, Flags={e2.Flags}");
+            _output.WriteLine($"NODO 55350 (From de 233629): UID=0x{n2.Uid:X}, Pos=({n2.X:F2}, {n2.Y:F2}, {n2.Z:F2})");
+
+            float dist = Vector3.Distance(new Vector3(n1.X, n1.Y, n1.Z), new Vector3(n2.X, n2.Y, n2.Z));
+            _output.WriteLine($"DISTANCIA ENTRE NODO 55319 Y 55350: {dist:F2} m");
+
+            // Buscar todas las aristas a menos de 50 metros de ambos nodos
+            var nearbyEdges = graph.Edges.Where(e =>
+            {
+                var nA = graph.Nodes[(int)e.FromNodeIndex];
+                var nB = graph.Nodes[(int)e.ToNodeIndex];
+                float dA = Vector3.Distance(new Vector3(nA.X, nA.Y, nA.Z), new Vector3(n1.X, n1.Y, n1.Z));
+                float dB = Vector3.Distance(new Vector3(nB.X, nB.Y, nB.Z), new Vector3(n1.X, n1.Y, n1.Z));
+                return dA < 50f || dB < 50f;
+            }).ToList();
+
+            // Generar SVG del hueco de 12.1 m en el sector (-23, -11)
+            var sb = new StringBuilder();
+            sb.AppendLine("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 800\" width=\"1000\" height=\"800\" style=\"background:#121212;\">");
+            sb.AppendLine("<text x=\"20\" y=\"35\" fill=\"#FFFFFF\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"bold\">DETALLE TOPOLÓGICO: HUECO DE 12.1 m EN SECTOR (-23, -11)</text>");
+            sb.AppendLine("<text x=\"20\" y=\"60\" fill=\"#AAAAAA\" font-family=\"sans-serif\" font-size=\"13\">Prefab us_293 (us_cross_1-1_country_t_walk_road_short_tmpl_out.ppd) | Mediana de calzada dividida</text>");
+
+            float cX = (n1.X + n2.X) / 2f;
+            float cZ = (n1.Z + n2.Z) / 2f;
+            float rad = 60f;
+            float minX = cX - rad, maxX = cX + rad;
+            float minZ = cZ - rad, maxZ = cZ + rad;
+
+            float SvgX(float x) => 100 + (x - minX) / (maxX - minX) * 800;
+            float SvgY(float z) => 720 - (z - minZ) / (maxZ - minZ) * 640;
+
+            // Dibujar aristas vecinas
+            foreach (var e in nearbyEdges)
+            {
+                var nA = graph.Nodes[(int)e.FromNodeIndex];
+                var nB = graph.Nodes[(int)e.ToNodeIndex];
+                float x1 = SvgX(nA.X), y1 = SvgY(nA.Z);
+                float x2 = SvgX(nB.X), y2 = SvgY(nB.Z);
+                string stroke = e.Length <= 15f ? "#00FF66" : (e.RoadType == 3 ? "#FFAA00" : "#5577AA");
+                float sw = e.Length <= 15f ? 4.0f : 2.5f;
+                sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                    "<line x1=\"{0:F1}\" y1=\"{1:F1}\" x2=\"{2:F1}\" y2=\"{3:F1}\" stroke=\"{4}\" stroke-width=\"{5:F1}\" stroke-linecap=\"round\"/>",
+                    x1, y1, x2, y2, stroke, sw));
+            }
+
+            // Marcar Nodo 55319
+            float sx1 = SvgX(n1.X), sy1 = SvgY(n1.Z);
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                "<circle cx=\"{0:F1}\" cy=\"{1:F1}\" r=\"9\" fill=\"#FF3366\" stroke=\"#FFFFFF\" stroke-width=\"2\"/>", sx1, sy1));
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                "<text x=\"{0:F1}\" y=\"{1:F1}\" fill=\"#FF6688\" font-family=\"monospace\" font-size=\"12\" font-weight=\"bold\"> Nodo 55319 (Entrada Norte - 0x{2:X})</text>",
+                sx1 + 12, sy1 - 4, n1.Uid));
+
+            // Marcar Nodo 55350
+            float sx2 = SvgX(n2.X), sy2 = SvgY(n2.Z);
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                "<circle cx=\"{0:F1}\" cy=\"{1:F1}\" r=\"9\" fill=\"#3388FF\" stroke=\"#FFFFFF\" stroke-width=\"2\"/>", sx2, sy2));
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                "<text x=\"{0:F1}\" y=\"{1:F1}\" fill=\"#66AAFF\" font-family=\"monospace\" font-size=\"12\" font-weight=\"bold\"> Nodo 55350 (Salida Sur - 0x{2:X})</text>",
+                sx2 - 280, sy2 + 16, n2.Uid));
+
+            // Línea del hueco de 12.1 m
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                "<line x1=\"{0:F1}\" y1=\"{1:F1}\" x2=\"{2:F1}\" y2=\"{3:F1}\" stroke=\"#FFFF00\" stroke-width=\"3\" stroke-dasharray=\"6,4\"/>",
+                sx1, sy1, sx2, sy2));
+            float midX = (sx1 + sx2) / 2f, midY = (sy1 + sy2) / 2f;
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                "<rect x=\"{0:F1}\" y=\"{1:F1}\" width=\"160\" height=\"24\" rx=\"4\" fill=\"#000000\" stroke=\"#FFFF00\" stroke-width=\"1\"/>",
+                midX - 80, midY - 12));
+            sb.AppendLine(string.Format(CultureInfo.InvariantCulture,
+                "<text x=\"{0:F1}\" y=\"{1:F1}\" fill=\"#FFFF00\" font-family=\"sans-serif\" font-size=\"12\" font-weight=\"bold\" text-anchor=\"middle\">Separación: 12.09 m</text>",
+                midX, midY + 4));
+
+            sb.AppendLine("</svg>");
+            string svgPath = @"C:\Users\gmlve\Downloads\Gap_12m_Sector2311.svg";
+            File.WriteAllText(svgPath, sb.ToString());
+            _output.WriteLine($"SVG del hueco generado en: {svgPath}");
+        }
+
+        [Fact]
+        public void Audit_All_Edges_Invariant_Length_Greater_Or_Equal_Euclidean()
+        {
+            using var fs = File.OpenRead(@"C:\Telemetriagps\server\data\map_ats.bin");
+            var graph = MapBinarySerializer.Deserialize(fs);
+
+            int totalEdges = graph.Edges.Count;
+            int violations = 0;
+            float maxDeficit = 0;
+
+            for (int i = 0; i < totalEdges; i++)
+            {
+                var edge = graph.Edges[i];
+                var nFrom = graph.Nodes[(int)edge.FromNodeIndex];
+                var nTo = graph.Nodes[(int)edge.ToNodeIndex];
+                float euclidean = Vector3.Distance(new Vector3(nFrom.X, nFrom.Y, nFrom.Z), new Vector3(nTo.X, nTo.Y, nTo.Z));
+
+                // Tolerancia por precisión de coma flotante de 0.001 m
+                if (edge.Length < euclidean - 0.001f)
+                {
+                    violations++;
+                    float deficit = euclidean - edge.Length;
+                    if (deficit > maxDeficit) maxDeficit = deficit;
+                }
+            }
+
+            _output.WriteLine($"Total aristas evaluadas: {totalEdges}");
+            _output.WriteLine($"Aristas violando el invariante (Length < Euclidean): {violations}");
+            _output.WriteLine($"Déficit máximo observado: {maxDeficit:F4} m");
+            Assert.Equal(0, violations);
         }
 
         [Fact]
