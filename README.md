@@ -187,8 +187,8 @@ La consola mostrará:
 ---
 
 ### 4. Instalación del Cliente Android
-1. Descarga el paquete firmado oficial `AtsGpsApp_v1.2.4.apk` desde [Releases](https://github.com/Gamavg06/GpsATS/releases) junto con su suma de verificación SHA-256 (`B2957E9C72EBD07DA1ABE567BE4E4A154C8B5FCA4EDBA3B3526F6B9F878C7711`).
-2. Instálalo en tu dispositivo Android (versión 1.2.4, versionCode 4).
+1. Descarga el paquete firmado oficial `AtsGpsApp_v1.3.0.apk` (o `release.apk`) desde [Releases](https://github.com/Gamavg06/GpsATS/releases) junto con su suma de verificación SHA-256 (`D8C4467676CDF299A827D55B291AF16D873CB84B2A63807E6D024771B80E3998`).
+2. Instálalo en tu dispositivo Android (versión 1.3.0, versionCode 5).
 3. Abre la app, introduce la **IP local** de tu PC, el puerto (`35500`) y el **código PIN de 6 dígitos**.
 4. Pulsa **CONECTAR**. ¡A rodar! 🚚💨
 
@@ -236,7 +236,7 @@ GpsATS/
 │           ├── ui/
 │           │   ├── map/GpsMapCanvas.kt # Motor gráfico 2D/3D sobre Canvas
 │           │   ├── dashboard/DashboardScreen.kt # Instrumental HUD virtual
-│           │   └── junction/GarminJunctionView.kt # Cartelería de autopista
+│           │   └── junction/JunctionView.kt     # Cartelería de autopista
 │           └── data/network/AtsNetworkClient.kt # Cliente WebSocket local
 │
 └── tests/                      # Suite de pruebas automatizadas xUnit (.NET 10)
