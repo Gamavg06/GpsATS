@@ -50,14 +50,18 @@ namespace AtsGpsServer.Telemetry
 
                 // Zona 2: Enteros de Configuración
                 snapshot.TimeAbsDelivery = _accessor.ReadUInt32(88);
+                snapshot.PlannedDistanceKm = _accessor.ReadUInt32(100);
 
                 // Zona 3: Enteros (Truck_i)
                 snapshot.Gear = _accessor.ReadInt32(504);
                 snapshot.GearDashboard = _accessor.ReadInt32(508);
 
                 // Zona 4: Flotantes (Config_f y Truck_f)
+                snapshot.Scale = _accessor.ReadSingle(700);
+                if (snapshot.Scale <= 0f) snapshot.Scale = 20.0f;
+
                 snapshot.FuelCapacity = _accessor.ReadSingle(704);
-                snapshot.CargoMassKg = _accessor.ReadSingle(708);
+                snapshot.CargoMassKg = _accessor.ReadSingle(748);
                 if (snapshot.CargoMassKg <= 0f)
                 {
                     snapshot.CargoMassKg = _accessor.ReadSingle(1800);
@@ -101,11 +105,19 @@ namespace AtsGpsServer.Telemetry
                 snapshot.PosY = _accessor.ReadDouble(2208);
                 snapshot.PosZ = _accessor.ReadDouble(2216);
 
-                snapshot.Pitch = _accessor.ReadDouble(2224);
-                double heading = _accessor.ReadDouble(2232); // [0.0, 1.0)
+                // Offsets RenCloud SDK v1.12:
+                // 2200: coordinateX, 2208: coordinateY, 2216: coordinateZ
+                // 2224: rotationX (HEADING en revoluciones [0.0, 1.0))
+                // 2232: rotationY (PITCH)
+                // 2240: rotationZ (ROLL)
+                double heading = _accessor.ReadDouble(2224); // rotationX: Heading
                 snapshot.Heading = heading;
-                snapshot.HeadingDegrees = heading * 360.0;
-                snapshot.Roll = _accessor.ReadDouble(2240);
+                double headingDeg = (heading * 360.0) % 360.0;
+                if (headingDeg < 0) headingDeg += 360.0;
+                snapshot.HeadingDegrees = headingDeg;
+
+                snapshot.Pitch = _accessor.ReadDouble(2232); // rotationY: Pitch
+                snapshot.Roll = _accessor.ReadDouble(2240);  // rotationZ: Roll
 
                 // Zona 9: Cadenas de Texto (Carga, Trabajo y Destino con Offsets Exactos)
                 string cargoId = ReadString(2556);

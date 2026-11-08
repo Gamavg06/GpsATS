@@ -29,7 +29,7 @@ import com.ats.gps.data.model.TelemetryData
 import com.ats.gps.data.network.AtsNetworkClient
 import com.ats.gps.ui.dashboard.DashboardScreen
 import com.ats.gps.ui.diagnostic.TelemetryDiagnosticScreen
-import com.ats.gps.ui.junction.GarminJunctionView
+import com.ats.gps.ui.junction.JunctionView
 import com.ats.gps.ui.map.GpsMapCanvas
 import com.ats.gps.ui.map.MapViewMode
 import com.ats.gps.ui.tts.NavigationVoiceAssistant
@@ -221,14 +221,14 @@ fun AtsNavMainApp(
                                 modifier = Modifier.fillMaxSize()
                             )
 
-                            // 2. Garmin Junction View (Aparece en esquina superior derecha)
+                            // 2. Junction View (Aparece en esquina superior derecha)
                             if (telemetry.navDistanceMeters in 50f..1200f) {
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
                                         .padding(top = 90.dp, end = 16.dp)
                                 ) {
-                                    GarminJunctionView(
+                                    JunctionView(
                                         exitName = "Exit 45B",
                                         destinationName = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "DESTINO",
                                         distanceMeters = telemetry.navDistanceMeters,
@@ -251,6 +251,10 @@ fun AtsNavMainApp(
                                             MapViewMode.MODE_2D_TOP_DOWN
                                         else
                                             MapViewMode.MODE_3D_PERSPECTIVE
+
+                                        // H6: Recentrar cámara en el camión al conmutar modo 2D / 3D
+                                        panOffset = androidx.compose.ui.geometry.Offset.Zero
+                                        isFollowingTruck = true
                                     },
                                     containerColor = Color(0xFF1E293B),
                                     contentColor = Color(0xFF38BDF8),
@@ -694,7 +698,14 @@ fun PairingScreen(
     ) {
         Text("ATS TELEMETRÍA GPS", fontSize = 26.sp, fontWeight = FontWeight.Black, color = Color.White)
         Text("Conexión con el servidor PC", fontSize = 14.sp, color = Color(0xFF94A3B8))
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            text = "Versión App: v1.3.0 (Build 5) · Compatible con Servidor v1.3.0",
+            fontSize = 11.sp,
+            color = Color(0xFF38BDF8),
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(20.dp))
 
         OutlinedTextField(
             value = ip,

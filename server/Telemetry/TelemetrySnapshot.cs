@@ -13,6 +13,13 @@ namespace AtsGpsServer.Telemetry
         [JsonPropertyName("timestamp")]
         public long Timestamp { get; set; }
 
+        // Zona 1 y 4: Escala y Configuración
+        [JsonPropertyName("scale")]
+        public float Scale { get; set; } = 20.0f;
+
+        [JsonPropertyName("plannedDistanceKm")]
+        public uint PlannedDistanceKm { get; set; }
+
         // Posición y orientación 3D
         [JsonPropertyName("posX")]
         public double PosX { get; set; }

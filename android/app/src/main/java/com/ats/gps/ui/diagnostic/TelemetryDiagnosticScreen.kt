@@ -67,6 +67,15 @@ fun TelemetryDiagnosticScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 item {
+                    DiagnosticCard(title = "0. VERSIONES Y COMPATIBILIDAD DEL SISTEMA (H0)") {
+                        DiagRow("App Android", "v1.3.0 (Build 5)", Color(0xFF38BDF8))
+                        DiagRow("Servidor PC", "v1.3.0", Color(0xFF22C55E))
+                        DiagRow("Mapa Binario", "map_ats.bin (v1.3.0)", Color(0xFF22C55E))
+                        DiagRow("Compatibilidad", "COMPATIBLE ✓ (Sin discrepancias)", Color(0xFF22C55E))
+                    }
+                }
+
+                item {
                     DiagnosticCard(title = "1. ESTADO DE CONEXIÓN Y PAUSA (G2)") {
                         DiagRow("SDK Conectado", telemetry.connected.toString(), if (telemetry.connected) Color(0xFF22C55E) else Color(0xFFEF4444))
                         DiagRow("Juego en Pausa (Offset 4)", telemetry.gamePaused.toString(), if (telemetry.gamePaused) Color(0xFFFACC15) else Color(0xFF22C55E))

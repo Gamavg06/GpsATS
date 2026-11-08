@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun GarminJunctionView(
+fun JunctionView(
     exitName: String,
     destinationName: String,
     distanceMeters: Float,
@@ -90,7 +90,7 @@ fun GarminJunctionView(
             drawPath(arrowPath, Color.White, style = Stroke(width = 2f))
         }
 
-        // 5. Señal de tráfico superior tipo Garmin (Verde con letras blancas)
+        // 5. Señal de tráfico superior (Verde con letras blancas)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -99,35 +99,44 @@ fun GarminJunctionView(
                 .background(Color(0xFF15803D))
                 .padding(horizontal = 8.dp, vertical = 6.dp)
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = exitName,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp
+                )
+                Text(
+                    text = "${distanceMeters.toInt()} m",
+                    color = Color(0xFFFEF08A),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp
+                )
+            }
             Text(
-                text = "SALIDA: $exitName",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Black,
-                color = Color(0xFFFEF08A)
-            )
-            Text(
-                text = destinationName.uppercase(),
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
+                text = destinationName,
+                color = Color.White,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 14.sp
             )
         }
 
-        // 6. Indicador inferior de distancia a la salida
-        Box(
+        // 6. Indicador de carril inferior
+        Row(
             modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(8.dp)
-                .clip(RoundedCornerShape(6.dp))
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
                 .background(Color(0xCC000000))
-                .padding(horizontal = 8.dp, vertical = 4.dp)
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = if (distanceMeters >= 1000f) String.format("%.1f km", distanceMeters / 1000f) else "${distanceMeters.toInt()} m",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFF38BDF8)
-            )
+            Text("⬆ Mantén carril", color = Color(0xFF94A3B8), fontSize = 11.sp)
+            Text("Salida recomendada ↗", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 11.sp)
         }
     }
 }
