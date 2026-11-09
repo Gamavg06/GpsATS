@@ -52,16 +52,38 @@ if not exist "%ATS_PLUGIN%" (
     echo [OK] Plugin scs-telemetry.dll detectado en la carpeta de 64 bits de ATS.
 )
 
-REM 4. Compilacion y publicacion si no existe
-if not exist "server\publish\AtsGpsServer.dll" (
-    echo [COMPILACION] Compilando y publicando servidor en server\publish...
-    dotnet publish -c Release -o "server\publish" "server\AtsGpsServer.csproj"
-    if errorlevel 1 (
-        echo [ERROR] No se pudo compilar el servidor.
-        pause
-        exit /b 1
+REM 4. Compilacion y publicacion del servidor
+echo [COMPILACION] Verificando compilacion del servidor...
+dotnet publish -c Release -o "server\publish" "server\AtsGpsServer.csproj"
+if errorlevel 1 (
+    echo [ERROR] No se pudo compilar el servidor.
+    pause
+    exit /b 1
+)
+echo [OK] Servidor actualizado en server\publish.
+echo.
+
+REM 5. Configuracion automatica de cable USB (ADB reverse)
+set "ADB_EXE=%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe"
+if not exist "%ADB_EXE%" (
+    where adb >nul 2>&1
+    if %ERRORLEVEL% EQU 0 (
+        for /f "tokens=*" %%i in ('where adb') do set "ADB_EXE=%%i"
     )
-    echo [OK] Servidor publicado correctamente.
+)
+
+if exist "%ADB_EXE%" (
+    echo [USB CABLE] Configurando puente de alta velocidad por cable...
+    "%ADB_EXE%" reverse tcp:35500 tcp:35500 >nul 2>&1
+    if %ERRORLEVEL% EQU 0 (
+        echo [OK] Cable USB activo y vinculado (adb reverse tcp:35500).
+        echo      El celular conectara directamente a 127.0.0.1 sin PIN.
+    ) else (
+        echo [AVISO CABLE USB]
+        echo  Para que el cable funcione como red de datos de telemetria:
+        echo  - En tu celular ve a Opciones de Desarrollador y activa 'Depuracion por USB'.
+        echo  - O en la notificacion USB cambia de 'Transferencia de datos' a 'Anclaje USB' / 'Compartir conexion por USB'.
+    )
     echo.
 )
 
