@@ -84,6 +84,9 @@ fun DashboardScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            // Espacio de separación para la barra superior flotante (TopNavigationBar con HUD de ruta)
+            Spacer(modifier = Modifier.height(98.dp))
+
             // 1. Barra de Luces e Indicadores de Estado (Contraste >= 3:1)
             TopIndicatorsBar(
                 telemetry = telemetry,

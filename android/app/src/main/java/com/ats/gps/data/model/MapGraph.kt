@@ -64,15 +64,57 @@ data class MapGraph(
         SpatialGrid(1000f).apply { populate(edges) }
     }
 
+    val adjacency: Map<Int, List<MapEdge>> by lazy {
+        val map = HashMap<Int, MutableList<MapEdge>>(nodes.size)
+        for (edge in edges) {
+            map.getOrPut(edge.fromNodeIndex) { ArrayList() }.add(edge)
+        }
+        map
+    }
+
     fun getEdgesNear(centerX: Float, centerZ: Float, radius: Float): List<MapEdge> {
         return spatialGrid.query(centerX, centerZ, radius)
     }
 
-    fun findNearestNode(x: Float, z: Float): Int {
+    fun findNearestNode(x: Float, z: Float, mustHaveEdges: Boolean = true): Int {
         if (nodes.isEmpty()) return 0
         var bestIndex = 0
         var bestDistSq = Double.MAX_VALUE
+        val adj = if (mustHaveEdges) adjacency else null
+
+        // 1. Aceleración espacial: consultar aristas a menos de 400m de la posición
+        val nearbyEdges = spatialGrid.query(x, z, 400f)
+        if (nearbyEdges.isNotEmpty()) {
+            for (edge in nearbyEdges) {
+                val n1 = edge.fromNodeIndex
+                val n2 = edge.toNodeIndex
+                if (n1 in nodes.indices && (adj == null || adj.containsKey(n1))) {
+                    val dx = (nodes[n1].x - x).toDouble()
+                    val dz = (nodes[n1].z - z).toDouble()
+                    val dSq = dx * dx + dz * dz
+                    if (dSq < bestDistSq) {
+                        bestDistSq = dSq
+                        bestIndex = n1
+                    }
+                }
+                if (n2 in nodes.indices && (adj == null || adj.containsKey(n2))) {
+                    val dx = (nodes[n2].x - x).toDouble()
+                    val dz = (nodes[n2].z - z).toDouble()
+                    val dSq = dx * dx + dz * dz
+                    if (dSq < bestDistSq) {
+                        bestDistSq = dSq
+                        bestIndex = n2
+                    }
+                }
+            }
+            if (bestDistSq < 160000.0) { // Encontrado a menos de 400 metros
+                return bestIndex
+            }
+        }
+
+        // 2. Respaldo lineal completo
         for (i in nodes.indices) {
+            if (adj != null && !adj.containsKey(i)) continue
             val dx = (nodes[i].x - x).toDouble()
             val dz = (nodes[i].z - z).toDouble()
             val dSq = dx * dx + dz * dz

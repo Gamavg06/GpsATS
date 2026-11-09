@@ -14,34 +14,50 @@ data class RouteResult(
 object AStarRouter {
 
     fun findRoute(graph: MapGraph, startNode: Int, targetNode: Int): RouteResult? {
-        if (startNode < 0 || startNode >= graph.nodes.size || targetNode < 0 || targetNode >= graph.nodes.size) {
+        val nodeCount = graph.nodes.size
+        if (nodeCount == 0 || startNode !in 0 until nodeCount || targetNode !in 0 until nodeCount) {
             return null
         }
         if (startNode == targetNode) {
             return RouteResult(listOf(startNode), emptyList(), 0f)
         }
 
-        // Construir mapa de adyacencia
-        val adjacency = HashMap<Int, MutableList<MapEdge>>()
-        for (edge in graph.edges) {
-            adjacency.getOrPut(edge.fromNodeIndex) { ArrayList() }.add(edge)
+        val route = executeAStar(graph, startNode, targetNode, nodeCount)
+        if (route != null) return route
+
+        // Si el nodo exacto está desconectado o en sentido contrario, buscar un nodo adyacente conectado
+        val candidateStarts = graph.adjacency[startNode]?.map { it.toNodeIndex }?.take(4) ?: emptyList()
+        for (cand in candidateStarts) {
+            if (cand in 0 until nodeCount && cand != targetNode) {
+                val altRoute = executeAStar(graph, cand, targetNode, nodeCount)
+                if (altRoute != null) return altRoute
+            }
         }
 
+        return null
+    }
+
+    private fun executeAStar(graph: MapGraph, startNode: Int, targetNode: Int, nodeCount: Int): RouteResult? {
+        val adjacency = graph.adjacency
+
+        // Arreglos primitivos planos: 0 boxing, rendimiento nativo a nivel de caché
+        val gScore = FloatArray(nodeCount) { Float.MAX_VALUE }
+        val cameFromNode = IntArray(nodeCount) { -1 }
+        val cameFromEdge = arrayOfNulls<MapEdge>(nodeCount)
+
         val openSet = PriorityQueue<NodeScore>(compareBy { it.fScore })
-        val cameFromEdge = HashMap<Int, MapEdge>()
-        val cameFromNode = HashMap<Int, Int>()
-        val gScore = HashMap<Int, Float>()
 
         gScore[startNode] = 0f
         openSet.add(NodeScore(startNode, 0f, heuristic(graph, startNode, targetNode)))
 
-        while (!openSet.isEmpty()) {
+        var maxSteps = 150000 // Límite de seguridad para evitar bloqueos
+        var steps = 0
+
+        while (!openSet.isEmpty() && steps++ < maxSteps) {
             val currentScore = openSet.poll() ?: break
             val current = currentScore.nodeIndex
 
-            // Poda de entrada obsoleta al extraer de la cola de prioridad
-            val bestKnownG = gScore[current] ?: Float.MAX_VALUE
-            if (currentScore.gScore > bestKnownG) {
+            if (currentScore.gScore > gScore[current]) {
                 continue
             }
 
@@ -52,9 +68,9 @@ object AStarRouter {
                 var curr = current
                 nodePath.add(curr)
 
-                while (cameFromNode.containsKey(curr)) {
-                    val prev = cameFromNode[curr]!!
-                    val edge = cameFromEdge[curr]!!
+                while (cameFromNode[curr] != -1) {
+                    val prev = cameFromNode[curr]
+                    val edge = cameFromEdge[curr] ?: break
                     edgePath.add(edge)
                     nodePath.add(prev)
                     curr = prev
@@ -67,20 +83,22 @@ object AStarRouter {
             }
 
             val edges = adjacency[current] ?: continue
-            val currentG = gScore[current] ?: Float.MAX_VALUE
+            val currentG = gScore[current]
 
             for (edge in edges) {
                 val neighbor = edge.toNodeIndex
-                // Penalizaciones por tipo de vía: Preferir autopista (peso 1.0) sobre calles lentas o giros (peso 1.3)
+                if (neighbor !in 0 until nodeCount) continue
+
+                // Factor de preferencia de carretera
                 val weight = when (edge.roadType.toInt()) {
-                    0 -> 1.0f  // Autopista interestatal
-                    1 -> 1.15f // Vía primaria
-                    3 -> 1.4f  // Giro de prefab / rampa
+                    0 -> 1.0f  // Autopistas interestatales
+                    1 -> 1.12f // Carreteras principales
+                    3 -> 1.35f // Curvas/rampas de intercambiador
                     else -> 1.25f
                 }
                 val tentativeG = currentG + edge.length * weight
 
-                if (tentativeG < (gScore[neighbor] ?: Float.MAX_VALUE)) {
+                if (tentativeG < gScore[neighbor]) {
                     cameFromNode[neighbor] = current
                     cameFromEdge[neighbor] = edge
                     gScore[neighbor] = tentativeG
@@ -90,18 +108,16 @@ object AStarRouter {
             }
         }
 
-        return null // No hay ruta alcanzable
+        return null
     }
 
     private fun heuristic(graph: MapGraph, a: Int, b: Int): Float {
-        val na = graph.NodesSafe(a)
-        val nb = graph.NodesSafe(b)
+        val na = graph.nodes[a]
+        val nb = graph.nodes[b]
         val dx = na.x - nb.x
         val dz = na.z - nb.z
         return sqrt((dx * dx + dz * dz).toDouble()).toFloat()
     }
-
-    private fun MapGraph.NodesSafe(index: Int) = nodes.getOrElse(index) { nodes[0] }
 
     private data class NodeScore(val nodeIndex: Int, val gScore: Float, val fScore: Float)
 }

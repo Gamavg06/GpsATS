@@ -98,6 +98,8 @@ fun AtsNavMainApp(
 
     // Control de cálculo de ruta: se activa cuando hay destino y origen válido
     val hasValidPos = telemetry.posX != 0.0 || telemetry.posZ != 0.0
+    val posChunkX = (telemetry.posX / 120.0).toInt()
+    val posChunkZ = (telemetry.posZ / 120.0).toInt()
     var lastRoutedDestCity by remember { mutableStateOf("") }
     var lastRoutedDestComp by remember { mutableStateOf("") }
     var lastOriginNodeIndex by remember { mutableIntStateOf(-1) }
@@ -108,27 +110,33 @@ fun AtsNavMainApp(
         telemetry.destinationCompany,
         telemetry.targetNodeIndex,
         hasValidPos,
-        mapGraph
+        mapGraph,
+        posChunkX,
+        posChunkZ
     ) {
         val graph = mapGraph ?: return@LaunchedEffect
         if (graph.nodes.isEmpty() || !hasValidPos) return@LaunchedEffect
 
-        val startNode = graph.findNearestNode(telemetry.posX.toFloat(), telemetry.posZ.toFloat())
+        val startNode = graph.findNearestNode(telemetry.posX.toFloat(), telemetry.posZ.toFloat(), mustHaveEdges = true)
 
         // Autodetección: 1) Destino manual explícito, 2) Destino del trabajo en curso de ATS
         val targetNode: Int? = if (telemetry.targetNodeIndex != null) {
             telemetry.targetNodeIndex!!.toInt()
         } else if (telemetry.destinationCity.isNotEmpty()) {
-            val destCity = telemetry.destinationCity
-            val destCompany = telemetry.destinationCompany
+            val destCity = telemetry.destinationCity.trim()
+            val destCompany = telemetry.destinationCompany.trim()
 
+            // 1. Coincidencia por empresa y ciudad
             val compMatch = graph.companies.firstOrNull { c ->
                 c.cityName.equals(destCity, ignoreCase = true) &&
-                (destCompany.isEmpty() || c.name.contains(destCompany, ignoreCase = true))
+                (destCompany.isEmpty() || c.name.contains(destCompany, ignoreCase = true) || destCompany.contains(c.name, ignoreCase = true))
             }
 
+            // 2. Coincidencia por ciudad
             compMatch?.nearestNodeIndex ?: graph.cities.firstOrNull { c ->
-                c.name.equals(destCity, ignoreCase = true)
+                c.name.equals(destCity, ignoreCase = true) ||
+                c.name.contains(destCity, ignoreCase = true) ||
+                destCity.contains(c.name, ignoreCase = true)
             }?.nearestNodeIndex
         } else {
             null
@@ -136,7 +144,7 @@ fun AtsNavMainApp(
 
         if (targetNode != null && targetNode != startNode) {
             val isNewDestination = telemetry.destinationCity != lastRoutedDestCity || telemetry.destinationCompany != lastRoutedDestComp
-            val shouldCompute = activeRoute == null || isNewDestination || (startNode != lastOriginNodeIndex && System.currentTimeMillis() - lastRouteCalcTime > 8000L)
+            val shouldCompute = activeRoute == null || isNewDestination || (startNode != lastOriginNodeIndex && System.currentTimeMillis() - lastRouteCalcTime > 5000L)
 
             if (shouldCompute) {
                 withContext(Dispatchers.Default) {
@@ -308,35 +316,61 @@ fun AtsNavMainApp(
                                     .padding(end = 16.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                // G8: Botón 2D/3D muestra el modo destino
-                                FloatingActionButton(
-                                    onClick = {
-                                        viewMode = if (viewMode == MapViewMode.MODE_3D_PERSPECTIVE)
-                                            MapViewMode.MODE_2D_TOP_DOWN
-                                        else
-                                            MapViewMode.MODE_3D_PERSPECTIVE
-
-                                        // H6: Recentrar cámara en el camión al conmutar modo 2D / 3D
-                                        panOffset = androidx.compose.ui.geometry.Offset.Zero
-                                        isFollowingTruck = true
-                                    },
-                                    containerColor = Color(0xFF1E293B),
-                                    contentColor = Color(0xFF38BDF8),
-                                    shape = CircleShape,
-                                    modifier = Modifier.size(50.dp)
+                                // Selector explícito y visual de Modo de Cámara: 3D Perspectiva vs 2D Aéreo
+                                Card(
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xF0111827)),
+                                    shape = RoundedCornerShape(26.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF334155))
                                 ) {
-                                    // Si está en 3D muestra "2D" (para cambiar a 2D); si está en 2D muestra "3D" (para cambiar a 3D)
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text(
-                                            text = if (viewMode == MapViewMode.MODE_3D_PERSPECTIVE) "2D" else "3D",
-                                            fontWeight = FontWeight.Black,
-                                            fontSize = 14.sp
-                                        )
-                                        Text(
-                                            text = if (viewMode == MapViewMode.MODE_3D_PERSPECTIVE) "Plano" else "Persp",
-                                            fontSize = 9.sp,
-                                            color = Color(0xFF94A3B8)
-                                        )
+                                    Column(
+                                        modifier = Modifier.padding(3.dp),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        val is3D = viewMode == MapViewMode.MODE_3D_PERSPECTIVE
+                                        val is2D = viewMode == MapViewMode.MODE_2D_TOP_DOWN
+
+                                        // Pastilla 3D
+                                        Box(
+                                            modifier = Modifier
+                                                .size(width = 46.dp, height = 34.dp)
+                                                .clip(RoundedCornerShape(20.dp))
+                                                .background(if (is3D) Color(0xFF0284C7) else Color.Transparent)
+                                                .clickable {
+                                                    viewMode = MapViewMode.MODE_3D_PERSPECTIVE
+                                                    panOffset = androidx.compose.ui.geometry.Offset.Zero
+                                                    isFollowingTruck = true
+                                                },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                "3D",
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 12.sp,
+                                                color = if (is3D) Color.White else Color(0xFF94A3B8)
+                                            )
+                                        }
+
+                                        // Pastilla 2D
+                                        Box(
+                                            modifier = Modifier
+                                                .size(width = 46.dp, height = 34.dp)
+                                                .clip(RoundedCornerShape(20.dp))
+                                                .background(if (is2D) Color(0xFF0284C7) else Color.Transparent)
+                                                .clickable {
+                                                    viewMode = MapViewMode.MODE_2D_TOP_DOWN
+                                                    panOffset = androidx.compose.ui.geometry.Offset.Zero
+                                                    isFollowingTruck = true
+                                                },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                "2D",
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 12.sp,
+                                                color = if (is2D) Color.White else Color(0xFF94A3B8)
+                                            )
+                                        }
                                     }
                                 }
 

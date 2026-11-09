@@ -221,19 +221,22 @@ fun GpsMapCanvas(
                     qx * qx + qz * qz
                 }
                 if (distFromLast3D > 225f || cache3D.edges.isEmpty()) {
-                    cache3D.edges = graph.getEdgesNear(truckX, truckZ, 900f)
+                    cache3D.edges = graph.getEdgesNear(truckX, truckZ, 1400f)
                     cache3D.lastX = truckX
                     cache3D.lastZ = truckZ
                 }
 
                 drawMap3D(
+                    graph = graph,
                     nearbyEdges = cache3D.edges,
                     truckX = truckX,
                     truckY = truckY,
                     truckZ = truckZ,
                     headingDeg = headingDeg,
                     activeRoute = activeRoute,
-                    zoomScale = zoomScale
+                    zoomScale = zoomScale,
+                    poiIconPaint = poiIconPaint,
+                    poiLabelPaint = poiLabelPaint
                 )
             }
         }
@@ -364,46 +367,53 @@ private fun DrawScope.drawMap2D(
                 )
             }
         }
+    }
 
-        // 3. Ciudades
-        for (city in graph.cities) {
-            val dx = city.x - viewCenterX
-            val dz = city.z - viewCenterZ
-            if (dx * dx + dz * dz > (viewRadius * 1.5f) * (viewRadius * 1.5f)) continue
+    // 3. Ciudades y POIs dibujados ERGUIDOS (Sin rotación invertida) para máxima legibilidad táctica
+    val rad = Math.toRadians(rotationAngle.toDouble())
+    val cosA = kotlin.math.cos(rad).toFloat()
+    val sinA = kotlin.math.sin(rad).toFloat()
 
-            val sx = cx + dx * baseScale
-            val sy = cy + dz * baseScale
-            if (sx.isNaN() || sy.isNaN()) continue
+    // 3.1 Ciudades
+    for (city in graph.cities) {
+        val wdx = (city.x - viewCenterX) * baseScale
+        val wdz = (city.z - viewCenterZ) * baseScale
+        val sx = cx + (wdx * cosA - wdz * sinA)
+        val sy = cy + (wdx * sinA + wdz * cosA)
+        if (sx !in -120f..(size.width + 120f) || sy !in -120f..(size.height + 120f)) continue
 
-            drawCircle(Color(0xFF38BDF8), radius = 6f * zoomScale.coerceIn(0.6f, 1.5f), center = Offset(sx, sy))
+        drawCircle(Color(0xFF38BDF8), radius = 6f * zoomScale.coerceIn(0.6f, 1.5f), center = Offset(sx, sy))
 
-            drawIntoCanvas { canvas ->
-                cityPaint.textSize = (13f * zoomScale.coerceIn(0.8f, 1.4f)).coerceAtLeast(10f) * density
-                canvas.nativeCanvas.drawText(city.name, sx + 8f, sy + 4f, cityPaint)
-            }
-        }
-
-        // 4. POIs
-        val poiDrawRadiusSq = (viewRadius * 1.15f) * (viewRadius * 1.15f)
-        for (poi in graph.pois) {
-            val dx = poi.x - viewCenterX
-            val dz = poi.z - viewCenterZ
-            if (dx * dx + dz * dz > poiDrawRadiusSq) continue
-
-            val sx = cx + dx * baseScale
-            val sy = cy + dz * baseScale
-            if (sx.isNaN() || sy.isNaN()) continue
-
-            drawPoiMarker2D(poi, sx, sy, baseScale, poiIconPaint, poiLabelPaint)
+        drawIntoCanvas { canvas ->
+            cityPaint.textSize = (13f * zoomScale.coerceIn(0.8f, 1.4f)).coerceAtLeast(10f) * density
+            canvas.nativeCanvas.drawText(city.name, sx + 9f, sy + 4f, cityPaint)
         }
     }
 
-    // 5. Cursor táctico del camión
+    // 3.2 POIs (Gasolineras, Zonas de Descanso, Talleres, Básculas)
+    val poiDrawRadiusSq = (viewRadius * 1.15f) * (viewRadius * 1.15f)
+    for (poi in graph.pois) {
+        val realDx = poi.x - viewCenterX
+        val realDz = poi.z - viewCenterZ
+        if (realDx * realDx + realDz * realDz > poiDrawRadiusSq) continue
+
+        val wdx = realDx * baseScale
+        val wdz = realDz * baseScale
+        val sx = cx + (wdx * cosA - wdz * sinA)
+        val sy = cy + (wdx * sinA + wdz * cosA)
+        if (sx !in -80f..(size.width + 80f) || sy !in -80f..(size.height + 80f)) continue
+
+        drawPoiMarker2D(poi, sx, sy, zoomScale, poiIconPaint, poiLabelPaint)
+    }
+
+    // 4. Cursor táctico del camión
     if (isFollowingTruck) {
         drawTruckCursor(cx, cy, 0f)
     } else {
-        val truckSx = cx + (truckX - viewCenterX) * baseScale
-        val truckSy = cy + (truckZ - viewCenterZ) * baseScale
+        val truckWdx = (truckX - viewCenterX) * baseScale
+        val truckWdz = (truckZ - viewCenterZ) * baseScale
+        val truckSx = cx + (truckWdx * cosA - truckWdz * sinA)
+        val truckSy = cy + (truckWdx * sinA + truckWdz * cosA)
         if (!truckSx.isNaN() && !truckSy.isNaN()) {
             drawTruckCursor(truckSx, truckSy, headingDeg)
         }
@@ -503,34 +513,51 @@ private fun DrawScope.drawPoiMarker2D(
     poi: MapPoi,
     sx: Float,
     sy: Float,
-    scale: Float,
+    zoomScale: Float,
     iconPaint: android.graphics.Paint,
     labelPaint: android.graphics.Paint
 ) {
-    val (bgColor, iconText) = when (poi.poiType.toInt()) {
-        1 -> Pair(Color(0xFF10B981), "⛽")
-        2 -> Pair(Color(0xFF6366F1), "🛏️")
-        3 -> Pair(Color(0xFFF59E0B), "🔧")
-        4 -> Pair(Color(0xFF8B5CF6), "🏬")
-        5 -> Pair(Color(0xFF0EA5E9), "🏢")
-        6 -> Pair(Color(0xFF64748B), "⚖️")
-        else -> Pair(Color(0xFF475569), "📍")
+    val (bgColor, iconText, defaultLabel) = when (poi.poiType.toInt()) {
+        1 -> Triple(Color(0xFF10B981), "⛽", "Gasolinera")
+        2 -> Triple(Color(0xFF6366F1), "🛏️", "Descanso")
+        3 -> Triple(Color(0xFFF59E0B), "🔧", "Taller")
+        4 -> Triple(Color(0xFF8B5CF6), "🏬", "Concesionario")
+        5 -> Triple(Color(0xFF0EA5E9), "🏢", "Empresa")
+        6 -> Triple(Color(0xFF64748B), "⚖️", "Báscula")
+        else -> Triple(Color(0xFF475569), "📍", "Punto")
     }
 
-    val radius = (10f * scale.coerceIn(0.7f, 1.3f)).coerceAtLeast(6f)
+    val radius = 13f * density // 36-40 píxeles táctiles de alto contraste
 
-    drawCircle(Color(0x55000000), radius = radius + 3f, center = Offset(sx, sy))
+    // Sombra del marcador
+    drawCircle(Color(0x88000000), radius = radius + 3f, center = Offset(sx, sy + 2f))
+    // Círculo coloreado según categoría
     drawCircle(bgColor, radius = radius, center = Offset(sx, sy))
-    drawCircle(Color.White, radius = radius, center = Offset(sx, sy), style = Stroke(width = 1.8f))
+    // Borde blanco nítido
+    drawCircle(Color.White, radius = radius, center = Offset(sx, sy), style = Stroke(width = 2.2f))
+
+    val labelText = if (poi.name.isNotEmpty()) poi.name else defaultLabel
 
     drawIntoCanvas { canvas ->
-        iconPaint.textSize = (radius * 1.25f).coerceAtLeast(8f)
-        val yOffset = radius * 0.45f
-        canvas.nativeCanvas.drawText(iconText, sx, sy + yOffset, iconPaint)
+        iconPaint.textSize = radius * 1.18f
+        canvas.nativeCanvas.drawText(iconText, sx, sy + radius * 0.40f, iconPaint)
 
-        if (scale > 0.7f && poi.name.isNotEmpty()) {
-            labelPaint.textSize = (9f * density).coerceAtLeast(8f)
-            canvas.nativeCanvas.drawText(poi.name, sx, sy + radius + 11f * density, labelPaint)
+        // Etiqueta con pastilla oscura debajo del icono (siempre erguida y legible)
+        if (zoomScale >= 0.45f) {
+            labelPaint.textSize = 9.5f * density
+            val textWidth = labelPaint.measureText(labelText)
+            val pillPad = 4f * density
+            val pTop = sy + radius + 3f
+            val pBottom = pTop + 14f * density
+            val pLeft = sx - textWidth / 2f - pillPad
+            val pRight = sx + textWidth / 2f + pillPad
+
+            val bgPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.argb(220, 15, 23, 42)
+                isAntiAlias = true
+            }
+            canvas.nativeCanvas.drawRoundRect(pLeft, pTop, pRight, pBottom, 6f, 6f, bgPaint)
+            canvas.nativeCanvas.drawText(labelText, sx, pBottom - 3.5f * density, labelPaint)
         }
     }
 }
@@ -539,13 +566,16 @@ private fun DrawScope.drawPoiMarker2D(
 // RENDERIZADOR 3D PERSPECTIVA REAL (GEOMETRÍA Y ORIENTACIÓN MATEMÁTICAMENTE CORREGIDAS)
 // =====================================================================
 private fun DrawScope.drawMap3D(
+    graph: MapGraph,
     nearbyEdges: List<MapEdge>,
     truckX: Float,
     truckY: Float,
     truckZ: Float,
     headingDeg: Float,
     activeRoute: RouteResult?,
-    zoomScale: Float
+    zoomScale: Float,
+    poiIconPaint: android.graphics.Paint,
+    poiLabelPaint: android.graphics.Paint
 ) {
     val w = size.width
     val h = size.height
@@ -590,7 +620,7 @@ private fun DrawScope.drawMap3D(
     val cosP = cos(pitchRad)
 
     val focalLength = h * 0.65f * zoomScale.coerceIn(0.5f, 2.5f)
-    val viewDistMax = 600f
+    val viewDistMax = 1200f
     val zNear = 1.0f
 
     // Cámara situada detrás del camión según rumbo
@@ -685,24 +715,7 @@ private fun DrawScope.drawMap3D(
     // 3. Rejilla virtual de perspectiva en el suelo
     drawGroundGrid3D(truckX, truckZ, truckY, headingDeg, w, h, horizonY, ::project3D)
 
-    // 4. Cono de faros delanteros
-    val truckProj = project3D(truckX, truckZ, truckY) ?: Offset(w * 0.5f, h * 0.72f)
-    val headlightPath = Path().apply {
-        moveTo(truckProj.x, truckProj.y)
-        lineTo(w * 0.22f, horizonY + 25f)
-        lineTo(w * 0.78f, horizonY + 25f)
-        close()
-    }
-    drawPath(
-        path = headlightPath,
-        brush = Brush.verticalGradient(
-            colors = listOf(Color(0x00FFFFFF), Color(0x12FFF8E1), Color(0x28FFE082)),
-            startY = horizonY + 25f,
-            endY = truckProj.y
-        )
-    )
-
-    // 5. Dibujar Carreteras en 3D
+    // 4. Dibujar Carreteras en 3D
     for (edge in nearbyEdges) {
         val isHwy = edge.roadType.toInt() == 0
         val isRamp = edge.roadType.toInt() == 3
@@ -723,23 +736,93 @@ private fun DrawScope.drawMap3D(
         }
     }
 
-    // 6. Dibujar Ruta Activa GPS en 3D
+    // 5. Dibujar Ruta Activa GPS en 3D (Cinta Cyan con resplandor)
     if (activeRoute != null) {
         for (edge in activeRoute.edgePath) {
             if (edge.polyline.isNotEmpty()) {
                 val midP = edge.polyline[edge.polyline.size / 2]
                 val dx = midP.x - truckX
                 val dz = midP.z - truckZ
-                if (dx * dx + dz * dz > 360000f) continue
+                if (dx * dx + dz * dz > 1440000f) continue // 1200m
             }
             for (i in 0 until edge.polyline.size - 1) {
-                drawSegmentClipped(edge.polyline[i], edge.polyline[i + 1], Color(0x6600E5FF), Color(0xFF00E5FF), 13f)
+                drawSegmentClipped(edge.polyline[i], edge.polyline[i + 1], Color(0x6600E5FF), Color(0xFF00E5FF), 14f)
             }
         }
     }
 
+    // 6. POIs en Perspectiva 3D (Gasolineras, Descanso, Talleres flotando sobre la carretera)
+    for (poi in graph.pois) {
+        val dx = poi.x - truckX
+        val dz = poi.z - truckZ
+        if (dx * dx + dz * dz > 1000000f) continue // 1000m
+
+        val (xCam, yCam, zCam) = toCam(poi.x, poi.z, truckY)
+        if (zCam < 12f || zCam > 900f) continue
+
+        val proj = projectCam(xCam, yCam + 4.5f, zCam)
+        if (proj.y < horizonY || proj.y > h + 120f || proj.x < -100f || proj.x > w + 100f) continue
+
+        drawPoiMarker3D(poi, proj.x, proj.y, zCam, poiIconPaint, poiLabelPaint)
+    }
+
     // 7. Cursor 3D del camión
+    val truckProj = project3D(truckX, truckZ, truckY) ?: Offset(w * 0.5f, h * 0.72f)
     drawTruckCursor3D(truckProj.x, truckProj.y)
+}
+
+private fun DrawScope.drawPoiMarker3D(
+    poi: MapPoi,
+    sx: Float,
+    sy: Float,
+    zCam: Float,
+    iconPaint: android.graphics.Paint,
+    labelPaint: android.graphics.Paint
+) {
+    val (bgColor, iconText, defaultLabel) = when (poi.poiType.toInt()) {
+        1 -> Triple(Color(0xFF10B981), "⛽", "Gasolinera")
+        2 -> Triple(Color(0xFF6366F1), "🛏️", "Descanso")
+        3 -> Triple(Color(0xFFF59E0B), "🔧", "Taller")
+        4 -> Triple(Color(0xFF8B5CF6), "🏬", "Concesionario")
+        5 -> Triple(Color(0xFF0EA5E9), "🏢", "Empresa")
+        6 -> Triple(Color(0xFF64748B), "⚖️", "Báscula")
+        else -> Triple(Color(0xFF475569), "📍", "Punto")
+    }
+
+    val distFactor = (350f / max(zCam, 45f)).coerceIn(0.50f, 1.35f)
+    val radius = 12f * density * distFactor
+
+    // Línea de anclaje vertical hacia el suelo
+    drawLine(Color(0x99FFFFFF), Offset(sx, sy), Offset(sx, sy + radius * 1.4f), strokeWidth = 1.8f)
+
+    // Círculo con resplandor
+    drawCircle(Color(0x77000000), radius = radius + 3f, center = Offset(sx, sy + 2f))
+    drawCircle(bgColor, radius = radius, center = Offset(sx, sy))
+    drawCircle(Color.White, radius = radius, center = Offset(sx, sy), style = Stroke(width = 1.8f))
+
+    val labelText = if (poi.name.isNotEmpty()) poi.name else defaultLabel
+
+    drawIntoCanvas { canvas ->
+        iconPaint.textSize = radius * 1.15f
+        canvas.nativeCanvas.drawText(iconText, sx, sy + radius * 0.40f, iconPaint)
+
+        if (zCam < 450f) {
+            labelPaint.textSize = (9f * density * distFactor).coerceAtLeast(8f * density)
+            val textWidth = labelPaint.measureText(labelText)
+            val pillPad = 3f * density
+            val pTop = sy + radius + 2f
+            val pBottom = pTop + 13f * density
+            val pLeft = sx - textWidth / 2f - pillPad
+            val pRight = sx + textWidth / 2f + pillPad
+
+            val bgPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.argb(210, 15, 23, 42)
+                isAntiAlias = true
+            }
+            canvas.nativeCanvas.drawRoundRect(pLeft, pTop, pRight, pBottom, 5f, 5f, bgPaint)
+            canvas.nativeCanvas.drawText(labelText, sx, pBottom - 3f * density, labelPaint)
+        }
+    }
 }
 
 private fun DrawScope.drawGroundGrid3D(
