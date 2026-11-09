@@ -257,6 +257,9 @@ foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
 
 Console.WriteLine($"  -> http://127.0.0.1:{ServerPort} (Localhost)");
 
+Console.WriteLine("\n[CONEXIÓN CABLE USB (BAJA LATENCIA <1 MS)]");
+ConfigureUsbAdbReverse(ServerPort);
+
 Console.WriteLine("\n[PLUGIN SDK] Verificando scs-telemetry.dll...");
 string atsPluginPath = @"C:\Program Files (x86)\Steam\steamapps\common\American Truck Simulator\bin\win_x64\plugins\scs-telemetry.dll";
 if (File.Exists(atsPluginPath))
@@ -297,3 +300,58 @@ Console.WriteLine("  Protocolo: ws:// autenticado con PIN (sin cifrado TLS, excl
 Console.WriteLine("\n[ESTADO] Servidor en ejecución. Esperando conexiones de la app móvil...\n");
 
 app.Run();
+
+static void ConfigureUsbAdbReverse(int port)
+{
+    try
+    {
+        string? adbPath = null;
+        string defaultSdkAdb = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Android\Sdk\platform-tools\adb.exe");
+        if (File.Exists(defaultSdkAdb))
+        {
+            adbPath = defaultSdkAdb;
+        }
+        else
+        {
+            var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
+            foreach (var dir in pathEnv.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var candidate = Path.Combine(dir, "adb.exe");
+                if (File.Exists(candidate))
+                {
+                    adbPath = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (adbPath != null)
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo(adbPath, $"reverse tcp:{port} tcp:{port}")
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var proc = System.Diagnostics.Process.Start(psi);
+            proc?.WaitForExit(2000);
+            if (proc?.ExitCode == 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"  [OK] Reenvío USB activo (adb reverse tcp:{port} tcp:{port})");
+                Console.WriteLine($"       En la app móvil selecciona 'Cable USB' e ingresa el PIN.");
+                Console.ResetColor();
+                return;
+            }
+        }
+    }
+    catch { }
+
+    Console.ForegroundColor = ConsoleColor.DarkCyan;
+    Console.WriteLine($"  -> Para conectar por Cable USB con latencia <1ms:");
+    Console.WriteLine($"     1. Activa 'Depuración USB' en el celular o tableta.");
+    Console.WriteLine($"     2. Ejecuta en consola: adb reverse tcp:{port} tcp:{port}");
+    Console.WriteLine($"     3. O activa 'Compartir Internet por USB' (Tethering) y usa la IP del adaptador.");
+    Console.ResetColor();
+}
