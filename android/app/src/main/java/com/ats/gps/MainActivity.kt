@@ -95,49 +95,67 @@ fun AtsNavMainApp(
 
     val coroutineScope = rememberCoroutineScope()
 
-    // Recalcular ruta automáticamente: solo cuando cambia el destino o el grafo vial (evita OOM)
+    // Control de cálculo de ruta: se activa cuando hay destino y origen válido
+    val hasValidPos = telemetry.posX != 0.0 || telemetry.posZ != 0.0
+    var lastRoutedDestCity by remember { mutableStateOf("") }
+    var lastRoutedDestComp by remember { mutableStateOf("") }
+    var lastOriginNodeIndex by remember { mutableIntStateOf(-1) }
+    var lastRouteCalcTime by remember { mutableLongStateOf(0L) }
+
     LaunchedEffect(
         telemetry.destinationCity,
         telemetry.destinationCompany,
         telemetry.targetNodeIndex,
+        hasValidPos,
         mapGraph
     ) {
-        val graph = mapGraph
-        if (graph != null && graph.nodes.isNotEmpty() && (telemetry.posX != 0.0 || telemetry.posZ != 0.0)) {
-            val startNode = graph.findNearestNode(telemetry.posX.toFloat(), telemetry.posZ.toFloat())
+        val graph = mapGraph ?: return@LaunchedEffect
+        if (graph.nodes.isEmpty() || !hasValidPos) return@LaunchedEffect
 
-            // Autodetección: 1) Destino manual explícito, 2) Destino del trabajo en curso de ATS
-            val targetNode: Int? = if (telemetry.targetNodeIndex != null) {
-                telemetry.targetNodeIndex!!.toInt()
-            } else if (telemetry.destinationCity.isNotEmpty()) {
-                val destCity = telemetry.destinationCity
-                val destCompany = telemetry.destinationCompany
+        val startNode = graph.findNearestNode(telemetry.posX.toFloat(), telemetry.posZ.toFloat())
 
-                val compMatch = graph.companies.firstOrNull { c ->
-                    c.cityName.equals(destCity, ignoreCase = true) &&
-                    (destCompany.isEmpty() || c.name.contains(destCompany, ignoreCase = true))
-                }
+        // Autodetección: 1) Destino manual explícito, 2) Destino del trabajo en curso de ATS
+        val targetNode: Int? = if (telemetry.targetNodeIndex != null) {
+            telemetry.targetNodeIndex!!.toInt()
+        } else if (telemetry.destinationCity.isNotEmpty()) {
+            val destCity = telemetry.destinationCity
+            val destCompany = telemetry.destinationCompany
 
-                compMatch?.nearestNodeIndex ?: graph.cities.firstOrNull { c ->
-                    c.name.equals(destCity, ignoreCase = true)
-                }?.nearestNodeIndex
-            } else {
-                null
+            val compMatch = graph.companies.firstOrNull { c ->
+                c.cityName.equals(destCity, ignoreCase = true) &&
+                (destCompany.isEmpty() || c.name.contains(destCompany, ignoreCase = true))
             }
 
-            if (targetNode != null && targetNode != startNode) {
+            compMatch?.nearestNodeIndex ?: graph.cities.firstOrNull { c ->
+                c.name.equals(destCity, ignoreCase = true)
+            }?.nearestNodeIndex
+        } else {
+            null
+        }
+
+        if (targetNode != null && targetNode != startNode) {
+            val isNewDestination = telemetry.destinationCity != lastRoutedDestCity || telemetry.destinationCompany != lastRoutedDestComp
+            val shouldCompute = activeRoute == null || isNewDestination || (startNode != lastOriginNodeIndex && System.currentTimeMillis() - lastRouteCalcTime > 8000L)
+
+            if (shouldCompute) {
                 withContext(Dispatchers.Default) {
                     val route = AStarRouter.findRoute(graph, startNode, targetNode)
                     activeRoute = route
+                    lastRoutedDestCity = telemetry.destinationCity
+                    lastRoutedDestComp = telemetry.destinationCompany
+                    lastOriginNodeIndex = startNode
+                    lastRouteCalcTime = System.currentTimeMillis()
                 }
 
                 if (activeRoute != null && telemetry.navDistanceMeters > 0f) {
                     val destText = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "tu destino"
                     voiceAssistant.updateNavigation(telemetry.navDistanceMeters, "hacia $destText")
                 }
-            } else if (targetNode == null) {
-                activeRoute = null
             }
+        } else if (targetNode == null) {
+            activeRoute = null
+            lastRoutedDestCity = ""
+            lastRoutedDestComp = ""
         }
     }
 

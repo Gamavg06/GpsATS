@@ -60,11 +60,11 @@ fun GpsMapCanvas(
     val currentOnZoom by rememberUpdatedState(onZoomChange)
     val currentOnPan by rememberUpdatedState(onPanChange)
 
-    // Coordenadas objetivo con protección frente a NaN
-    val targetX = if (telemetry.posX.isNaN()) 0f else telemetry.posX.toFloat()
-    val targetY = if (telemetry.posY.isNaN()) 0f else telemetry.posY.toFloat()
-    val targetZ = if (telemetry.posZ.isNaN()) 0f else telemetry.posZ.toFloat()
-    val targetHeading = if (telemetry.headingDegrees.isNaN()) 0f else telemetry.headingDegrees.toFloat()
+    // Coordenadas objetivo en tiempo real (rememberUpdatedState para evitar capturas estáticas)
+    val targetX by rememberUpdatedState(if (telemetry.posX.isNaN()) 0f else telemetry.posX.toFloat())
+    val targetY by rememberUpdatedState(if (telemetry.posY.isNaN()) 0f else telemetry.posY.toFloat())
+    val targetZ by rememberUpdatedState(if (telemetry.posZ.isNaN()) 0f else telemetry.posZ.toFloat())
+    val targetHeading by rememberUpdatedState(if (telemetry.headingDegrees.isNaN()) 0f else telemetry.headingDegrees.toFloat())
 
     // Estados suavizados para renderizado continuo e interpolado (60-120 Hz)
     var smoothTruckX by remember { mutableFloatStateOf(targetX) }
@@ -72,7 +72,7 @@ fun GpsMapCanvas(
     var smoothTruckZ by remember { mutableFloatStateOf(targetZ) }
     var smoothHeading by remember { mutableFloatStateOf(targetHeading) }
 
-    LaunchedEffect(targetX, targetZ) {
+    LaunchedEffect(telemetry.posX, telemetry.posZ) {
         if (abs(smoothTruckX) < 0.001f && abs(smoothTruckZ) < 0.001f && (abs(targetX) > 0.001f || abs(targetZ) > 0.001f)) {
             smoothTruckX = targetX
             smoothTruckY = targetY
@@ -91,22 +91,27 @@ fun GpsMapCanvas(
 
                 val lerpFactor = (15f * dt).coerceIn(0.05f, 0.45f)
 
-                val dx = targetX - smoothTruckX
-                val dy = targetY - smoothTruckY
-                val dz = targetZ - smoothTruckZ
+                val tx = targetX
+                val ty = targetY
+                val tz = targetZ
+                val th = targetHeading
+
+                val dx = tx - smoothTruckX
+                val dy = ty - smoothTruckY
+                val dz = tz - smoothTruckZ
                 val distSq = dx * dx + dz * dz
 
                 if (distSq > 10000f) {
-                    smoothTruckX = targetX
-                    smoothTruckY = targetY
-                    smoothTruckZ = targetZ
-                    smoothHeading = targetHeading
+                    smoothTruckX = tx
+                    smoothTruckY = ty
+                    smoothTruckZ = tz
+                    smoothHeading = th
                 } else {
                     smoothTruckX += dx * lerpFactor
                     smoothTruckY += dy * lerpFactor
                     smoothTruckZ += dz * lerpFactor
 
-                    val headingDiff = ((targetHeading - smoothHeading + 540f) % 360f) - 180f
+                    val headingDiff = ((th - smoothHeading + 540f) % 360f) - 180f
                     smoothHeading += headingDiff * lerpFactor
                 }
             }
@@ -168,7 +173,7 @@ fun GpsMapCanvas(
             MapViewMode.MODE_2D_TOP_DOWN -> {
                 val cx = size.width / 2f
                 val cy = size.height * 0.62f
-                val baseScale = (1.8f * zoomScale).coerceIn(0.08f, 10f)
+                val baseScale = (0.75f * zoomScale).coerceIn(0.05f, 6.0f)
 
                 val viewCenterX = truckX - (if (!isFollowingTruck) panOffset.x / baseScale else 0f)
                 val viewCenterZ = truckZ - (if (!isFollowingTruck) panOffset.y / baseScale else 0f)
@@ -215,8 +220,8 @@ fun GpsMapCanvas(
                     val qz = truckZ - cache3D.lastZ
                     qx * qx + qz * qz
                 }
-                if (distFromLast3D > 400f || cache3D.edges.isEmpty()) {
-                    cache3D.edges = graph.getEdgesNear(truckX, truckZ, 650f)
+                if (distFromLast3D > 225f || cache3D.edges.isEmpty()) {
+                    cache3D.edges = graph.getEdgesNear(truckX, truckZ, 900f)
                     cache3D.lastX = truckX
                     cache3D.lastZ = truckZ
                 }
@@ -595,7 +600,9 @@ private fun DrawScope.drawMap3D(
     fun toCam(wx: Float, wz: Float, wy: Float): Triple<Float, Float, Float> {
         val dx = wx - camX
         val dz = wz - camZ
-        val dy = wy - camY
+        // Normalizar elevación para evitar que puntos con Y errónea se disparen fuera de la vista
+        val clampedY = if (abs(wy - truckY) > 45f) truckY else wy
+        val dy = clampedY - camY
         
         // 1. Rumbo (Heading)
         val xH = dx * cosH + dz * sinH
@@ -637,17 +644,33 @@ private fun DrawScope.drawMap3D(
         var cx1 = x1; var cy1 = y1; var cz1 = z1
         var cx2 = x2; var cy2 = y2; var cz2 = z2
 
-        if (cz1 < zNear) {
+        // Recorte plano cercano (Near Plane Clipping)
+        if (cz1 < zNear && cz2 > zNear) {
             val t = (zNear - cz1) / (cz2 - cz1)
             cx1 += t * (cx2 - cx1)
             cy1 += t * (cy2 - cy1)
             cz1 = zNear
-        } else if (cz2 < zNear) {
+        } else if (cz2 < zNear && cz1 > zNear) {
             val t = (zNear - cz2) / (cz1 - cz2)
             cx2 += t * (cx1 - cx2)
             cy2 += t * (cy1 - cy2)
             cz2 = zNear
         }
+
+        // Recorte plano lejano (Far Plane Clipping)
+        if (cz1 > viewDistMax && cz2 < viewDistMax) {
+            val t = (viewDistMax - cz2) / (cz1 - cz2)
+            cx1 = cx2 + t * (cx1 - cx2)
+            cy1 = cy2 + t * (cy1 - cy2)
+            cz1 = viewDistMax
+        } else if (cz2 > viewDistMax && cz1 < viewDistMax) {
+            val t = (viewDistMax - cz1) / (cz2 - cz1)
+            cx2 = cx1 + t * (cx2 - cx1)
+            cy2 = cy1 + t * (cy2 - cy1)
+            cz2 = viewDistMax
+        }
+
+        if (cz1 < zNear || cz2 < zNear) return
 
         val proj1 = projectCam(cx1, cy1, cz1)
         val proj2 = projectCam(cx2, cy2, cz2)
