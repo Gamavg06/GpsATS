@@ -265,121 +265,114 @@ private fun DrawScope.drawMap2D(
     poiIconPaint: android.graphics.Paint,
     poiLabelPaint: android.graphics.Paint
 ) {
-    val rotationAngle = if (isFollowingTruck) -headingDeg else 0f
+    // En modo 2D Plano, mantenemos orientación Norte arriba (North-Up) estable y nítida.
+    // La flecha del camión es la que rota dinámicamente en tiempo real (0..360°) guiando sobre la carretera.
+    val rotationAngle = 0f
 
-    rotate(rotationAngle, pivot = Offset(cx, cy)) {
-        // Encontrar la carretera actual más cercana al camión
-        var closestEdgeId = -1
-        var minEdgeDistSq = 1600f // Máximo 40 metros
-        if (isFollowingTruck) {
-            for (edge in visibleEdges) {
-                if (edge.polyline.isEmpty()) continue
-                val p0 = edge.polyline[0]
-                val pEnd = edge.polyline[edge.polyline.size - 1]
-                val d0 = (p0.x - truckX) * (p0.x - truckX) + (p0.z - truckZ) * (p0.z - truckZ)
-                val dEnd = (pEnd.x - truckX) * (pEnd.x - truckX) + (pEnd.z - truckZ) * (pEnd.z - truckZ)
-                if (d0 < 3600f || dEnd < 3600f) {
-                    for (p in edge.polyline) {
-                        val dSq = (p.x - truckX) * (p.x - truckX) + (p.z - truckZ) * (p.z - truckZ)
-                        if (dSq < minEdgeDistSq) {
-                            minEdgeDistSq = dSq
-                            closestEdgeId = edge.edgeId
-                        }
-                    }
-                }
-            }
-        }
-
-        // Clasificar aristas por tipo de vía
-        val hwyEdges = ArrayList<MapEdge>()
-        val mainEdges = ArrayList<MapEdge>()
-        val localEdges = ArrayList<MapEdge>()
-        val rampEdges = ArrayList<MapEdge>()
-        var currentRoadEdge: MapEdge? = null
-
+    // Encontrar la carretera actual más cercana al camión
+    var closestEdgeId = -1
+    var minEdgeDistSq = 1600f // Máximo 40 metros
+    if (isFollowingTruck) {
         for (edge in visibleEdges) {
-            if (edge.polyline.size < 2) continue
-            if (edge.edgeId == closestEdgeId && minEdgeDistSq < 1600f) {
-                currentRoadEdge = edge
-            } else {
-                when (edge.roadType.toInt()) {
-                    0 -> hwyEdges.add(edge)
-                    1 -> mainEdges.add(edge)
-                    2 -> localEdges.add(edge)
-                    else -> rampEdges.add(edge)
-                }
-            }
-        }
-
-        // Dibujar capas en orden: Rampas -> Locales -> Principales -> Autopistas
-        drawContinuousRoadCategory(rampEdges, viewCenterX, viewCenterZ, cx, cy, baseScale, 3, zoomScale)
-        drawContinuousRoadCategory(localEdges, viewCenterX, viewCenterZ, cx, cy, baseScale, 2, zoomScale)
-        drawContinuousRoadCategory(mainEdges, viewCenterX, viewCenterZ, cx, cy, baseScale, 1, zoomScale)
-        drawContinuousRoadCategory(hwyEdges, viewCenterX, viewCenterZ, cx, cy, baseScale, 0, zoomScale)
-
-        // Carretera actual resaltada en Cyan de navegación
-        if (currentRoadEdge != null) {
-            val highlightPath = buildConnectedPath(listOf(currentRoadEdge), viewCenterX, viewCenterZ, cx, cy, baseScale)
-            val strokeW = getRoadStrokeWidth(currentRoadEdge.roadType.toInt(), zoomScale)
-            drawPath(highlightPath, Color(0xFF0F172A), style = Stroke(strokeW + 5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-            drawPath(highlightPath, Color(0xFF38BDF8), style = Stroke(strokeW + 1f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-        }
-
-        // 2. Ruta activa GPS (Cinta continua suave con resplandor)
-        if (activeRoute != null && activeRoute.edgePath.isNotEmpty()) {
-            val routePath = Path()
-            var hasPoints = false
-            var lastPx = Float.NaN
-            var lastPz = Float.NaN
-
-            for (edge in activeRoute.edgePath) {
-                for (pt in edge.polyline) {
-                    if (!lastPx.isNaN() && abs(pt.x - lastPx) < 0.05f && abs(pt.z - lastPz) < 0.05f) {
-                        continue
-                    }
-                    lastPx = pt.x
-                    lastPz = pt.z
-
-                    val sx = cx + (pt.x - viewCenterX) * baseScale
-                    val sy = cy + (pt.z - viewCenterZ) * baseScale
-                    if (sx.isNaN() || sy.isNaN()) continue
-
-                    if (!hasPoints) {
-                        routePath.moveTo(sx, sy)
-                        hasPoints = true
-                    } else {
-                        routePath.lineTo(sx, sy)
+            if (edge.polyline.isEmpty()) continue
+            val p0 = edge.polyline[0]
+            val pEnd = edge.polyline[edge.polyline.size - 1]
+            val d0 = (p0.x - truckX) * (p0.x - truckX) + (p0.z - truckZ) * (p0.z - truckZ)
+            val dEnd = (pEnd.x - truckX) * (pEnd.x - truckX) + (pEnd.z - truckZ) * (pEnd.z - truckZ)
+            if (d0 < 3600f || dEnd < 3600f) {
+                for (p in edge.polyline) {
+                    val dSq = (p.x - truckX) * (p.x - truckX) + (p.z - truckZ) * (p.z - truckZ)
+                    if (dSq < minEdgeDistSq) {
+                        minEdgeDistSq = dSq
+                        closestEdgeId = edge.edgeId
                     }
                 }
-            }
-
-            if (hasPoints) {
-                val rw = 16f * zoomScale.coerceIn(0.4f, 2.2f)
-                drawPath(
-                    path = routePath,
-                    color = Color(0x6600E5FF),
-                    style = Stroke(width = rw * 1.55f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                )
-                drawPath(
-                    path = routePath,
-                    color = Color(0xFF00E5FF),
-                    style = Stroke(width = rw, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                )
             }
         }
     }
 
-    // 3. Ciudades y POIs dibujados ERGUIDOS (Sin rotación invertida) para máxima legibilidad táctica
-    val rad = Math.toRadians(rotationAngle.toDouble())
-    val cosA = kotlin.math.cos(rad).toFloat()
-    val sinA = kotlin.math.sin(rad).toFloat()
+    // Clasificar aristas por tipo de vía
+    val hwyEdges = ArrayList<MapEdge>()
+    val mainEdges = ArrayList<MapEdge>()
+    val localEdges = ArrayList<MapEdge>()
+    val rampEdges = ArrayList<MapEdge>()
+    var currentRoadEdge: MapEdge? = null
 
-    // 3.1 Ciudades
+    for (edge in visibleEdges) {
+        if (edge.polyline.size < 2) continue
+        if (edge.edgeId == closestEdgeId && minEdgeDistSq < 1600f) {
+            currentRoadEdge = edge
+        } else {
+            when (edge.roadType.toInt()) {
+                0 -> hwyEdges.add(edge)
+                1 -> mainEdges.add(edge)
+                2 -> localEdges.add(edge)
+                else -> rampEdges.add(edge)
+            }
+        }
+    }
+
+    // Dibujar capas en orden: Rampas -> Locales -> Principales -> Autopistas
+    drawContinuousRoadCategory(rampEdges, viewCenterX, viewCenterZ, cx, cy, baseScale, 3, zoomScale)
+    drawContinuousRoadCategory(localEdges, viewCenterX, viewCenterZ, cx, cy, baseScale, 2, zoomScale)
+    drawContinuousRoadCategory(mainEdges, viewCenterX, viewCenterZ, cx, cy, baseScale, 1, zoomScale)
+    drawContinuousRoadCategory(hwyEdges, viewCenterX, viewCenterZ, cx, cy, baseScale, 0, zoomScale)
+
+    // Carretera actual resaltada en Cyan de navegación
+    if (currentRoadEdge != null) {
+        val highlightPath = buildConnectedPath(listOf(currentRoadEdge), viewCenterX, viewCenterZ, cx, cy, baseScale)
+        val strokeW = getRoadStrokeWidth(currentRoadEdge.roadType.toInt(), zoomScale)
+        drawPath(highlightPath, Color(0xFF0F172A), style = Stroke(strokeW + 5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawPath(highlightPath, Color(0xFF38BDF8), style = Stroke(strokeW + 1f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    }
+
+    // 2. Ruta activa GPS (Cinta continua suave con resplandor)
+    if (activeRoute != null && activeRoute.edgePath.isNotEmpty()) {
+        val routePath = Path()
+        var hasPoints = false
+        var lastPx = Float.NaN
+        var lastPz = Float.NaN
+
+        for (edge in activeRoute.edgePath) {
+            for (pt in edge.polyline) {
+                if (!lastPx.isNaN() && abs(pt.x - lastPx) < 0.05f && abs(pt.z - lastPz) < 0.05f) {
+                    continue
+                }
+                lastPx = pt.x
+                lastPz = pt.z
+
+                val sx = cx + (pt.x - viewCenterX) * baseScale
+                val sy = cy + (pt.z - viewCenterZ) * baseScale
+                if (sx.isNaN() || sy.isNaN()) continue
+
+                if (!hasPoints) {
+                    routePath.moveTo(sx, sy)
+                    hasPoints = true
+                } else {
+                    routePath.lineTo(sx, sy)
+                }
+            }
+        }
+
+        if (hasPoints) {
+            val rw = 16f * zoomScale.coerceIn(0.4f, 2.2f)
+            drawPath(
+                path = routePath,
+                color = Color(0x6600E5FF),
+                style = Stroke(width = rw * 1.55f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+            drawPath(
+                path = routePath,
+                color = Color(0xFF00E5FF),
+                style = Stroke(width = rw, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+        }
+    }
+
+    // 3. Ciudades y POIs dibujados ERGUIDOS (Sin rotación invertida) para máxima legibilidad táctica
     for (city in graph.cities) {
-        val wdx = (city.x - viewCenterX) * baseScale
-        val wdz = (city.z - viewCenterZ) * baseScale
-        val sx = cx + (wdx * cosA - wdz * sinA)
-        val sy = cy + (wdx * sinA + wdz * cosA)
+        val sx = cx + (city.x - viewCenterX) * baseScale
+        val sy = cy + (city.z - viewCenterZ) * baseScale
         if (sx !in -120f..(size.width + 120f) || sy !in -120f..(size.height + 120f)) continue
 
         drawCircle(Color(0xFF38BDF8), radius = 6f * zoomScale.coerceIn(0.6f, 1.5f), center = Offset(sx, sy))
@@ -397,23 +390,19 @@ private fun DrawScope.drawMap2D(
         val realDz = poi.z - viewCenterZ
         if (realDx * realDx + realDz * realDz > poiDrawRadiusSq) continue
 
-        val wdx = realDx * baseScale
-        val wdz = realDz * baseScale
-        val sx = cx + (wdx * cosA - wdz * sinA)
-        val sy = cy + (wdx * sinA + wdz * cosA)
+        val sx = cx + realDx * baseScale
+        val sy = cy + realDz * baseScale
         if (sx !in -80f..(size.width + 80f) || sy !in -80f..(size.height + 80f)) continue
 
         drawPoiMarker2D(poi, sx, sy, zoomScale, poiIconPaint, poiLabelPaint)
     }
 
-    // 4. Cursor táctico del camión
+    // 4. Cursor táctico del camión: rota en tiempo real siguiendo el rumbo del vehículo sobre la vía
     if (isFollowingTruck) {
-        drawTruckCursor(cx, cy, 0f)
+        drawTruckCursor(cx, cy, headingDeg)
     } else {
-        val truckWdx = (truckX - viewCenterX) * baseScale
-        val truckWdz = (truckZ - viewCenterZ) * baseScale
-        val truckSx = cx + (truckWdx * cosA - truckWdz * sinA)
-        val truckSy = cy + (truckWdx * sinA + truckWdz * cosA)
+        val truckSx = cx + (truckX - viewCenterX) * baseScale
+        val truckSy = cy + (truckZ - viewCenterZ) * baseScale
         if (!truckSx.isNaN() && !truckSy.isNaN()) {
             drawTruckCursor(truckSx, truckSy, headingDeg)
         }
@@ -579,7 +568,7 @@ private fun DrawScope.drawMap3D(
 ) {
     val w = size.width
     val h = size.height
-    val horizonY = h * 0.28f
+    val horizonY = h * 0.18f
 
     // 1. Cielo crepuscular
     drawRect(
@@ -605,22 +594,22 @@ private fun DrawScope.drawMap3D(
         size = Size(w, h - horizonY)
     )
 
-    // Cámara 3D en tercera persona con inclinación hacia la calzada (Pitch)
+    // Cámara 3D en tercera persona con elevación e inclinación táctica (despeja curvas sin amontonamiento)
     val camHeadingRad = Math.toRadians(headingDeg.toDouble()).toFloat()
     val sinH = sin(camHeadingRad)
     val cosH = cos(camHeadingRad)
 
-    val camFollowDist = 18f
-    val camHeight = 10.5f
+    val camFollowDist = 44f // Distancia detrás del camión para anticipar giros
+    val camHeight = 28f     // 28 metros de elevación automotriz
     val camY = truckY + camHeight
 
-    // Ángulo de inclinación hacia abajo (Pitch ~16°) para desplegar la carretera en perspectiva
-    val pitchRad = Math.toRadians(16.0).toFloat()
+    // Ángulo de inclinación de 34° para un plano de carretera natural y amplio
+    val pitchRad = Math.toRadians(34.0).toFloat()
     val sinP = sin(pitchRad)
     val cosP = cos(pitchRad)
 
-    val focalLength = h * 0.65f * zoomScale.coerceIn(0.5f, 2.5f)
-    val viewDistMax = 1200f
+    val focalLength = h * 0.80f * zoomScale.coerceIn(0.5f, 2.5f)
+    val viewDistMax = 1400f
     val zNear = 1.0f
 
     // Cámara situada detrás del camión según rumbo

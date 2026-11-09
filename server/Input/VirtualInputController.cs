@@ -14,6 +14,9 @@ namespace AtsGpsServer.Input
         private const uint KEYEVENTF_KEYUP = 0x0002;
         private const uint KEYEVENTF_SCANCODE = 0x0008;
 
+        private const uint WM_KEYDOWN = 0x0100;
+        private const uint WM_KEYUP = 0x0101;
+
         [StructLayout(LayoutKind.Sequential)]
         private struct KEYBDINPUT
         {
@@ -44,6 +47,18 @@ namespace AtsGpsServer.Input
 
         [DllImport("user32.dll")]
         private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("user32.dll")]
+        private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
         // Mapeo con Códigos Virtuales (VK) y Scancodes de Hardware DirectX (DIK)
         // para compatibilidad total con el motor SCS Software (amtrucks.exe)
@@ -99,29 +114,46 @@ namespace AtsGpsServer.Input
 
             try
             {
-                // Asegurar foco en amtrucks si está en ejecución
-                EnsureGameFocus();
+                var atsProc = Process.GetProcessesByName("amtrucks").FirstOrDefault();
+                IntPtr atsHwnd = atsProc?.MainWindowHandle ?? IntPtr.Zero;
+
+                // Asegurar foco activo en ATS
+                EnsureGameFocus(atsHwnd);
 
                 ushort scan = binding.ScanCode > 0 ? binding.ScanCode : (ushort)MapVirtualKey(binding.Vk, 0);
 
-                // DirectX / DirectInput requiere KEYEVENTF_SCANCODE con wScan válido
+                // 1. DirectInput / RawInput hardware scan code:
+                // Con KEYEVENTF_SCANCODE, wVk DEBE ser 0 estrictamente para evitar descarte por DirectInput
                 INPUT[] down = new INPUT[1];
                 down[0].type = INPUT_KEYBOARD;
-                down[0].ki.wVk = binding.Vk;
+                down[0].ki.wVk = 0;
                 down[0].ki.wScan = scan;
                 down[0].ki.dwFlags = KEYEVENTF_SCANCODE;
                 SendInput(1, down, Marshal.SizeOf(typeof(INPUT)));
 
-                // Duración de pulsación de 65 ms para garantizar captura por el bucle de físicas del juego
+                // 2. PostMessage directo a la ventana de ATS como redundancia
+                if (atsHwnd != IntPtr.Zero)
+                {
+                    IntPtr downLParam = (IntPtr)((scan << 16) | 1);
+                    PostMessage(atsHwnd, WM_KEYDOWN, (IntPtr)binding.Vk, downLParam);
+                }
+
+                // Mantener pulsado 85 ms (tiempo estándar de frame para captura en simulación de física a 60 fps)
                 Task.Run(async () =>
                 {
-                    await Task.Delay(65);
+                    await Task.Delay(85);
                     INPUT[] up = new INPUT[1];
                     up[0].type = INPUT_KEYBOARD;
-                    up[0].ki.wVk = binding.Vk;
+                    up[0].ki.wVk = 0;
                     up[0].ki.wScan = scan;
                     up[0].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
                     SendInput(1, up, Marshal.SizeOf(typeof(INPUT)));
+
+                    if (atsHwnd != IntPtr.Zero)
+                    {
+                        IntPtr upLParam = (IntPtr)(0xC0000001L | ((long)scan << 16));
+                        PostMessage(atsHwnd, WM_KEYUP, (IntPtr)binding.Vk, upLParam);
+                    }
                 });
 
                 Console.WriteLine($"[CONTROL REMOTO] Tecla enviada a ATS: {action} (VK: 0x{binding.Vk:X2}, Scan: 0x{scan:X2})");
@@ -134,15 +166,19 @@ namespace AtsGpsServer.Input
             }
         }
 
-        private static void EnsureGameFocus()
+        private static void EnsureGameFocus(IntPtr atsHwnd)
         {
             try
             {
+                if (atsHwnd == IntPtr.Zero) return;
                 var currentFg = GetForegroundWindow();
-                var atsProc = Process.GetProcessesByName("amtrucks").FirstOrDefault();
-                if (atsProc != null && atsProc.MainWindowHandle != IntPtr.Zero && atsProc.MainWindowHandle != currentFg)
+                if (atsHwnd != currentFg)
                 {
-                    SetForegroundWindow(atsProc.MainWindowHandle);
+                    uint fgThread = GetWindowThreadProcessId(currentFg, out _);
+                    uint currentThread = GetCurrentThreadId();
+                    AttachThreadInput(currentThread, fgThread, true);
+                    SetForegroundWindow(atsHwnd);
+                    AttachThreadInput(currentThread, fgThread, false);
                 }
             }
             catch { }

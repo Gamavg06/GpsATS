@@ -33,6 +33,7 @@ import com.ats.gps.ui.diagnostic.TelemetryDiagnosticScreen
 import com.ats.gps.ui.junction.JunctionView
 import com.ats.gps.ui.map.GpsMapCanvas
 import com.ats.gps.ui.map.MapViewMode
+import com.ats.gps.ui.navigation.TurnByTurnCard
 import com.ats.gps.ui.tts.NavigationVoiceAssistant
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -247,6 +248,19 @@ fun AtsNavMainApp(
                                 isFollowingTruck = isFollowingTruck,
                                 modifier = Modifier.fillMaxSize()
                             )
+
+                            // 1.5. Tarjeta de Navegación Giro a Giro con Guía de Carriles táctica (Turn-By-Turn)
+                            if (activeRoute != null && isFollowingTruck) {
+                                TurnByTurnCard(
+                                    truckX = telemetry.posX.toFloat(),
+                                    truckZ = telemetry.posZ.toFloat(),
+                                    activeRoute = activeRoute,
+                                    destinationCity = telemetry.destinationCity,
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(top = 80.dp, start = 14.dp)
+                                )
+                            }
 
                             // 2. Alerta de Parada de Descanso Obligatorio (Automática en mapa cuando queda poco tiempo)
                             val mapRestStop = remember(telemetry.posX, telemetry.posZ, mapGraph) {
