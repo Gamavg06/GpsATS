@@ -95,10 +95,8 @@ fun AtsNavMainApp(
 
     val coroutineScope = rememberCoroutineScope()
 
-    // Recalcular ruta automáticamente: autodetecta trabajo de ATS o destino manual (G1)
+    // Recalcular ruta automáticamente: solo cuando cambia el destino o el grafo vial (evita OOM)
     LaunchedEffect(
-        telemetry.posX,
-        telemetry.posZ,
         telemetry.destinationCity,
         telemetry.destinationCompany,
         telemetry.targetNodeIndex,
@@ -666,11 +664,6 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
     }
 }
 
-enum class ConnectionType {
-    WIFI,
-    USB_CABLE
-}
-
 @Composable
 fun PairingScreen(
     networkClient: AtsNetworkClient,
@@ -684,211 +677,108 @@ fun PairingScreen(
     errorMessage: String?,
     onConnect: () -> Unit
 ) {
-    var connectionType by remember {
-        mutableStateOf(if (ip == "127.0.0.1" || ip.isEmpty()) ConnectionType.USB_CABLE else ConnectionType.WIFI)
-    }
-    var savedWifiIp by remember { mutableStateOf(if (ip != "127.0.0.1") ip else "192.168.1.") }
-    var usbDetected by remember { mutableStateOf(false) }
+    // Autodetección silenciosa: si el cable USB está conectado (127.0.0.1 o tethering), entrar directo al mapa
+    var autoProbing by remember { mutableStateOf(true) }
 
-    // Detección automática de conexión por cable USB
-    LaunchedEffect(port) {
+    LaunchedEffect(Unit) {
         val portNum = port.toIntOrNull() ?: 35500
-        val isReady = networkClient.checkServerStatus("127.0.0.1", portNum)
-        if (isReady) {
-            usbDetected = true
-            connectionType = ConnectionType.USB_CABLE
-            onIpChange("127.0.0.1")
+        val candidates = listOf("127.0.0.1", "192.168.42.129", "192.168.42.1", ip)
+        for (host in candidates) {
+            if (host.isNotEmpty()) {
+                val isReady = networkClient.checkServerStatus(host, portNum)
+                if (isReady) {
+                    onIpChange(host)
+                    autoProbing = false
+                    onConnect()
+                    return@LaunchedEffect
+                }
+            }
         }
+        autoProbing = false
     }
 
     val fieldColors = OutlinedTextFieldDefaults.colors(
         focusedTextColor = Color.White,
         unfocusedTextColor = Color.White,
         focusedBorderColor = Color(0xFF38BDF8),
-        unfocusedBorderColor = Color(0xFF475569),
+        unfocusedBorderColor = Color(0xFF334155),
         focusedLabelColor = Color(0xFF38BDF8),
         unfocusedLabelColor = Color(0xFF94A3B8),
         cursorColor = Color(0xFF38BDF8),
         focusedContainerColor = Color(0xFF1E293B),
         unfocusedContainerColor = Color(0xFF1E293B)
     )
-    val inputStyle = TextStyle(color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+    val inputStyle = TextStyle(color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.Medium)
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(24.dp),
+            .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("ATS TELEMETRÍA GPS", fontSize = 24.sp, fontWeight = FontWeight.Black, color = Color.White)
-        Text("Conexión con el servidor PC", fontSize = 13.sp, color = Color(0xFF94A3B8))
-        Spacer(modifier = Modifier.height(4.dp))
+        Text("ATS GPS", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
+        Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = "Versión App: v1.3.0 (Build 5) · Servidor v1.3.0",
-            fontSize = 11.sp,
-            color = Color(0xFF38BDF8),
-            fontWeight = FontWeight.Bold
+            if (autoProbing || isLoading) "Buscando servidor..." else "Ingresa los datos para conectar",
+            fontSize = 13.sp,
+            color = Color(0xFF94A3B8)
         )
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(28.dp))
 
-        // Selector de Modo de Conexión: Cable USB vs Wi-Fi
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFF0F172A))
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(
-                onClick = {
-                    connectionType = ConnectionType.USB_CABLE
-                    onIpChange("127.0.0.1")
-                },
-                modifier = Modifier.weight(1f).height(44.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (connectionType == ConnectionType.USB_CABLE) Color(0xFF0284C7) else Color.Transparent,
-                    contentColor = if (connectionType == ConnectionType.USB_CABLE) Color.White else Color(0xFF94A3B8)
-                )
-            ) {
-                Text(
-                    text = if (usbDetected) "🔌 Cable USB (Activo)" else "🔌 Cable USB",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp
-                )
-            }
-
-            Button(
-                onClick = {
-                    connectionType = ConnectionType.WIFI
-                    if (ip == "127.0.0.1") {
-                        onIpChange(savedWifiIp)
-                    }
-                },
-                modifier = Modifier.weight(1f).height(44.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (connectionType == ConnectionType.WIFI) Color(0xFF0284C7) else Color.Transparent,
-                    contentColor = if (connectionType == ConnectionType.WIFI) Color.White else Color(0xFF94A3B8)
-                )
-            ) {
-                Text("📡 Red Wi-Fi", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // Tarjeta informativa del modo seleccionado
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = if (connectionType == ConnectionType.USB_CABLE) Color(0xFF0C243B) else Color(0xFF1E293B)
-            ),
-            shape = RoundedCornerShape(10.dp)
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                if (connectionType == ConnectionType.USB_CABLE) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = if (usbDetected) "✅ CABLE USB CONECTADO CON EL PC" else "⚡ MODO CABLE USB ULTRA-FLUIDO",
-                            fontWeight = FontWeight.Bold,
-                            color = if (usbDetected) Color(0xFF22C55E) else Color(0xFF38BDF8),
-                            fontSize = 12.sp
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "• Conexión directa: ¡Sin necesidad de PIN! Se autoriza automáticamente por seguridad de bus físico.\n• Latencia <1 ms y 0% pérdida de datos.\n• Conecta tu dispositivo a la PC con cable USB y 'Depuración USB' o 'Anclaje USB' activo.",
-                        color = Color(0xFFCBD5E1),
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp
-                    )
-                } else {
-                    Text("📡 MODO RED LOCAL WI-FI (REQUIERE PIN)", fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8), fontSize = 12.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "• Conecta el teléfono a la misma red Wi-Fi de tu PC.\n• Ingresa la IP y el PIN de 6 dígitos que muestra la consola del servidor en la PC.",
-                        color = Color(0xFFCBD5E1),
-                        fontSize = 11.sp,
-                        lineHeight = 15.sp
-                    )
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(14.dp))
-
-        if (connectionType == ConnectionType.WIFI) {
+        if (autoProbing) {
+            CircularProgressIndicator(color = Color(0xFF38BDF8), modifier = Modifier.size(36.dp))
+        } else {
             OutlinedTextField(
                 value = ip,
-                onValueChange = {
-                    onIpChange(it)
-                    savedWifiIp = it
-                },
-                label = { Text("IP de la PC (ej. 192.168.1.X)", color = Color(0xFF94A3B8)) },
+                onValueChange = onIpChange,
+                label = { Text("IP de la PC", color = Color(0xFF94A3B8)) },
                 modifier = Modifier.fillMaxWidth(),
                 textStyle = inputStyle,
                 colors = fieldColors,
                 singleLine = true
             )
-            Spacer(modifier = Modifier.height(10.dp))
-        }
+            Spacer(modifier = Modifier.height(14.dp))
 
-        OutlinedTextField(
-            value = port,
-            onValueChange = onPortChange,
-            label = { Text("Puerto del servidor (35500)", color = Color(0xFF94A3B8)) },
-            modifier = Modifier.fillMaxWidth(),
-            textStyle = inputStyle,
-            colors = fieldColors,
-            singleLine = true
-        )
-        Spacer(modifier = Modifier.height(10.dp))
+            OutlinedTextField(
+                value = port,
+                onValueChange = onPortChange,
+                label = { Text("Puerto", color = Color(0xFF94A3B8)) },
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = inputStyle,
+                colors = fieldColors,
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(14.dp))
 
-        if (connectionType == ConnectionType.WIFI) {
             OutlinedTextField(
                 value = pin,
                 onValueChange = onPinChange,
-                label = { Text("PIN de 6 dígitos mostrado en la PC", color = Color(0xFF94A3B8)) },
+                label = { Text("PIN", color = Color(0xFF94A3B8)) },
                 modifier = Modifier.fillMaxWidth(),
                 textStyle = inputStyle,
                 colors = fieldColors,
                 singleLine = true
             )
-            Spacer(modifier = Modifier.height(16.dp))
-        } else {
-            Spacer(modifier = Modifier.height(6.dp))
-        }
+            Spacer(modifier = Modifier.height(24.dp))
 
-        if (errorMessage != null) {
-            Text(text = errorMessage, color = Color(0xFFEF4444), fontSize = 13.sp)
-            Spacer(modifier = Modifier.height(10.dp))
-        }
+            if (errorMessage != null) {
+                Text(text = errorMessage, color = Color(0xFFEF4444), fontSize = 13.sp)
+                Spacer(modifier = Modifier.height(14.dp))
+            }
 
-        val canConnect = if (connectionType == ConnectionType.USB_CABLE) {
-            !isLoading
-        } else {
-            !isLoading && pin.length >= 6
-        }
-
-        Button(
-            onClick = onConnect,
-            enabled = canConnect,
-            modifier = Modifier.fillMaxWidth().height(48.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (connectionType == ConnectionType.USB_CABLE) Color(0xFF059669) else Color(0xFF0284C7)
-            )
-        ) {
-            if (isLoading) {
-                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
-            } else {
-                Text(
-                    text = if (connectionType == ConnectionType.USB_CABLE) "ENTRAR POR CABLE USB (SIN PIN)" else "EMPAREJAR Y CONECTAR",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
+            Button(
+                onClick = onConnect,
+                enabled = !isLoading && (pin.length >= 6 || ip == "127.0.0.1"),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+            ) {
+                if (isLoading) {
+                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(22.dp))
+                } else {
+                    Text("Conectar", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                }
             }
         }
     }

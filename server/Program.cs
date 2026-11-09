@@ -110,9 +110,19 @@ app.MapPost("/api/pair", async (HttpContext context, AuthManager auth) =>
         var remoteIp = context.Connection.RemoteIpAddress;
         if (remoteIp != null && remoteIp.IsIPv4MappedToIPv6) remoteIp = remoteIp.MapToIPv4();
         bool isLoopback = remoteIp != null && IPAddress.IsLoopback(remoteIp);
+        bool isUsbCable = isLoopback;
+        if (remoteIp != null && remoteIp.AddressFamily == AddressFamily.InterNetwork)
+        {
+            byte[] ipBytes = remoteIp.GetAddressBytes();
+            // 192.168.42.x es la subred estándar de USB Tethering (RNDIS) de Android
+            if (ipBytes[0] == 192 && ipBytes[1] == 168 && ipBytes[2] == 42)
+            {
+                isUsbCable = true;
+            }
+        }
 
-        // Si la conexión es por Cable USB (Localhost / 127.0.0.1 vía adb reverse), autorizar sin necesidad de PIN
-        if (isLoopback && (string.IsNullOrWhiteSpace(pin) || pin == "USB_DIRECT" || pin == "AUTO_USB"))
+        // Si la conexión es por Cable USB (Localhost 127.0.0.1 o USB Tethering), autorizar sin necesidad de PIN
+        if (isUsbCable && (string.IsNullOrWhiteSpace(pin) || pin == "USB_DIRECT" || pin == "AUTO_USB"))
         {
             string usbToken = auth.GenerateDirectUsbToken();
             return Results.Ok(new

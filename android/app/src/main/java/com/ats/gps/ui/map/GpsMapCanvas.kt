@@ -544,7 +544,7 @@ private fun DrawScope.drawMap3D(
 ) {
     val w = size.width
     val h = size.height
-    val horizonY = h * 0.38f
+    val horizonY = h * 0.28f
 
     // 1. Cielo crepuscular
     drawRect(
@@ -570,23 +570,25 @@ private fun DrawScope.drawMap3D(
         size = Size(w, h - horizonY)
     )
 
-    // Orientación de cámara corregida matemáticamente:
-    // En SCS: X=Este(+)/Oeste(-), Z=Sur(+)/Norte(-).
-    // Heading 0° = Norte (Fx=0, Fz=-1).
-    // Fwd=(sinH, -cosH), Right=(cosH, sinH)
+    // Cámara 3D en tercera persona con inclinación hacia la calzada (Pitch)
     val camHeadingRad = Math.toRadians(headingDeg.toDouble()).toFloat()
     val sinH = sin(camHeadingRad)
     val cosH = cos(camHeadingRad)
 
-    val camFollowDist = 14f
-    val camHeight = 5.2f
+    val camFollowDist = 18f
+    val camHeight = 10.5f
     val camY = truckY + camHeight
 
-    val focalLength = h * 0.72f * zoomScale.coerceIn(0.5f, 2.5f)
-    val viewDistMax = 550f
-    val zNear = 0.5f
+    // Ángulo de inclinación hacia abajo (Pitch ~16°) para desplegar la carretera en perspectiva
+    val pitchRad = Math.toRadians(16.0).toFloat()
+    val sinP = sin(pitchRad)
+    val cosP = cos(pitchRad)
 
-    // La cámara está DETRÁS del camión: Cam = Truck - dist * Fwd
+    val focalLength = h * 0.65f * zoomScale.coerceIn(0.5f, 2.5f)
+    val viewDistMax = 600f
+    val zNear = 1.0f
+
+    // Cámara situada detrás del camión según rumbo
     val camX = truckX - camFollowDist * sinH
     val camZ = truckZ + camFollowDist * cosH
 
@@ -594,22 +596,28 @@ private fun DrawScope.drawMap3D(
         val dx = wx - camX
         val dz = wz - camZ
         val dy = wy - camY
-        // Proyección sobre vector Right (X) y vector Fwd (Z):
-        val xCam = dx * cosH + dz * sinH
-        val zCam = dx * sinH - dz * cosH
-        return Triple(xCam, dy, zCam)
+        
+        // 1. Rumbo (Heading)
+        val xH = dx * cosH + dz * sinH
+        val zH = dx * sinH - dz * cosH
+
+        // 2. Inclinación hacia abajo (Pitch)
+        val xCam = xH
+        val yCam = dy * cosP + zH * sinP
+        val zCam = -dy * sinP + zH * cosP
+        return Triple(xCam, yCam, zCam)
     }
 
-    fun projectCam(xCam: Float, dy: Float, zCam: Float): Offset {
+    fun projectCam(xCam: Float, yCam: Float, zCam: Float): Offset {
         val pX = (w * 0.5f) + (xCam * focalLength / zCam)
-        val pY = horizonY + ((-dy) * focalLength / zCam)
+        val pY = (h * 0.52f) - (yCam * focalLength / zCam)
         return Offset(pX, pY)
     }
 
     fun project3D(wx: Float, wz: Float, wy: Float = truckY): Offset? {
-        val (xCam, dy, zCam) = toCam(wx, wz, wy)
+        val (xCam, yCam, zCam) = toCam(wx, wz, wy)
         if (zCam < zNear || zCam > viewDistMax) return null
-        val pY = horizonY + ((-dy) * focalLength / zCam)
+        val pY = (h * 0.52f) - (yCam * focalLength / zCam)
         if (pY < horizonY - 40f || pY > h + 300f) return null
         return Offset((w * 0.5f) + (xCam * focalLength / zCam), pY)
     }
@@ -645,7 +653,7 @@ private fun DrawScope.drawMap3D(
         val proj2 = projectCam(cx2, cy2, cz2)
 
         val avgDist = (cz1 + cz2) * 0.5f
-        val strokeW = (focalLength * widthMult / max(avgDist, 2.5f)).coerceIn(2.5f, 70f)
+        val strokeW = (focalLength * widthMult / max(avgDist, 8f)).coerceIn(3f, 85f)
 
         drawLine(edgeColor, proj1, proj2, strokeWidth = strokeW + 4f, cap = StrokeCap.Round)
         drawLine(roadColor, proj1, proj2, strokeWidth = strokeW, cap = StrokeCap.Round)

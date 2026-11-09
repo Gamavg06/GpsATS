@@ -45,7 +45,11 @@ class AtsNetworkClient {
         try {
             val url = "http://$host:$port/api/status"
             val request = Request.Builder().url(url).get().build()
-            client.newCall(request).execute().use { response ->
+            val probeClient = client.newBuilder()
+                .connectTimeout(java.time.Duration.ofMillis(700))
+                .readTimeout(java.time.Duration.ofMillis(700))
+                .build()
+            probeClient.newCall(request).execute().use { response ->
                 response.isSuccessful
             }
         } catch (_: Exception) {
