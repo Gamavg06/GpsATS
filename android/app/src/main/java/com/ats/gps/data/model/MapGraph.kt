@@ -99,6 +99,28 @@ data class MapGraph(
         }
         return bestCity
     }
+
+    fun findNearestRestStop(x: Float, z: Float): Pair<MapPoi, Float>? {
+        if (pois.isEmpty()) return null
+        var bestPoi: MapPoi? = null
+        var bestDistSq = Double.MAX_VALUE
+        for (poi in pois) {
+            // poiType: 1=GasStation (con descanso), 2=RestStop (área de descanso dedicada)
+            if (poi.poiType == 1.toByte() || poi.poiType == 2.toByte()) {
+                val dx = (poi.x - x).toDouble()
+                val dz = (poi.z - z).toDouble()
+                val dSq = dx * dx + dz * dz
+                if (dSq < bestDistSq) {
+                    bestDistSq = dSq
+                    bestPoi = poi
+                }
+            }
+        }
+        return if (bestPoi != null) {
+            val distKm = (kotlin.math.sqrt(bestDistSq) / 1000f).toFloat()
+            Pair(bestPoi, distKm)
+        } else null
+    }
 }
 
 class SpatialGrid(val cellSize: Float = 1000f) {

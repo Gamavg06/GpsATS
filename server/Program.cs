@@ -64,6 +64,7 @@ builder.Services.AddSingleton<AuthManager>();
 builder.Services.AddSingleton<AtsGpsServer.Map.MapManager>();
 builder.Services.AddSingleton<AtsGpsServer.Map.DestinationResolver>();
 builder.Services.AddSingleton<TelemetryBroadcaster>();
+builder.Services.AddSingleton<AtsGpsServer.Input.VirtualInputController>();
 
 var app = builder.Build();
 
@@ -245,6 +246,18 @@ app.MapGet("/api/destinations", (AtsGpsServer.Map.DestinationResolver resolver) 
     return Results.Ok(resolver.GetAllSelectableDestinations());
 });
 
+// 9. Control interactivo de cabina desde el celular (Button Box táctil)
+app.MapPost("/api/control/key", (AtsGpsServer.Input.VirtualInputController inputCtrl, ControlKeyRequest req) =>
+{
+    if (string.IsNullOrWhiteSpace(req?.Action))
+    {
+        return Results.BadRequest(new { success = false, error = "Acción no especificada" });
+    }
+
+    bool ok = inputCtrl.TriggerAction(req.Action);
+    return Results.Ok(new { success = ok, action = req.Action });
+});
+
 // =========================================================
 // PANTALLA DE INICIO EN CONSOLA
 // =========================================================
@@ -383,3 +396,5 @@ static void ConfigureUsbAdbReverse(int port)
     Console.WriteLine($"     3. O activa 'Compartir Internet por USB' (Tethering) y usa la IP del adaptador.");
     Console.ResetColor();
 }
+
+public record ControlKeyRequest(string? Action);

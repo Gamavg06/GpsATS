@@ -67,6 +67,12 @@ namespace AtsGpsServer.Telemetry
         [JsonPropertyName("fuelAvgConsumption")]
         public float FuelAvgConsumption { get; set; }
 
+        [JsonPropertyName("fuelRangeKm")]
+        public float FuelRangeKm { get; set; }
+
+        [JsonPropertyName("restStopMinutes")]
+        public int RestStopMinutes { get; set; }
+
         // 5 Canales de Desgaste Reales del Camión (SDK)
         [JsonPropertyName("wearEngine")]
         public float WearEngine { get; set; }
@@ -109,14 +115,32 @@ namespace AtsGpsServer.Telemetry
         [JsonPropertyName("blinkerRight")]
         public bool BlinkerRight { get; set; }
 
+        [JsonPropertyName("lightsParking")]
+        public bool LightsParking { get; set; }
+
         [JsonPropertyName("lightsBeamLow")]
         public bool LightsBeamLow { get; set; }
 
         [JsonPropertyName("lightsBeamHigh")]
         public bool LightsBeamHigh { get; set; }
 
+        [JsonPropertyName("lightsBeacon")]
+        public bool LightsBeacon { get; set; }
+
+        [JsonPropertyName("lightsHazard")]
+        public bool LightsHazard { get; set; }
+
+        [JsonPropertyName("wipers")]
+        public bool Wipers { get; set; }
+
         [JsonPropertyName("parkingBrake")]
         public bool ParkingBrake { get; set; }
+
+        [JsonPropertyName("differentialLock")]
+        public bool DifferentialLock { get; set; }
+
+        [JsonPropertyName("liftAxle")]
+        public bool LiftAxle { get; set; }
 
         [JsonPropertyName("cruiseControl")]
         public bool CruiseControl { get; set; }

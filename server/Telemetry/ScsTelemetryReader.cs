@@ -52,7 +52,8 @@ namespace AtsGpsServer.Telemetry
                 snapshot.TimeAbsDelivery = _accessor.ReadUInt32(88);
                 snapshot.PlannedDistanceKm = _accessor.ReadUInt32(100);
 
-                // Zona 3: Enteros (Truck_i)
+                // Zona 3: Enteros (Truck_i y Common_i)
+                snapshot.RestStopMinutes = _accessor.ReadInt32(500);
                 snapshot.Gear = _accessor.ReadInt32(504);
                 snapshot.GearDashboard = _accessor.ReadInt32(508);
 
@@ -74,6 +75,14 @@ namespace AtsGpsServer.Telemetry
 
                 snapshot.Fuel = _accessor.ReadSingle(1000);
                 snapshot.FuelAvgConsumption = _accessor.ReadSingle(1004);
+                if (snapshot.FuelAvgConsumption > 0.0001f)
+                {
+                    snapshot.FuelRangeKm = snapshot.Fuel / snapshot.FuelAvgConsumption;
+                }
+                else
+                {
+                    snapshot.FuelRangeKm = 0f;
+                }
 
                 // 5 Canales Reales de Desgaste del SDK
                 snapshot.WearEngine = _accessor.ReadSingle(1036);
@@ -94,11 +103,17 @@ namespace AtsGpsServer.Telemetry
                 snapshot.IsCargoLoaded = _accessor.ReadBoolean(1564);
                 snapshot.SpecialJob = _accessor.ReadBoolean(1565);
                 snapshot.ParkingBrake = _accessor.ReadBoolean(1566);
+                snapshot.Wipers = _accessor.ReadBoolean(1577);
                 snapshot.BlinkerLeft = _accessor.ReadBoolean(1578);
                 snapshot.BlinkerRight = _accessor.ReadBoolean(1579);
+                snapshot.LightsParking = _accessor.ReadBoolean(1582);
                 snapshot.LightsBeamLow = _accessor.ReadBoolean(1583);
                 snapshot.LightsBeamHigh = _accessor.ReadBoolean(1584);
+                snapshot.LightsBeacon = _accessor.ReadBoolean(1585);
+                snapshot.LightsHazard = _accessor.ReadBoolean(1588);
                 snapshot.CruiseControl = _accessor.ReadBoolean(1589);
+                snapshot.DifferentialLock = _accessor.ReadBoolean(1608);
+                snapshot.LiftAxle = _accessor.ReadBoolean(1609);
 
                 // Zona 8: Posición y Orientación Doble Precisión (Truck_dp)
                 snapshot.PosX = _accessor.ReadDouble(2200);

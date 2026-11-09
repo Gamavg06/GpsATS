@@ -18,11 +18,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ats.gps.data.model.MapPoi
 import com.ats.gps.data.model.TelemetryData
 import kotlin.math.roundToInt
 
@@ -30,8 +32,13 @@ import kotlin.math.roundToInt
 fun DashboardScreen(
     telemetry: TelemetryData,
     onOpenDiagnostics: () -> Unit = {},
+    onSendKey: (String) -> Unit = {},
+    nearestRestStop: Pair<MapPoi, Float>? = null,
+    onRouteToRestStop: (MapPoi) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val haptic = LocalHapticFeedback.current
+
     // Estado de alerta sonora configurable (G3)
     var isAudioAlertEnabled by remember { mutableStateOf(true) }
     val isSpeeding = telemetry.speedLimitKmh > 5f && telemetry.speedKmh > (telemetry.speedLimitKmh + 1.5f)
@@ -139,7 +146,6 @@ fun DashboardScreen(
 
             // 4. Tablero de Relojes Analógicos Propios (G4)
             if (isLandscape) {
-                // Modo horizontal (Side by side)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -154,19 +160,30 @@ fun DashboardScreen(
                     ) {
                         VehicleStateCard(telemetry)
                         FuelAndIncomeCard(telemetry)
+                        RestStopCard(telemetry, nearestRestStop, onRouteToRestStop)
                     }
                 }
             } else {
-                // Modo vertical (Portrait)
                 Box(modifier = Modifier.fillMaxWidth().alpha(contentAlpha)) {
                     GaugesSection(telemetry, gaugeSize = 165.dp)
                 }
 
                 VehicleStateCard(telemetry = telemetry, modifier = Modifier.alpha(contentAlpha))
                 FuelAndIncomeCard(telemetry = telemetry, modifier = Modifier.alpha(contentAlpha))
+                RestStopCard(telemetry, nearestRestStop, onRouteToRestStop, modifier = Modifier.alpha(contentAlpha))
             }
 
-            Spacer(modifier = Modifier.height(60.dp)) // Espacio seguro para la barra de navegación inferior
+            // 5. BOTONERA DE CABINA INTERACTIVA (VIRTUAL BUTTON BOX)
+            CabinControlDeck(
+                telemetry = telemetry,
+                onKeyClick = { action ->
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onSendKey(action)
+                },
+                modifier = Modifier.alpha(contentAlpha)
+            )
+
+            Spacer(modifier = Modifier.height(75.dp)) // Espacio seguro para barra inferior
         }
     }
 }
@@ -248,6 +265,312 @@ private fun GaugesSection(telemetry: TelemetryData, gaugeSize: androidx.compose.
 }
 
 @Composable
+private fun RestStopCard(
+    telemetry: TelemetryData,
+    nearestRestStop: Pair<MapPoi, Float>?,
+    onRouteToRestStop: (MapPoi) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (telemetry.restStopMinutes <= 0 && nearestRestStop == null) return
+
+    val restMins = telemetry.restStopMinutes
+    val hours = restMins / 60
+    val mins = restMins % 60
+    val isUrgent = restMins in 1..45
+    val isWarning = restMins in 46..90
+
+    val badgeColor = when {
+        isUrgent -> Color(0xFFEF4444)
+        isWarning -> Color(0xFFF59E0B)
+        else -> Color(0xFF10B981)
+    }
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("🛏️", fontSize = 14.sp)
+                    Text(
+                        "TIEMPO PARA DESCANSO (MANDATORY)",
+                        fontSize = 11.sp,
+                        color = Color(0xFF94A3B8),
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(badgeColor.copy(alpha = 0.2f))
+                        .border(1.dp, badgeColor, RoundedCornerShape(6.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = if (restMins > 0) "${hours}h ${mins}m" else "N/D",
+                        color = badgeColor,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+
+            // Recomendación automática de parada de descanso más cercana
+            if (nearestRestStop != null) {
+                val poi = nearestRestStop.first
+                val distKm = nearestRestStop.second
+                val icon = if (poi.poiType == 1.toByte()) "⛽" else "🛏️"
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF1E293B))
+                        .padding(8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "$icon Parada más cercana: ${poi.name.ifEmpty { "Área de Servicio" }}",
+                            fontSize = 11.sp,
+                            color = Color(0xFFE2E8F0),
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Distancia aproximada: ~${distKm.roundToInt()} km",
+                            fontSize = 10.sp,
+                            color = Color(0xFF38BDF8)
+                        )
+                    }
+
+                    Button(
+                        onClick = { onRouteToRestStop(poi) },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Text("📍 Marcar", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CabinControlDeck(
+    telemetry: TelemetryData,
+    onKeyClick: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "CONTROL DE CABINA • BOTONERA VIRTUAL",
+                    fontSize = 11.sp,
+                    color = Color(0xFF94A3B8),
+                    fontWeight = FontWeight.Black
+                )
+                Text(
+                    text = "Control Remoto PC",
+                    fontSize = 10.sp,
+                    color = Color(0xFF22C55E),
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // Fila 1: Luces y Señalización
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "◀ Izq",
+                    sub = "[",
+                    icon = "⬅️",
+                    active = telemetry.blinkerLeft,
+                    activeColor = Color(0xFF22C55E),
+                    onClick = { onKeyClick("blinker_left") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Emerg",
+                    sub = "F",
+                    icon = "⚠️",
+                    active = telemetry.lightsHazard,
+                    activeColor = Color(0xFFF97316),
+                    onClick = { onKeyClick("hazard") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Der ▶",
+                    sub = "]",
+                    icon = "➡️",
+                    active = telemetry.blinkerRight,
+                    activeColor = Color(0xFF22C55E),
+                    onClick = { onKeyClick("blinker_right") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Luces",
+                    sub = "L",
+                    icon = "💡",
+                    active = telemetry.lightsBeamLow || telemetry.lightsParking,
+                    activeColor = Color(0xFF22C55E),
+                    onClick = { onKeyClick("lights_mode") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Altas",
+                    sub = "K",
+                    icon = "🔆",
+                    active = telemetry.lightsBeamHigh,
+                    activeColor = Color(0xFF38BDF8),
+                    onClick = { onKeyClick("lights_high") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Baliza",
+                    sub = "O",
+                    icon = "🚨",
+                    active = telemetry.lightsBeacon,
+                    activeColor = Color(0xFFF59E0B),
+                    onClick = { onKeyClick("beacon") }
+                )
+            }
+
+            // Fila 2: Cabina y Conducción
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Limpia",
+                    sub = "P",
+                    icon = "🌧️",
+                    active = telemetry.wipers,
+                    activeColor = Color(0xFF06B6D4),
+                    onClick = { onKeyClick("wipers") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "F. Mano",
+                    sub = "C",
+                    icon = "🛑",
+                    active = false,
+                    activeColor = Color(0xFFEF4444),
+                    onClick = { onKeyClick("handbrake") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Parking",
+                    sub = "Espacio",
+                    icon = "🅿️",
+                    active = telemetry.parkingBrake,
+                    activeColor = Color(0xFFEF4444),
+                    onClick = { onKeyClick("parking_brake") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Motor",
+                    sub = "E",
+                    icon = "🔑",
+                    active = telemetry.engineRpm > 300f,
+                    activeColor = Color(0xFF10B981),
+                    onClick = { onKeyClick("engine") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Corneta",
+                    sub = "N",
+                    icon = "📢",
+                    active = false,
+                    activeColor = Color(0xFFEAB308),
+                    onClick = { onKeyClick("airhorn") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Dif Lock",
+                    sub = "V",
+                    icon = "🔒",
+                    active = telemetry.differentialLock,
+                    activeColor = Color(0xFFF97316),
+                    onClick = { onKeyClick("diff_lock") }
+                )
+                DeckButton(
+                    modifier = Modifier.weight(1f),
+                    title = "Eje",
+                    sub = "U",
+                    icon = "🚜",
+                    active = telemetry.liftAxle,
+                    activeColor = Color(0xFFA855F7),
+                    onClick = { onKeyClick("lift_axle") }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeckButton(
+    modifier: Modifier = Modifier,
+    title: String,
+    sub: String,
+    icon: String,
+    active: Boolean,
+    activeColor: Color,
+    onClick: () -> Unit
+) {
+    val bg = if (active) activeColor.copy(alpha = 0.28f) else Color(0xFF1E293B)
+    val border = if (active) activeColor else Color(0xFF334155)
+
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(bg)
+            .border(1.2.dp, border, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp, horizontal = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(icon, fontSize = 16.sp)
+        Text(
+            text = title,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (active) activeColor else Color.White,
+            maxLines = 1
+        )
+        Text(
+            text = sub,
+            fontSize = 8.sp,
+            color = Color(0xFF94A3B8),
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
 private fun TopIndicatorsBar(
     telemetry: TelemetryData,
     isAudioAlertEnabled: Boolean,
@@ -272,20 +595,17 @@ private fun TopIndicatorsBar(
         )
 
         // Fila Central de Luces (Contraste >= 3:1)
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            // Luces Bajas
-            IndicatorBadge(label = "D", active = telemetry.lightsBeamLow, activeColor = Color(0xFF22C55E))
-            // Luces Altas
-            IndicatorBadge(label = "≡", active = telemetry.lightsBeamHigh, activeColor = Color(0xFF38BDF8))
-            // Freno de mano
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            IndicatorBadge(label = "POS", active = telemetry.lightsParking, activeColor = Color(0xFFEAB308))
+            IndicatorBadge(label = "BAJAS", active = telemetry.lightsBeamLow, activeColor = Color(0xFF22C55E))
+            IndicatorBadge(label = "ALTAS", active = telemetry.lightsBeamHigh, activeColor = Color(0xFF38BDF8))
+            IndicatorBadge(label = "BALIZA", active = telemetry.lightsBeacon, activeColor = Color(0xFFF59E0B))
             IndicatorBadge(label = "(P)", active = telemetry.parkingBrake, activeColor = Color(0xFFEF4444))
-            // Control crucero
             IndicatorBadge(label = "CRUISE", active = telemetry.cruiseControl, activeColor = Color(0xFF10B981))
         }
 
         // Botones de Diagnóstico y Audio
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            // Toggle de Audio Alerta
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
@@ -299,7 +619,6 @@ private fun TopIndicatorsBar(
                 )
             }
 
-            // Botón Diagnóstico G1
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
@@ -328,12 +647,12 @@ private fun IndicatorBadge(label: String, active: Boolean, activeColor: Color) {
             .clip(RoundedCornerShape(4.dp))
             .background(if (active) activeColor.copy(alpha = 0.22f) else Color(0xFF1F2937))
             .border(1.dp, if (active) activeColor else Color(0xFF374151), RoundedCornerShape(4.dp))
-            .padding(horizontal = 6.dp, vertical = 2.dp)
+            .padding(horizontal = 5.dp, vertical = 2.dp)
     ) {
         Text(
             text = label,
             fontWeight = FontWeight.Black,
-            fontSize = 11.sp,
+            fontSize = 10.sp,
             color = if (active) activeColor else Color(0xFF6B7280)
         )
     }
@@ -348,35 +667,28 @@ private fun VehicleStateCard(telemetry: TelemetryData, modifier: Modifier = Modi
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Text(
-                text = "ESTADO DEL VEHÍCULO Y REMOLQUE",
-                fontSize = 12.sp,
+                "ESTADO DEL VEHÍCULO Y REMOLQUE",
+                fontSize = 11.sp,
+                color = Color(0xFF38BDF8),
                 fontWeight = FontWeight.Black,
-                color = Color(0xFF38BDF8)
+                modifier = Modifier.padding(bottom = 8.dp)
             )
-            Spacer(modifier = Modifier.height(8.dp))
 
-            // 5 Canales Reales del Camión
-            WearItem("Motor", telemetry.wearEngine)
-            WearItem("Transmisión", telemetry.wearTransmission)
-            WearItem("Cabina", telemetry.wearCabin)
-            WearItem("Chasis", telemetry.wearChassis)
-            WearItem("Ruedas", telemetry.wearWheels)
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                WearItem("Motor", telemetry.wearEngine)
+                WearItem("Transmisión", telemetry.wearTransmission)
+                WearItem("Cabina", telemetry.wearCabin)
+                WearItem("Chasis", telemetry.wearChassis)
+                WearItem("Ruedas", telemetry.wearWheels)
 
-            // Canales de Remolque y Daño de Carga (G4)
-            if (telemetry.trailerAttached || telemetry.cargoDamage > 0f) {
-                Spacer(modifier = Modifier.height(6.dp))
-                HorizontalDivider(color = Color(0xFF1F2937), thickness = 1.dp)
-                Spacer(modifier = Modifier.height(6.dp))
-
-                Text(
-                    text = "REMOLQUE Y CARGA ASIGNADA",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFF59E0B)
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-
-                if (telemetry.cargoDamage > 0f) {
+                if (telemetry.cargoDamage > 0f || telemetry.trailerCargoDamage > 0f) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        "REMOLQUE Y CARGA ASIGNADA",
+                        fontSize = 10.sp,
+                        color = Color(0xFFFBBF24),
+                        fontWeight = FontWeight.Bold
+                    )
                     WearItem("Daño de Carga", telemetry.cargoDamage)
                 }
                 if (telemetry.trailerAttached) {
@@ -391,6 +703,10 @@ private fun VehicleStateCard(telemetry: TelemetryData, modifier: Modifier = Modi
 
 @Composable
 private fun FuelAndIncomeCard(telemetry: TelemetryData, modifier: Modifier = Modifier) {
+    val tankPct = if (telemetry.fuelCapacity > 0f) {
+        ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt().coerceIn(0, 100)
+    } else 0
+
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -401,15 +717,20 @@ private fun FuelAndIncomeCard(telemetry: TelemetryData, modifier: Modifier = Mod
     ) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("COMBUSTIBLE", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
-            Text("${telemetry.fuel.roundToInt()} L", fontSize = 16.sp, color = Color(0xFFFBBF24), fontWeight = FontWeight.Black)
+            Text("${telemetry.fuel.roundToInt()} L ($tankPct%)", fontSize = 14.sp, color = Color(0xFFFBBF24), fontWeight = FontWeight.Black)
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("AUTONOMÍA", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
+            val rangeText = if (telemetry.fuelRangeKm > 0f) "~${telemetry.fuelRangeKm.roundToInt()} km" else "Calculando"
+            Text(rangeText, fontSize = 14.sp, color = Color(0xFF38BDF8), fontWeight = FontWeight.Black)
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("CONSUMO MEDIO", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
-            Text(String.format("%.1f L/100", telemetry.fuelAvgConsumption * 100f), fontSize = 16.sp, color = Color.White, fontWeight = FontWeight.Black)
+            Text(String.format("%.1f L/100", telemetry.fuelAvgConsumption * 100f), fontSize = 14.sp, color = Color.White, fontWeight = FontWeight.Black)
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text("GANANCIA", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
-            Text("$${telemetry.jobIncome}", fontSize = 16.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Black)
+            Text("$${telemetry.jobIncome}", fontSize = 14.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Black)
         }
     }
 }

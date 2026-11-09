@@ -89,6 +89,31 @@ class AtsNetworkClient {
         }
     }
 
+    suspend fun sendControlKey(host: String, port: Int, action: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        if (!isAllowedPrivateAddress(host)) {
+            return@withContext Result.failure(SecurityException("Dirección de servidor no permitida"))
+        }
+        try {
+            val url = "http://$host:$port/api/control/key"
+            val json = JSONObject().put("action", action).toString()
+            val requestBody = json.toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url(url)
+                .post(requestBody)
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    Result.failure(IOException("HTTP ${response.code}"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun downloadMap(host: String, port: Int): Result<MapGraph> = withContext(Dispatchers.IO) {
         if (!isAllowedPrivateAddress(host)) {
             return@withContext Result.failure(
@@ -212,6 +237,8 @@ class AtsNetworkClient {
             fuel = json.optDouble("fuel", 0.0).toFloat(),
             fuelCapacity = json.optDouble("fuelCapacity", 400.0).toFloat(),
             fuelAvgConsumption = json.optDouble("fuelAvgConsumption", 0.0).toFloat(),
+            fuelRangeKm = json.optDouble("fuelRangeKm", 0.0).toFloat(),
+            restStopMinutes = json.optInt("restStopMinutes", 0),
             wearEngine = json.optDouble("wearEngine", 0.0).toFloat(),
             wearTransmission = json.optDouble("wearTransmission", 0.0).toFloat(),
             wearCabin = json.optDouble("wearCabin", 0.0).toFloat(),
@@ -227,6 +254,12 @@ class AtsNetworkClient {
             blinkerRight = json.optBoolean("blinkerRight", false),
             lightsBeamLow = json.optBoolean("lightsBeamLow", false),
             lightsBeamHigh = json.optBoolean("lightsBeamHigh", false),
+            lightsParking = json.optBoolean("lightsParking", false),
+            lightsBeacon = json.optBoolean("lightsBeacon", false),
+            lightsHazard = json.optBoolean("lightsHazard", false),
+            wipers = json.optBoolean("wipers", false),
+            differentialLock = json.optBoolean("differentialLock", false),
+            liftAxle = json.optBoolean("liftAxle", false),
             parkingBrake = json.optBoolean("parkingBrake", false),
             cruiseControl = json.optBoolean("cruiseControl", false),
             cruiseControlSpeed = json.optDouble("cruiseControlSpeed", 0.0).toFloat(),

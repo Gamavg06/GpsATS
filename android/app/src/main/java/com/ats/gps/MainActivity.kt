@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -239,7 +240,52 @@ fun AtsNavMainApp(
                                 modifier = Modifier.fillMaxSize()
                             )
 
-                            // 2. Junction View (Aparece en esquina superior derecha)
+                            // 2. Alerta de Parada de Descanso Obligatorio (Automática en mapa cuando queda poco tiempo)
+                            val mapRestStop = remember(telemetry.posX, telemetry.posZ, mapGraph) {
+                                mapGraph?.findNearestRestStop(telemetry.posX.toFloat(), telemetry.posZ.toFloat())
+                            }
+                            if (telemetry.restStopMinutes in 1..45 && mapRestStop != null) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopCenter)
+                                        .padding(top = 84.dp, start = 16.dp, end = 16.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xF0111827))
+                                        .border(1.5.dp, Color(0xFFF59E0B), RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Text("🛏️", fontSize = 16.sp)
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = "Descanso en ${telemetry.restStopMinutes}m • ${mapRestStop.first.name.ifEmpty { "Área de Servicio" }} (~${mapRestStop.second.roundToInt()} km)",
+                                                color = Color(0xFFFDE68A),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                        Button(
+                                            onClick = {
+                                                val node = mapGraph?.findNearestNode(mapRestStop.first.x, mapRestStop.first.z)
+                                                if (node != null) {
+                                                    telemetry = telemetry.copy(targetNodeIndex = node.toLong())
+                                                }
+                                            },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF59E0B)),
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                            shape = RoundedCornerShape(6.dp),
+                                            modifier = Modifier.height(28.dp)
+                                        ) {
+                                            Text("Desviar", color = Color(0xFF1E1B4B), fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 3. Junction View (Aparece en esquina superior derecha)
                             if (telemetry.navDistanceMeters in 50f..1200f) {
                                 Box(
                                     modifier = Modifier
@@ -385,7 +431,20 @@ fun AtsNavMainApp(
                     AppTab.TABLERO -> {
                         DashboardScreen(
                             telemetry = telemetry,
-                            onOpenDiagnostics = { showDiagnostics = true }
+                            onOpenDiagnostics = { showDiagnostics = true },
+                            onSendKey = { action ->
+                                coroutineScope.launch {
+                                    networkClient.sendControlKey(serverIp, serverPort.toIntOrNull() ?: 35500, action)
+                                }
+                            },
+                            nearestRestStop = mapGraph?.findNearestRestStop(telemetry.posX.toFloat(), telemetry.posZ.toFloat()),
+                            onRouteToRestStop = { poi ->
+                                val nearestNode = mapGraph?.findNearestNode(poi.x, poi.z)
+                                if (nearestNode != null) {
+                                    telemetry = telemetry.copy(targetNodeIndex = nearestNode.toLong())
+                                    selectedTab = AppTab.MAPA_GPS
+                                }
+                            }
                         )
                     }
                 }

@@ -23,6 +23,8 @@ data class TelemetryData(
     val fuel: Float = 0f,
     val fuelCapacity: Float = 400f,
     val fuelAvgConsumption: Float = 0f,
+    val fuelRangeKm: Float = 0f,
+    val restStopMinutes: Int = 0,
 
     // 5 Canales Reales de Desgaste del Camión (SDK)
     val wearEngine: Float = 0f,
@@ -44,6 +46,12 @@ data class TelemetryData(
     val blinkerRight: Boolean = false,
     val lightsBeamLow: Boolean = false,
     val lightsBeamHigh: Boolean = false,
+    val lightsParking: Boolean = false,
+    val lightsBeacon: Boolean = false,
+    val lightsHazard: Boolean = false,
+    val wipers: Boolean = false,
+    val differentialLock: Boolean = false,
+    val liftAxle: Boolean = false,
     val parkingBrake: Boolean = false,
     val cruiseControl: Boolean = false,
     val cruiseControlSpeed: Float = 0f,
