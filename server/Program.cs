@@ -92,7 +92,7 @@ app.MapGet("/api/status", (ScsTelemetryReader reader, TelemetryBroadcaster broad
     });
 });
 
-// 2. Emparejamiento por PIN
+// 2. Emparejamiento por PIN (O autorización directa sin PIN por Cable USB Localhost)
 app.MapPost("/api/pair", async (HttpContext context, AuthManager auth) =>
 {
     try
@@ -107,9 +107,27 @@ app.MapPost("/api/pair", async (HttpContext context, AuthManager auth) =>
             pin = pinProp.GetString();
         }
 
+        var remoteIp = context.Connection.RemoteIpAddress;
+        if (remoteIp != null && remoteIp.IsIPv4MappedToIPv6) remoteIp = remoteIp.MapToIPv4();
+        bool isLoopback = remoteIp != null && IPAddress.IsLoopback(remoteIp);
+
+        // Si la conexión es por Cable USB (Localhost / 127.0.0.1 vía adb reverse), autorizar sin necesidad de PIN
+        if (isLoopback && (string.IsNullOrWhiteSpace(pin) || pin == "USB_DIRECT" || pin == "AUTO_USB"))
+        {
+            string usbToken = auth.GenerateDirectUsbToken();
+            return Results.Ok(new
+            {
+                authenticated = true,
+                token = usbToken,
+                isUsbDirect = true,
+                expiresInHours = 48,
+                message = "Conexión directa por cable USB autorizada automáticamente sin PIN."
+            });
+        }
+
         if (string.IsNullOrWhiteSpace(pin))
         {
-            return Results.BadRequest(new { error = "El campo 'pin' es requerido." });
+            return Results.BadRequest(new { error = "El campo 'pin' es requerido para conexiones de red Wi-Fi." });
         }
 
         var (success, token, errorMsg) = auth.TryAuthenticate(pin);

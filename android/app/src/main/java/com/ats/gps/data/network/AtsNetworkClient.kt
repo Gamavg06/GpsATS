@@ -41,6 +41,18 @@ class AtsNetworkClient {
     private var isUserDisconnected = false
     private var retryAttempt = 0
 
+    suspend fun checkServerStatus(host: String, port: Int): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val url = "http://$host:$port/api/status"
+            val request = Request.Builder().url(url).get().build()
+            client.newCall(request).execute().use { response ->
+                response.isSuccessful
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     suspend fun pairWithServer(host: String, port: Int, pin: String): Result<String> = withContext(Dispatchers.IO) {
         if (!isAllowedPrivateAddress(host)) {
             return@withContext Result.failure(

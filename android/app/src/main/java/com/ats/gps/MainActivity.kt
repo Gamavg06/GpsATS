@@ -158,6 +158,7 @@ fun AtsNavMainApp(
                 // PANTALLA DE EMPAREJAMIENTO CON LA PC
                 // ==========================================
                 PairingScreen(
+                    networkClient = networkClient,
                     ip = serverIp,
                     onIpChange = { serverIp = it },
                     port = serverPort,
@@ -171,7 +172,8 @@ fun AtsNavMainApp(
                         pairError = null
                         coroutineScope.launch {
                             val portNum = serverPort.toIntOrNull() ?: 35500
-                            val pairResult = networkClient.pairWithServer(serverIp, portNum, serverPin)
+                            val effectivePin = if (serverIp == "127.0.0.1" || serverPin.isEmpty()) "USB_DIRECT" else serverPin
+                            val pairResult = networkClient.pairWithServer(serverIp, portNum, effectivePin)
                             if (pairResult.isSuccess) {
                                 val token = pairResult.getOrThrow()
                                 // Descargar mapa binario en streaming
@@ -671,6 +673,7 @@ enum class ConnectionType {
 
 @Composable
 fun PairingScreen(
+    networkClient: AtsNetworkClient,
     ip: String,
     onIpChange: (String) -> Unit,
     port: String,
@@ -685,6 +688,18 @@ fun PairingScreen(
         mutableStateOf(if (ip == "127.0.0.1" || ip.isEmpty()) ConnectionType.USB_CABLE else ConnectionType.WIFI)
     }
     var savedWifiIp by remember { mutableStateOf(if (ip != "127.0.0.1") ip else "192.168.1.") }
+    var usbDetected by remember { mutableStateOf(false) }
+
+    // Detección automática de conexión por cable USB
+    LaunchedEffect(port) {
+        val portNum = port.toIntOrNull() ?: 35500
+        val isReady = networkClient.checkServerStatus("127.0.0.1", portNum)
+        if (isReady) {
+            usbDetected = true
+            connectionType = ConnectionType.USB_CABLE
+            onIpChange("127.0.0.1")
+        }
+    }
 
     val fieldColors = OutlinedTextFieldDefaults.colors(
         focusedTextColor = Color.White,
@@ -717,7 +732,7 @@ fun PairingScreen(
         )
         Spacer(modifier = Modifier.height(16.dp))
 
-        // Selector de Modo de Conexión: Wi-Fi vs Cable USB
+        // Selector de Modo de Conexión: Cable USB vs Wi-Fi
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -738,7 +753,11 @@ fun PairingScreen(
                     contentColor = if (connectionType == ConnectionType.USB_CABLE) Color.White else Color(0xFF94A3B8)
                 )
             ) {
-                Text("🔌 Cable USB", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Text(
+                    text = if (usbDetected) "🔌 Cable USB (Activo)" else "🔌 Cable USB",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp
+                )
             }
 
             Button(
@@ -771,19 +790,26 @@ fun PairingScreen(
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 if (connectionType == ConnectionType.USB_CABLE) {
-                    Text("⚡ MODO CABLE USB ULTRA-FLUIDO", fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8), fontSize = 12.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = if (usbDetected) "✅ CABLE USB CONECTADO CON EL PC" else "⚡ MODO CABLE USB ULTRA-FLUIDO",
+                            fontWeight = FontWeight.Bold,
+                            color = if (usbDetected) Color(0xFF22C55E) else Color(0xFF38BDF8),
+                            fontSize = 12.sp
+                        )
+                    }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "• Latencia <1 ms y 0% pérdida de datos (bus USB directo).\n• Conecta el cable a la PC con 'Depuración USB' o 'Anclaje USB' activo.\n• El servidor reenviará los datos por adb reverse automáticamente.",
+                        text = "• Conexión directa: ¡Sin necesidad de PIN! Se autoriza automáticamente por seguridad de bus físico.\n• Latencia <1 ms y 0% pérdida de datos.\n• Conecta tu dispositivo a la PC con cable USB y 'Depuración USB' o 'Anclaje USB' activo.",
                         color = Color(0xFFCBD5E1),
                         fontSize = 11.sp,
                         lineHeight = 15.sp
                     )
                 } else {
-                    Text("📡 MODO RED LOCAL WI-FI", fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8), fontSize = 12.sp)
+                    Text("📡 MODO RED LOCAL WI-FI (REQUIERE PIN)", fontWeight = FontWeight.Bold, color = Color(0xFF38BDF8), fontSize = 12.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "• Conecta el teléfono a la misma red Wi-Fi de tu PC.\n• Ingresa la IP que muestra la consola del servidor (ej. 192.168.1.X).",
+                        text = "• Conecta el teléfono a la misma red Wi-Fi de tu PC.\n• Ingresa la IP y el PIN de 6 dígitos que muestra la consola del servidor en la PC.",
                         color = Color(0xFFCBD5E1),
                         fontSize = 11.sp,
                         lineHeight = 15.sp
@@ -794,29 +820,26 @@ fun PairingScreen(
 
         Spacer(modifier = Modifier.height(14.dp))
 
-        OutlinedTextField(
-            value = ip,
-            onValueChange = {
-                onIpChange(it)
-                if (connectionType == ConnectionType.WIFI) savedWifiIp = it
-            },
-            label = {
-                Text(
-                    if (connectionType == ConnectionType.USB_CABLE) "Host Localhost (127.0.0.1 por USB)" else "IP de la PC (ej. 192.168.1.X)",
-                    color = Color(0xFF94A3B8)
-                )
-            },
-            modifier = Modifier.fillMaxWidth(),
-            textStyle = inputStyle,
-            colors = fieldColors,
-            singleLine = true
-        )
-        Spacer(modifier = Modifier.height(10.dp))
+        if (connectionType == ConnectionType.WIFI) {
+            OutlinedTextField(
+                value = ip,
+                onValueChange = {
+                    onIpChange(it)
+                    savedWifiIp = it
+                },
+                label = { Text("IP de la PC (ej. 192.168.1.X)", color = Color(0xFF94A3B8)) },
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = inputStyle,
+                colors = fieldColors,
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+        }
 
         OutlinedTextField(
             value = port,
             onValueChange = onPortChange,
-            label = { Text("Puerto (35500)", color = Color(0xFF94A3B8)) },
+            label = { Text("Puerto del servidor (35500)", color = Color(0xFF94A3B8)) },
             modifier = Modifier.fillMaxWidth(),
             textStyle = inputStyle,
             colors = fieldColors,
@@ -824,33 +847,45 @@ fun PairingScreen(
         )
         Spacer(modifier = Modifier.height(10.dp))
 
-        OutlinedTextField(
-            value = pin,
-            onValueChange = onPinChange,
-            label = { Text("PIN de 6 dígitos mostrado en la PC", color = Color(0xFF94A3B8)) },
-            modifier = Modifier.fillMaxWidth(),
-            textStyle = inputStyle,
-            colors = fieldColors,
-            singleLine = true
-        )
-        Spacer(modifier = Modifier.height(16.dp))
+        if (connectionType == ConnectionType.WIFI) {
+            OutlinedTextField(
+                value = pin,
+                onValueChange = onPinChange,
+                label = { Text("PIN de 6 dígitos mostrado en la PC", color = Color(0xFF94A3B8)) },
+                modifier = Modifier.fillMaxWidth(),
+                textStyle = inputStyle,
+                colors = fieldColors,
+                singleLine = true
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+        } else {
+            Spacer(modifier = Modifier.height(6.dp))
+        }
 
         if (errorMessage != null) {
             Text(text = errorMessage, color = Color(0xFFEF4444), fontSize = 13.sp)
             Spacer(modifier = Modifier.height(10.dp))
         }
 
+        val canConnect = if (connectionType == ConnectionType.USB_CABLE) {
+            !isLoading
+        } else {
+            !isLoading && pin.length >= 6
+        }
+
         Button(
             onClick = onConnect,
-            enabled = !isLoading && pin.length >= 6,
+            enabled = canConnect,
             modifier = Modifier.fillMaxWidth().height(48.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (connectionType == ConnectionType.USB_CABLE) Color(0xFF059669) else Color(0xFF0284C7)
+            )
         ) {
             if (isLoading) {
                 CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
             } else {
                 Text(
-                    if (connectionType == ConnectionType.USB_CABLE) "CONECTAR POR CABLE USB" else "EMPAREJAR Y CONECTAR",
+                    text = if (connectionType == ConnectionType.USB_CABLE) "ENTRAR POR CABLE USB (SIN PIN)" else "EMPAREJAR Y CONECTAR",
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp
                 )

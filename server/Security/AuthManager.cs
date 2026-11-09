@@ -82,6 +82,15 @@ namespace AtsGpsServer.Security
             }
         }
 
+        public string GenerateDirectUsbToken()
+        {
+            byte[] tokenBytes = new byte[32];
+            RandomNumberGenerator.Fill(tokenBytes);
+            string token = Convert.ToHexString(tokenBytes).ToLowerInvariant();
+            _activeTokens[token] = DateTimeOffset.UtcNow.AddHours(48);
+            return token;
+        }
+
         public bool ValidateToken(string? token)
         {
             if (string.IsNullOrWhiteSpace(token)) return false;
