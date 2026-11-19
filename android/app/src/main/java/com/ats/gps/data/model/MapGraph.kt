@@ -1,6 +1,24 @@
 package com.ats.gps.data.model
 
+import com.ats.gps.data.map.RouteResult
+
 data class Point3D(val x: Float, val y: Float, val z: Float)
+
+data class RoadSnapResult(
+    val snappedX: Float,
+    val snappedZ: Float,
+    val edge: MapEdge,
+    val segmentIndex: Int,
+    val distanceSq: Float
+)
+
+data class RouteTrackingState(
+    val isOffRoute: Boolean,
+    val isWrongWay: Boolean,
+    val distanceToRouteMeters: Float,
+    val routeAlignmentDot: Float,
+    val currentSnap: RoadSnapResult?
+)
 
 data class MapNode(
     val index: Int,
@@ -42,7 +60,7 @@ data class MapCompany(
 
 data class MapPoi(
     val poiId: Int,
-    val poiType: Byte, // 1=GasStation (⛽), 2=RestStop (🛏️), 3=ServiceRepair (🔧), 4=Dealership (🏬), 5=Company (🏢), 6=WeighStation (⚖️)
+    val poiType: Byte, // 1=GasStation (GAS), 2=RestStop (RST), 3=ServiceRepair (SRV), 4=Dealership (DLR), 5=Company (LOG), 6=WeighStation (WGH)
     val name: String,
     val x: Float,
     val y: Float,
@@ -74,6 +92,211 @@ data class MapGraph(
 
     fun getEdgesNear(centerX: Float, centerZ: Float, radius: Float): List<MapEdge> {
         return spatialGrid.query(centerX, centerZ, radius)
+    }
+
+    private fun findBestSnapInEdges(
+        edges: List<MapEdge>,
+        x: Float,
+        z: Float,
+        hx: Float,
+        hz: Float
+    ): RoadSnapResult? {
+        var bestResult: RoadSnapResult? = null
+        var bestEffectiveDistSq = Float.MAX_VALUE
+
+        for (edge in edges) {
+            val poly = edge.polyline
+            if (poly.size < 2) continue
+
+            for (i in 0 until poly.size - 1) {
+                val p1 = poly[i]
+                val p2 = poly[i + 1]
+                val vx = p2.x - p1.x
+                val vz = p2.z - p1.z
+                val lenSq = vx * vx + vz * vz
+
+                val t = if (lenSq > 0.0001f) {
+                    (((x - p1.x) * vx + (z - p1.z) * vz) / lenSq).coerceIn(0f, 1f)
+                } else {
+                    0f
+                }
+
+                val projX = p1.x + t * vx
+                val projZ = p1.z + t * vz
+                val dx = x - projX
+                val dz = z - projZ
+                val distSq = dx * dx + dz * dz
+
+                var effectiveDistSq = distSq
+                if (lenSq > 0.01f) {
+                    val dot = (vx * hx + vz * hz) / kotlin.math.sqrt(lenSq)
+                    if (dot < -0.35f) {
+                        effectiveDistSq = distSq * 4.5f
+                    }
+                }
+
+                if (effectiveDistSq < bestEffectiveDistSq) {
+                    bestEffectiveDistSq = effectiveDistSq
+                    bestResult = RoadSnapResult(
+                        snappedX = projX,
+                        snappedZ = projZ,
+                        edge = edge,
+                        segmentIndex = i,
+                        distanceSq = distSq
+                    )
+                }
+            }
+        }
+        return bestResult
+    }
+
+    fun snapToRoad(
+        x: Float,
+        z: Float,
+        headingDeg: Float,
+        preferredEdges: List<MapEdge>? = null,
+        maxDistMeters: Float = 26f
+    ): RoadSnapResult? {
+        if (edges.isEmpty()) return null
+
+        val rad = Math.toRadians(headingDeg.toDouble()).toFloat()
+        val hx = kotlin.math.sin(rad)
+        val hz = -kotlin.math.cos(rad)
+        val maxDistSq = maxDistMeters * maxDistMeters
+
+        if (!preferredEdges.isNullOrEmpty()) {
+            val prefMaxDist = kotlin.math.min(28f, maxDistMeters)
+            val prefMaxDistSq = prefMaxDist * prefMaxDist
+            val prefHit = findBestSnapInEdges(preferredEdges, x, z, hx, hz)
+            if (prefHit != null && prefHit.distanceSq <= prefMaxDistSq) {
+                return prefHit
+            }
+        }
+
+        val candidates = spatialGrid.query(x, z, maxDistMeters * 2f)
+        if (candidates.isEmpty()) return null
+
+        val bestHit = findBestSnapInEdges(candidates, x, z, hx, hz)
+        return if (bestHit != null && bestHit.distanceSq <= maxDistSq) {
+            bestHit
+        } else {
+            null
+        }
+    }
+
+    fun findBestRouteStartNode(x: Float, z: Float, headingDeg: Float): Int {
+        val snap = snapToRoad(x, z, headingDeg, null, 45f)
+        if (snap != null && adjacency.containsKey(snap.edge.fromNodeIndex)) {
+            return snap.edge.fromNodeIndex
+        }
+        return findNearestNode(x, z, mustHaveEdges = true)
+    }
+
+    fun evaluateRouteTracking(
+        x: Float,
+        z: Float,
+        headingDeg: Float,
+        speedKmh: Float,
+        gear: Int,
+        activeRoute: RouteResult?
+    ): RouteTrackingState {
+        val rad = Math.toRadians(headingDeg.toDouble()).toFloat()
+        val hx = kotlin.math.sin(rad)
+        val hz = -kotlin.math.cos(rad)
+
+        val currentSnap = snapToRoad(x, z, headingDeg, activeRoute?.edgePath, maxDistMeters = 28f)
+
+        var isOffRoute = false
+        var minDist = 0f
+        var routeDot = 1f
+
+        if (activeRoute != null && activeRoute.edgePath.isNotEmpty()) {
+            var bestRouteDistSq = Float.MAX_VALUE
+            var bestRouteDot = 1f
+
+            for (edge in activeRoute.edgePath) {
+                val poly = edge.polyline
+                if (poly.size < 2) continue
+                for (i in 0 until poly.size - 1) {
+                    val p1 = poly[i]
+                    val p2 = poly[i + 1]
+                    val vx = p2.x - p1.x
+                    val vz = p2.z - p1.z
+                    val lenSq = vx * vx + vz * vz
+                    val t = if (lenSq > 0.0001f) {
+                        (((x - p1.x) * vx + (z - p1.z) * vz) / lenSq).coerceIn(0f, 1f)
+                    } else 0f
+                    val projX = p1.x + t * vx
+                    val projZ = p1.z + t * vz
+                    val dx = x - projX
+                    val dz = z - projZ
+                    val distSq = dx * dx + dz * dz
+
+                    if (distSq < bestRouteDistSq) {
+                        bestRouteDistSq = distSq
+                        bestRouteDot = if (lenSq > 0.0001f) {
+                            (vx * hx + vz * hz) / kotlin.math.sqrt(lenSq)
+                        } else 1f
+                    }
+                }
+            }
+
+            minDist = if (bestRouteDistSq < Float.MAX_VALUE) kotlin.math.sqrt(bestRouteDistSq) else 0f
+            routeDot = bestRouteDot
+            isOffRoute = (minDist > 34f) ||
+                (speedKmh > 10f && gear > 0 && minDist <= 34f && routeDot < -0.50f)
+        }
+
+        val isWrongWay = if (speedKmh > 8f && gear > 0) {
+            val nearby = spatialGrid.query(x, z, 25f)
+            var minSegDistSq = Float.MAX_VALUE
+            var maxDotWithin12m = -2f
+
+            for (edge in nearby) {
+                val poly = edge.polyline
+                if (poly.size < 2) continue
+                for (i in 0 until poly.size - 1) {
+                    val p1 = poly[i]
+                    val p2 = poly[i + 1]
+                    val vx = p2.x - p1.x
+                    val vz = p2.z - p1.z
+                    val lenSq = vx * vx + vz * vz
+                    val t = if (lenSq > 0.0001f) {
+                        (((x - p1.x) * vx + (z - p1.z) * vz) / lenSq).coerceIn(0f, 1f)
+                    } else 0f
+                    val projX = p1.x + t * vx
+                    val projZ = p1.z + t * vz
+                    val dx = x - projX
+                    val dz = z - projZ
+                    val distSq = dx * dx + dz * dz
+
+                    if (distSq < minSegDistSq) {
+                        minSegDistSq = distSq
+                    }
+                    if (distSq <= 144f && lenSq > 0.01f) {
+                        val dot = (vx * hx + vz * hz) / kotlin.math.sqrt(lenSq)
+                        if (dot > maxDotWithin12m) {
+                            maxDotWithin12m = dot
+                        }
+                    }
+                }
+            }
+
+            val case1 = minSegDistSq <= 100f && maxDotWithin12m in -1.5f..-0.45f
+            val case2 = activeRoute != null && activeRoute.edgePath.isNotEmpty() &&
+                minDist <= 12f && routeDot < -0.60f
+            case1 || case2
+        } else {
+            false
+        }
+
+        return RouteTrackingState(
+            isOffRoute = isOffRoute,
+            isWrongWay = isWrongWay,
+            distanceToRouteMeters = minDist,
+            routeAlignmentDot = routeDot,
+            currentSnap = currentSnap
+        )
     }
 
     fun findNearestNode(x: Float, z: Float, mustHaveEdges: Boolean = true): Int {

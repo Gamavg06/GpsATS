@@ -3,6 +3,8 @@ package com.ats.gps.data.map
 import com.ats.gps.data.model.MapEdge
 import com.ats.gps.data.model.MapGraph
 import java.util.PriorityQueue
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 data class RouteResult(
@@ -13,7 +15,13 @@ data class RouteResult(
 
 object AStarRouter {
 
-    fun findRoute(graph: MapGraph, startNode: Int, targetNode: Int): RouteResult? {
+    fun findRoute(
+        graph: MapGraph,
+        startNode: Int,
+        targetNode: Int,
+        headingDeg: Float = Float.NaN,
+        initialEdge: MapEdge? = null
+    ): RouteResult? {
         val nodeCount = graph.nodes.size
         if (nodeCount == 0 || startNode !in 0 until nodeCount || targetNode !in 0 until nodeCount) {
             return null
@@ -22,14 +30,14 @@ object AStarRouter {
             return RouteResult(listOf(startNode), emptyList(), 0f)
         }
 
-        val route = executeAStar(graph, startNode, targetNode, nodeCount)
+        val route = executeAStar(graph, startNode, targetNode, nodeCount, headingDeg, initialEdge)
         if (route != null) return route
 
         // Si el nodo exacto está desconectado o en sentido contrario, buscar un nodo adyacente conectado
         val candidateStarts = graph.adjacency[startNode]?.map { it.toNodeIndex }?.take(4) ?: emptyList()
         for (cand in candidateStarts) {
             if (cand in 0 until nodeCount && cand != targetNode) {
-                val altRoute = executeAStar(graph, cand, targetNode, nodeCount)
+                val altRoute = executeAStar(graph, cand, targetNode, nodeCount, headingDeg, null)
                 if (altRoute != null) return altRoute
             }
         }
@@ -37,8 +45,28 @@ object AStarRouter {
         return null
     }
 
-    private fun executeAStar(graph: MapGraph, startNode: Int, targetNode: Int, nodeCount: Int): RouteResult? {
+    private fun executeAStar(
+        graph: MapGraph,
+        startNode: Int,
+        targetNode: Int,
+        nodeCount: Int,
+        headingDeg: Float,
+        initialEdge: MapEdge?
+    ): RouteResult? {
         val adjacency = graph.adjacency
+        val nodes = graph.nodes
+
+        val hasHeading = !headingDeg.isNaN()
+        val hx: Float
+        val hz: Float
+        if (hasHeading) {
+            val rad = Math.toRadians(headingDeg.toDouble()).toFloat()
+            hx = sin(rad)
+            hz = -cos(rad)
+        } else {
+            hx = 0f
+            hz = 0f
+        }
 
         // Arreglos primitivos planos: 0 boxing, rendimiento nativo a nivel de caché
         val gScore = FloatArray(nodeCount) { Float.MAX_VALUE }
@@ -50,7 +78,7 @@ object AStarRouter {
         gScore[startNode] = 0f
         openSet.add(NodeScore(startNode, 0f, heuristic(graph, startNode, targetNode)))
 
-        var maxSteps = 150000 // Límite de seguridad para evitar bloqueos
+        val maxSteps = 150000 // Límite de seguridad para evitar bloqueos
         var steps = 0
 
         while (!openSet.isEmpty() && steps++ < maxSteps) {
@@ -84,19 +112,73 @@ object AStarRouter {
 
             val edges = adjacency[current] ?: continue
             val currentG = gScore[current]
+            val prevNode = cameFromNode[current]
+            val prevEdge = cameFromEdge[current]
 
             for (edge in edges) {
                 val neighbor = edge.toNodeIndex
                 if (neighbor !in 0 until nodeCount) continue
 
-                // Factor de preferencia de carretera
-                val weight = when (edge.roadType.toInt()) {
-                    0 -> 1.0f  // Autopistas interestatales
-                    1 -> 1.12f // Carreteras principales
-                    3 -> 1.35f // Curvas/rampas de intercambiador
-                    else -> 1.25f
+                // Prohibir retroceso inmediato A -> B -> A cuando hay alternativas
+                if (prevNode != -1 && neighbor == prevNode && edges.size > 1) continue
+
+                var initialReversePenalty = 0f
+                if (current == startNode && hasHeading) {
+                    val dx = nodes[neighbor].x - nodes[startNode].x
+                    val dz = nodes[neighbor].z - nodes[startNode].z
+                    val len = sqrt((dx * dx + dz * dz).toDouble()).toFloat()
+                    if (initialEdge != null && edge.edgeId == initialEdge.edgeId) {
+                        initialReversePenalty = 0f
+                    } else if (len > 0.01f) {
+                        val dot = (dx * hx + dz * hz) / len
+                        if (dot < -0.20f) {
+                            initialReversePenalty = 4500f
+                        }
+                    }
                 }
-                val tentativeG = currentG + edge.length * weight
+
+                var turnPenalty = 0f
+                if (prevNode != -1) {
+                    val inDx = nodes[current].x - nodes[prevNode].x
+                    val inDz = nodes[current].z - nodes[prevNode].z
+                    val outDx = nodes[neighbor].x - nodes[current].x
+                    val outDz = nodes[neighbor].z - nodes[current].z
+                    val inLen = sqrt((inDx * inDx + inDz * inDz).toDouble()).toFloat()
+                    val outLen = sqrt((outDx * outDx + outDz * outDz).toDouble()).toFloat()
+
+                    val hasValidVecs = inLen > 0.1f && outLen > 0.1f
+                    val cosTurn = if (hasValidVecs) (inDx * outDx + inDz * outDz) / (inLen * outLen) else 1f
+                    if (hasValidVecs) {
+                        if (cosTurn < -0.60f) {
+                            turnPenalty += 3200f // Giro en U ilegal o > 127°
+                        } else if (cosTurn < -0.15f) {
+                            turnPenalty += 140f  // Giro cerrado > 98°
+                        }
+                    }
+
+                    // Penalizar cruces sintéticos de mediana en autopistas
+                    if (edge.roadType.toInt() == 3 && edge.length <= 15.5f && edge.flags.toInt() == 0 &&
+                        (prevEdge?.roadType?.toInt() == 0 || (hasValidVecs && cosTurn < 0.3f))
+                    ) {
+                        turnPenalty += 2500f
+                    }
+                }
+
+                // Costo por velocidad y jerarquía vial (estilo ATS Route Advisor)
+                val speed = edge.speedLimitKmh.coerceIn(35f, 115f)
+                val speedFactor = 105f / speed
+                val hierarchyFactor = when (edge.roadType.toInt()) {
+                    0 -> 1.0f
+                    1 -> 1.15f
+                    2 -> 1.38f
+                    3 -> 1.30f
+                    else -> 1.35f
+                }
+                val semaphorePenalty = if ((edge.flags.toInt() and 2) != 0) 65f else 0f
+                val edgeCost = edge.length * speedFactor * hierarchyFactor +
+                    semaphorePenalty + turnPenalty + initialReversePenalty
+
+                val tentativeG = currentG + edgeCost
 
                 if (tentativeG < gScore[neighbor]) {
                     cameFromNode[neighbor] = current

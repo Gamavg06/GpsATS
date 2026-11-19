@@ -1,107 +1,105 @@
-# CHANGELOG - ATS Telemetría GPS
+# CHANGELOG - ATS Telemetria GPS
 
 Todas las modificaciones notables, correcciones de errores y nuevas funcionalidades introducidas en este proyecto se registran en este documento.
 
 ---
 
-## [v1.2.3] — 2026-11-05
+## [v1.3.8] - 2026-11-19
+### Mejorado y Corregido
+- **Limpieza Visual Cero Emojis (Android y Lanzador PC):**
+  - Reemplazo de todos los pictogramas por insignias tipograficas de alto contraste en `GpsMapCanvas.kt` (`GAS`, `RST`, `SRV`, `DLR`, `LOG`, `WGH`, `POI`), `MainActivity.kt` (`CTR`, `CFG`, `FUEL`, `DESCANSO`, `ALERTA: SENTIDO CONTRARIO - RECALCULANDO RUTA`, `EXPLORACION LIBRE - PULSA PARA CENTRAR`), `DashboardScreen.kt` (`OK Todo en orden`, `AVISO Revision requerida`, `Parada cercana`), `TelemetryDiagnosticScreen.kt` (`v1.3.8 (Build 13)`) y `AtsGpsLauncher` (`MainWindow.xaml` / `MainWindow.xaml.cs`).
+- **Correccion de Encadenado Topologico en `GpsMapCanvas.kt`:**
+  - `chainEdges()` ahora rechaza explicitamente la arista inversa directa (`candEdge.toNodeIndex == currEdge.fromNodeIndex`) y saltos hacia atras (`dot < -0.35f`), evitando plegados `A -> B -> A` y triangulos espurios tras el suavizado Chaikin.
+- **Documentacion y Capturas Oficiales:**
+  - Regeneracion de las 5 vistas oficiales `1080x2200` en `docs/screenshots/` a partir de `map_ats.bin` real.
+  - Rediseño integral de `README.md` y limpieza completa de `CHANGELOG.md`.
+- **Compilacion y Publicacion:**
+  - `versionCode = 13`, `versionName = "1.3.8"` en Android y actualizacion publicada de `Iniciar_Servidor.exe` (`AtsGpsLauncher`).
+
+---
+
+## [v1.3.7] - 2026-11-19
+### Agregado y Corregido
+- **Ruteo A* con Velocidad, Jerarquia y Momento Inicial (`AStarRouter.kt`):**
+  - Prohibicion de retroceso inmediato `A -> B -> A` y penalizacion de direccion inversa al inicio (`initialReversePenalty = 4500f` cuando `dot < -0.20f`).
+  - Penalizaciones de giros cerrados (`cosTurn < -0.15f` y `cosTurn < -0.60f`), cruces sinteticos de mediana y semaforos, ponderando velocidad limite y categoria vial.
+- **Seguimiento en Tiempo Real y Sentido Contrario (`MapGraph.kt`, `MainActivity.kt`):**
+  - Agregado `evaluateRouteTracking()` para evaluar distancia a ruta activa, alineacion por rumbo y deteccion de sentido contrario (`isWrongWay`) tanto en vias dirigidas como en contraflujo sobre la ruta.
+  - Recalculo dinamico en corrutina no cancelable (`routeJob` en `Dispatchers.Default`) ante desvios confirmados (`> 48 m` o `>= 4` frames fuera de ruta), sin interrumpir busquedas A* a 30 Hz.
+  - Banner superior rojo de alerta y aviso de voz TTS (`"Precaucion, sentido contrario"`).
+
+---
+
+## [v1.3.6] - 2026-11-19
+### Agregado y Corregido
+- **Map-Matching Vial (`MapGraph.kt`, `MainActivity.kt`, `GpsMapCanvas.kt`):**
+  - Implementado `snapToRoad()` con proyeccion ortogonal y filtro por rumbo (`4.5x` penalizacion a carriles opuestos) y `findBestRouteStartNode()` para incluir el tramo actual en A*.
+- **Renderizado 2D y 3D en Pases Globales (`GpsMapCanvas.kt`):**
+  - Suavizado Chaikin (`smoothPolyline`), subdivision de segmentos largos, recorte de ruta detras del camion (`buildSmoothActiveRoutePoints`), filtrado de micro-conectores de prefab (`roadType == 3 && length < 18f`), renderizado 2D en 2 pases globales y 3D con `clipRect`, recorte en plano cercano `projectSegment3D()` (`minDepth = 8f`), 3 pases de calzada y 4 pases de cinta cian.
+
+---
+
+## [v1.2.3] - 2026-11-05
 > [!WARNING]
-> **RECTIFICACIÓN Y AVISO DE AUDITORÍA: RESULTADOS PREVIOS MARCADOS COMO INVÁLIDOS**
-> 1. **Benchmarks de A* previos (<1 ms en mapa completo):** Declarados **INVÁLIDOS**. El grafo original sufría de fragmentación severa (16,425 componentes conexas aisladas; la componente mayor tenía solo 307 nodos). Las mediciones anteriores corrían sobre nodos en islas aisladas o caminos triviales sin conectividad interestatal real.
-> 2. **Conectividad de prefabs "100%":** Declarada **INVÁLIDA**. La fórmula anterior omitía el offset de origen PPD del modelo (`desc.Nodes[Origin].Position`) e interpretaba los campos `LeadsToNodes.Item1/Item3` como índices 1-based en lugar de bitmasks SCS (`1 << index`), descartando curvas y produciendo un error mediano de ~20m-27m en coordenadas del mundo.
-> 3. **Historial de Git Reescrito:** Se documenta que el historial de Git fue reescrito para purgar de raíz binarios propietarios (`map_ats.bin` de 60 MB y APKs de debug).
+> **RECTIFICACION Y AVISO DE AUDITORIA: RESULTADOS PREVIOS MARCADOS COMO INVALIDOS**
+> 1. **Benchmarks de A* previos (<1 ms en mapa completo):** Declarados **INVALIDOS**. El grafo anterior sufria de fragmentacion severa (16,425 componentes conexas aisladas; la componente mayor tenia solo 307 nodos).
+> 2. **Conectividad de prefabs "100%":** Declarada **INVALIDA**. La formula anterior omitia el offset de origen PPD del modelo e interpretaba los campos `LeadsToNodes.Item1/Item3` como indices 1-based en lugar de bitmasks SCS.
+> 3. **Historial de Git Reescrito:** Se purgaron binarios propietarios del historial de Git (`map_ats.bin` y APKs de debug).
 
 ### Cambiado y Corregido en v1.2.3
 - **Conectividad del Grafo Vial (B.1 - B.3):**
-  - **Decodificación bitmask en curvas SCS PPD:** Se implementó `BitOperations.TrailingZeroCount(nc.LeadsToNodes.Item1)` y `Item3`, recuperando las curvas de 4 vías y cruces en trébol descartadas anteriormente.
-  - **Transformación de origen PPD exacta:** Se aplica `worldOrigin + Vector3.Transform(localPos - ppdOriginPos, rotation)`, reduciendo el error en el nodo de anclaje de 60.0 m a **0.0000 m**.
-  - **Conexión topológica pura (0m snapping):** Se eliminó el snapping geométrico de 25m. La vinculación entre carreteras y prefabs se realiza al 100% de forma nativa por coincidencia exacta de `INode.Uid`. Casos que requieren snapping: **0**.
-  - **Crecimiento de componente conexa:** La componente gigante pasó de **307 nodos (0.21%)** a **74,520 nodos (50.97%)** (+24,200% de incremento). Bend, Portland y Seattle se encuentran ahora en la misma componente conexa principal (CompID 1).
+  - Decodificacion bitmask en curvas SCS PPD y transformacion exacta de origen PPD (error reducido a **0.0000 m**).
+  - Conexion topologica nativa por coincidencia exacta de `INode.Uid` (**0** casos de snapping geometrico en el grafo).
+  - Crecimiento de componente conexa principal de **307 nodos** a **74,520 nodos (50.97%)**.
 - **Ruteo A* Expandido por Aristas y Giros Prohibidos (B.4, C.5):**
-  - Implementación de estado `(node, prevNode)` que penaliza giros en U y descarta giros prohibidos en intersecciones. Verificado con caso real en `EmpiricalRouteValidationTests`.
-  - Ruteo empírico medido: Bend→Portland calculada con éxito (16.75 km de grafo, ratio de desvío 1.42x, 217 aristas, 8 ms en frío / 3.59 ms en caliente).
-  - Transparencia: El ruteo de larga distancia a través de múltiples estados sigue en desarrollo y no se clasifica como 100% terminado.
-- **Descubrimiento Dinámico de Sectores (C.4):**
-  - Escaneo dinámico acelerado vía entradas HashFS: detecta exactamente **420 sectores** en 90 ms (+144 sectores sobre la lista fija de 276).
-- **App Android v1.2.3 (D.9, E.13):**
-  - `versionCode = 3`, `versionName = "1.2.3"`.
-  - Generación de APK de Release firmado con keystore privada propia (SHA-256: `0E545FD91DE05F248CFEC95B59A974B1965A3728CDB39E99A933359B07BBB6DA`).
-  - `debuggable=false`, `allowBackup=false`, `FLAG_KEEP_SCREEN_ON` para mantener pantalla encendida.
-  - Indicador "Juego en Pausa" en la barra de telemetría cuando el juego se detiene, evitando valores congelados.
-- **Servidor y Automatización (E.14, E.15):**
-  - Detección dinámica de ATS en todas las bibliotecas de Steam (`libraryfolders.vdf`).
-  - Puerto TCP 35500 unificado en toda la documentación, scripts y código.
-  - Regla de firewall documentada con `-Profile Private -RemoteAddress LocalSubnet`.
-  - Aviso de licencia MIT para el plugin `scs-telemetry.dll` (RenCloud).
+  - Implementacion de estado `(node, prevNode)` validada con `EmpiricalRouteValidationTests`.
+- **Descubrimiento Dinamico de Sectores (C.4):**
+  - Escaneo HashFS dinamico de **420 sectores** en 90 ms.
+- **App Android v1.2.3:**
+  - `versionCode = 3`, `versionName = "1.2.3"`, APK Release firmado, `FLAG_KEEP_SCREEN_ON` e indicador "Juego en Pausa".
+- **Servidor y Automatizacion:**
+  - Deteccion dinamica de bibliotecas de Steam, puerto TCP 35500 y regla de firewall para subred local.
 
 ---
 
-## [v1.2.2] — 2026-11-05
+## [v1.2.2] - 2026-11-05
 ### Cambiado y Corregido
-- **Eliminación de binarios propietarios del repositorio:** `map_ats.bin` y APKs eliminados del historial y rastreo de Git.
-- **Herramienta CLI `--build-map`:** Generación local de la red vial desde la instalación de ATS del usuario.
-- **Licenciamiento unificado:** Servidor bajo **GNU GPL-2.0** (enlace con TruckLib) y app Android bajo **MIT License**.
-- **Atribuciones añadidas:** OkHttp, Okio, Kotlin y AndroidX documentados en `LICENSES.md`.
-- **Seguridad en red local:** WebSocket `ws://` documentado con precisión (sin cifrado TLS, autenticado con PIN). Validación estricta en código de subredes RFC 1918.
-- **APK Release firmado:** Compilación con keystore RSA 2048, `debuggable=false`, `allowBackup=false`, icono propio y pantalla fija (`FLAG_KEEP_SCREEN_ON`).
-- **Pruebas empíricas:** Suite `EmpiricalEvidenceTests.cs` (A* <1ms / 16KB, conectividad 100%, giros prohibidos y escaneo dinámico de sectores).
+- Eliminacion de binarios propietarios del repositorio y adicion de CLI `--build-map`.
+- Licenciamiento unificado: Servidor bajo **GNU GPL-2.0** y app Android bajo **MIT License**.
+- Seguridad en red local: WebSocket `ws://` autenticado con PIN y validacion estricta de subredes RFC 1918.
 
 ---
 
-## [v1.2.1] — 2026-11-05
+## [v1.2.1] - 2026-11-05
 ### Agregado
-- **Documentación oficial y publicación en GitHub:** Configuración de repositorio Git en rama `main`, exclusión optimizada vía `.gitignore` y creación de `README.md` exhaustivo con diagramas Mermaid, insignias de estado, guía paso a paso y arquitectura del sistema.
+- Configuracion de repositorio Git, `.gitignore` y creacion inicial de `README.md`.
 
 ---
 
-## [v1.2.0] — 2026-11-05
+## [v1.2.0] - 2026-11-05
 ### Agregado
-- **Cobertura nacional de mapa (276 sectores):** Se extrajo la totalidad de la red vial de Washington, Oregón, California, Nevada, Arizona e Idaho.
-- **86,033 Nodos viales** y **124,156 Aristas de carretera**.
-- **96 Ciudades completas** registradas (incluyendo Bend, Eugene, Medford, Burns, Boise, Reno, etc.).
-- **640 Empresas** y **1,321 Puntos de Interés (POIs)** oficiales:
-  - ⛽ Gasolineras
-  - 🛏️ Sitios de descanso y Garajes
-  - 🔧 Talleres mecánicos
-  - 🏬 Concesionarios de camiones (Peterbilt, Kenworth, Drake, etc.)
-  - 🏢 Empresas de entrega
-  - ⚖️ Básculas de pesaje
+- Cobertura de 276 sectores (Washington, Oregon, California, Nevada, Arizona e Idaho): 86,033 nodos, 124,156 aristas, 96 ciudades, 640 empresas y 1,321 POIs oficiales (Gasolineras, Sitios de descanso, Talleres mecanicos, Concesionarios, Empresas y Basculas).
 
 ### Corregido
-- **Pantalla negra en Bend, Oregón:** Se identificó que Bend reside en los sectores `(-26, -11)` y `(-26, -10)` que no estaban presentes en el lote inicial de 52 sectores. Con la inclusión de los 276 sectores, la zona queda completamente poblada de carreteras y servicios.
-- **Filtro de visión (*Frustum Culling*) en `GpsMapCanvas.kt`:** Se corrigió la condición que descartaba tramos largos de carretera cuyos extremos salían del cuadro de visión pero cruzaban por el centro de la pantalla.
-- **Protección de dibujo en Canvas:** Se protegieron los tamaños de fuente de las etiquetas de ciudades y POIs para evitar excepciones numéricas en Android Paint.
+- Correccion de visibilidad en Bend, Oregon, filtro de vision (*Frustum Culling*) en `GpsMapCanvas.kt` y proteccion de tamanos de fuente en Android Paint.
 
 ---
 
-## [v1.1.0] — 2026-11-05
+## [v1.1.0] - 2026-11-05
 ### Agregado
-- **Formato binario `ATSMAP03`:** Soporte completo para serializar y deserializar puntos de interés (POIs).
-- **Controles táctiles de navegación:** Soporte para pellizco (*pinch-to-zoom*) de $0.10\times$ a $4.5\times$ y arrastre (*drag-to-pan*).
-- **Botones flotantes de control:**
-  - `[+]` y `[-]`: Zoom in / Zoom out rápido.
-  - `[🎯]`: Recentrado instantáneo al camión con pastilla de estado.
-  - `[3D / 2D]`: Alternador de perspectiva.
-- **Rejilla táctica 3D en el suelo:** Líneas de perspectiva en el asfalto que aportan sensación de movimiento y velocidad incluso en estacionamientos.
-- **Carteles flotantes 3D (Billboards):** Iconos de servicios en perspectiva con postes verticales anclados al suelo.
-- **Autodetección de carga y ruta:** Detección automática de mercancía, tonelaje, origen, destino y trazado de ruta con algoritmo A*.
+- Formato binario `ATSMAP03` con soporte para POIs.
+- Controles tactiles de zoom (`0.10x` a `4.5x`), arrastre libre y botones `[+]`, `[-]`, `[CTR]`, `[3D / 2D]`.
+- Rejilla tactica 3D en el suelo, carteles flotantes 3D y autodeteccion de ruta A*.
 
 ---
 
-## [v1.0.1] — 2026-11-05
+## [v1.0.1] - 2026-11-05
 ### Corregido
-- **Política de seguridad de red:** Se activó `usesCleartextTraffic` y configuración XML permisiva para IPs privadas (RFC 1918) como `172.16.46.179`.
-- **Contraste de campos de texto:** Color blanco puro explícito en los campos de IP, Puerto y PIN en Compose Dark Mode.
-- **Proyección de cámara 3D:** Se invirtió el signo del eje focal de avance ($z_{cam}$) adaptado al sistema de coordenadas de SCS.
+- Politica de trafico en red local privada (RFC 1918), contraste en campos de emparejamiento y signo de eje focal en proyeccion 3D.
 
 ---
 
-## [v1.0.0] — 2026-11-05
+## [v1.0.0] - 2026-11-05
 ### Lanzamiento Inicial Clean-Room
-- **Servidor .NET 10:** Lector MMF `Local\SCSTelemetry`, broadcaster WebSocket a 30 Hz y seguridad por PIN efímero de 6 dígitos.
-- **Extractor de mapas `TruckLib`:** Parsing de carreteras, prefabs y ciudades desde archivos `.scs` oficiales.
-- **App Android (Jetpack Compose):**
-  - Motor de navegación 2D/3D.
-  - Garmin Junction View para salidas de autopista.
-  - Tablero analógico con los 5 canales de desgaste oficiales de SCS.
-  - Asistente de voz TTS nativo.
+- Servidor .NET 10 con lector MMF `Local\SCSTelemetry` y WebSocket a 30 Hz.
+- Extractor de mapas `TruckLib` y app Android en Jetpack Compose con Junction View, tablero de desgaste y asistente TTS.

@@ -14,6 +14,7 @@
 # Build Outputs (.NET / C#)
 bin/
 obj/
+*.pdb
 server/bin/
 server/obj/
 server/publish/

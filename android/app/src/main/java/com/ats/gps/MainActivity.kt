@@ -28,6 +28,7 @@ import com.ats.gps.data.map.RouteResult
 import com.ats.gps.data.model.MapGraph
 import com.ats.gps.data.model.TelemetryData
 import com.ats.gps.data.network.AtsNetworkClient
+import com.ats.gps.ui.about.AboutScreen
 import com.ats.gps.ui.dashboard.DashboardScreen
 import com.ats.gps.ui.diagnostic.TelemetryDiagnosticScreen
 import com.ats.gps.ui.junction.JunctionView
@@ -41,8 +42,9 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 enum class AppTab {
-    MAPA_GPS,
-    TABLERO
+    MAPA,
+    TELEMETRIA,
+    ACERCA_DE
 }
 
 class MainActivity : ComponentActivity() {
@@ -85,7 +87,7 @@ fun AtsNavMainApp(
     var mapGraph by remember { mutableStateOf<MapGraph?>(null) }
     var activeRoute by remember { mutableStateOf<RouteResult?>(null) }
 
-    var selectedTab by remember { mutableStateOf(AppTab.MAPA_GPS) }
+    var selectedTab by remember { mutableStateOf(AppTab.MAPA) }
     var viewMode by remember { mutableStateOf(MapViewMode.MODE_3D_PERSPECTIVE) }
     var showDestSelector by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
@@ -99,26 +101,42 @@ fun AtsNavMainApp(
 
     // Control de cálculo de ruta: se activa cuando hay destino y origen válido
     val hasValidPos = telemetry.posX != 0.0 || telemetry.posZ != 0.0
-    val posChunkX = (telemetry.posX / 120.0).toInt()
-    val posChunkZ = (telemetry.posZ / 120.0).toInt()
     var lastRoutedDestCity by remember { mutableStateOf("") }
     var lastRoutedDestComp by remember { mutableStateOf("") }
     var lastOriginNodeIndex by remember { mutableIntStateOf(-1) }
     var lastRouteCalcTime by remember { mutableLongStateOf(0L) }
+    var isWrongWay by remember { mutableStateOf(false) }
+    var lastTargetNodeIndex by remember { mutableIntStateOf(-1) }
+    var lastWrongWayVoiceTime by remember { mutableLongStateOf(0L) }
+    var offRouteCounter by remember { mutableIntStateOf(0) }
+    var routeJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     LaunchedEffect(
+        telemetry.posX,
+        telemetry.posZ,
         telemetry.destinationCity,
         telemetry.destinationCompany,
         telemetry.targetNodeIndex,
         hasValidPos,
-        mapGraph,
-        posChunkX,
-        posChunkZ
+        mapGraph
     ) {
         val graph = mapGraph ?: return@LaunchedEffect
         if (graph.nodes.isEmpty() || !hasValidPos) return@LaunchedEffect
 
-        val startNode = graph.findNearestNode(telemetry.posX.toFloat(), telemetry.posZ.toFloat(), mustHaveEdges = true)
+        val tracking = graph.evaluateRouteTracking(
+            telemetry.posX.toFloat(),
+            telemetry.posZ.toFloat(),
+            telemetry.headingDegrees.toFloat(),
+            telemetry.speedKmh,
+            telemetry.gear,
+            activeRoute
+        )
+        isWrongWay = tracking.isWrongWay
+        if (tracking.isWrongWay && System.currentTimeMillis() - lastWrongWayVoiceTime > 9000L) {
+            lastWrongWayVoiceTime = System.currentTimeMillis()
+            voiceAssistant.speak("Precaución, sentido contrario")
+        }
+        if (tracking.isOffRoute) offRouteCounter++ else offRouteCounter = 0
 
         // Autodetección: 1) Destino manual explícito, 2) Destino del trabajo en curso de ATS
         val targetNode: Int? = if (telemetry.targetNodeIndex != null) {
@@ -143,29 +161,72 @@ fun AtsNavMainApp(
             null
         }
 
-        if (targetNode != null && targetNode != startNode) {
-            val isNewDestination = telemetry.destinationCity != lastRoutedDestCity || telemetry.destinationCompany != lastRoutedDestComp
-            val shouldCompute = activeRoute == null || isNewDestination || (startNode != lastOriginNodeIndex && System.currentTimeMillis() - lastRouteCalcTime > 5000L)
+        if (targetNode != null) {
+            val isNewDestination = telemetry.destinationCity != lastRoutedDestCity ||
+                telemetry.destinationCompany != lastRoutedDestComp ||
+                targetNode != lastTargetNodeIndex
+            val now = System.currentTimeMillis()
+            val isConfirmedOffRoute = (tracking.distanceToRouteMeters > 48f || offRouteCounter >= 4) &&
+                (now - lastRouteCalcTime > 1500L)
+            val shouldCompute = activeRoute == null || isNewDestination || isConfirmedOffRoute
 
             if (shouldCompute) {
-                withContext(Dispatchers.Default) {
-                    val route = AStarRouter.findRoute(graph, startNode, targetNode)
-                    activeRoute = route
+                if (isNewDestination) {
+                    routeJob?.cancel()
+                }
+                if (isNewDestination || routeJob == null || !routeJob!!.isActive) {
+                    val snap = tracking.currentSnap ?: graph.snapToRoad(
+                        telemetry.posX.toFloat(),
+                        telemetry.posZ.toFloat(),
+                        telemetry.headingDegrees.toFloat(),
+                        null,
+                        45f
+                    )
+                    val startNode = snap?.edge?.fromNodeIndex?.takeIf { graph.adjacency.containsKey(it) }
+                        ?: graph.findBestRouteStartNode(
+                            telemetry.posX.toFloat(),
+                            telemetry.posZ.toFloat(),
+                            telemetry.headingDegrees.toFloat()
+                        )
                     lastRoutedDestCity = telemetry.destinationCity
                     lastRoutedDestComp = telemetry.destinationCompany
-                    lastOriginNodeIndex = startNode
-                    lastRouteCalcTime = System.currentTimeMillis()
-                }
+                    lastTargetNodeIndex = targetNode
 
-                if (activeRoute != null && telemetry.navDistanceMeters > 0f) {
-                    val destText = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "tu destino"
-                    voiceAssistant.updateNavigation(telemetry.navDistanceMeters, "hacia $destText")
+                    if (targetNode != startNode) {
+                        val headingSnapshot = telemetry.headingDegrees.toFloat()
+                        val navDistSnapshot = telemetry.navDistanceMeters
+                        val destCitySnapshot = telemetry.destinationCity
+                        routeJob = coroutineScope.launch {
+                            val route = withContext(Dispatchers.Default) {
+                                AStarRouter.findRoute(
+                                    graph = graph,
+                                    startNode = startNode,
+                                    targetNode = targetNode,
+                                    headingDeg = headingSnapshot,
+                                    initialEdge = snap?.edge
+                                )
+                            }
+                            if (route != null) {
+                                activeRoute = route
+                                lastOriginNodeIndex = startNode
+                                lastRouteCalcTime = System.currentTimeMillis()
+                                offRouteCounter = 0
+                                if (navDistSnapshot > 0f) {
+                                    val destText = if (destCitySnapshot.isNotEmpty()) destCitySnapshot else "tu destino"
+                                    voiceAssistant.updateNavigation(navDistSnapshot, "hacia $destText")
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        } else if (targetNode == null) {
+        } else {
+            routeJob?.cancel()
             activeRoute = null
             lastRoutedDestCity = ""
             lastRoutedDestComp = ""
+            lastTargetNodeIndex = -1
+            offRouteCounter = 0
         }
     }
 
@@ -230,7 +291,7 @@ fun AtsNavMainApp(
                 // VISTA PRINCIPAL DE NAVEGACIÓN Y TABLERO
                 // ==========================================
                 when (selectedTab) {
-                    AppTab.MAPA_GPS -> {
+                    AppTab.MAPA -> {
                         Box(modifier = Modifier.fillMaxSize()) {
                             // 1. Renderizador del Mapa en Canvas 2D/3D con Zoom y Pan interactivo
                             GpsMapCanvas(
@@ -244,6 +305,42 @@ fun AtsNavMainApp(
                                 onPanChange = { 
                                     panOffset = it
                                     isFollowingTruck = false
+                                },
+                                onMapTapped = { tapX, tapZ ->
+                                    val graph = mapGraph
+                                    if (graph != null) {
+                                        // Buscar si tocó un POI (gasolinera, descanso, taller) cercano a 120m
+                                        val nearestPoi = graph.pois.minByOrNull { poi ->
+                                            val dx = poi.x - tapX
+                                            val dz = poi.z - tapZ
+                                            dx * dx + dz * dz
+                                        }
+                                        val poiDistSq = if (nearestPoi != null) {
+                                            val dx = nearestPoi.x - tapX
+                                            val dz = nearestPoi.z - tapZ
+                                            dx * dx + dz * dz
+                                        } else Float.MAX_VALUE
+
+                                        val targetNode = if (poiDistSq < 14400f && nearestPoi != null) {
+                                            graph.findNearestNode(nearestPoi.x, nearestPoi.z)
+                                        } else {
+                                            // Buscar el tramo de carretera más cercano al toque
+                                            graph.findNearestNode(tapX, tapZ, mustHaveEdges = true)
+                                        }
+
+                                        if (targetNode != null) {
+                                            val destLabel = if (poiDistSq < 14400f && nearestPoi != null) {
+                                                nearestPoi.name.ifEmpty { "Punto de Interés" }
+                                            } else {
+                                                val c = graph.findNearestCity(tapX, tapZ)
+                                                c?.name ?: "Destino Seleccionado"
+                                            }
+                                            telemetry = telemetry.copy(
+                                                targetNodeIndex = targetNode.toLong(),
+                                                destinationCity = destLabel
+                                            )
+                                        }
+                                    }
                                 },
                                 isFollowingTruck = isFollowingTruck,
                                 modifier = Modifier.fillMaxSize()
@@ -260,6 +357,96 @@ fun AtsNavMainApp(
                                         .align(Alignment.TopStart)
                                         .padding(top = 80.dp, start = 14.dp)
                                 )
+                            }
+
+                            // 1.6. Floating Delivery Summary Card (Figma Screen 1: Top-Right)
+                            val hasJob = telemetry.destinationCity.isNotEmpty() || telemetry.isCargoLoaded || telemetry.jobIncome > 0
+                            if (hasJob) {
+                                Card(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(top = 80.dp, end = 74.dp)
+                                        .widthIn(max = 280.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color(0xF2151C21)),
+                                    shape = RoundedCornerShape(14.dp),
+                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222D35))
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                "ENTREGA EN CURSO",
+                                                color = Color(0xFFC7F36B),
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 10.sp,
+                                                letterSpacing = 0.5.sp
+                                            )
+                                            if (telemetry.speedLimitKmh > 5f) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(24.dp)
+                                                        .clip(CircleShape)
+                                                        .background(Color.White)
+                                                        .border(2.dp, Color(0xFFDC2626), CircleShape),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        "${telemetry.speedLimitKmh.roundToInt()}",
+                                                        color = Color.Black,
+                                                        fontWeight = FontWeight.Black,
+                                                        fontSize = 10.sp
+                                                    )
+                                                }
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.height(4.dp))
+
+                                        val dest = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "Destino"
+                                        val comp = if (telemetry.destinationCompany.isNotEmpty()) " (${telemetry.destinationCompany})" else ""
+                                        Text(
+                                            "$dest$comp",
+                                            color = Color(0xFFF3F6F7),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp,
+                                            maxLines = 1
+                                        )
+
+                                        val cargo = if (telemetry.cargoName.isNotEmpty()) telemetry.cargoName else "Carga general"
+                                        val tons = if (telemetry.cargoMassKg > 0f) String.format(" • %.1f t", telemetry.cargoMassKg / 1000f) else ""
+                                        Text(
+                                            "$cargo$tons",
+                                            color = Color(0xFF94A3B8),
+                                            fontSize = 11.sp,
+                                            maxLines = 1
+                                        )
+
+                                        Spacer(modifier = Modifier.height(4.dp))
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            val km = telemetry.navDistanceMeters / 1000f
+                                            val min = telemetry.navTimeSeconds / 60f
+                                            Text(
+                                                String.format("%.1f km", km),
+                                                color = Color(0xFFC7F36B),
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 12.sp
+                                            )
+                                            Text(
+                                                String.format("ETA: %.0f min", min),
+                                                color = Color(0xFF94A3B8),
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+                                }
                             }
 
                             // 2. Alerta de Parada de Descanso Obligatorio (Automática en mapa cuando queda poco tiempo)
@@ -280,7 +467,14 @@ fun AtsNavMainApp(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                                     ) {
-                                        Text("🛏️", fontSize = 16.sp)
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .background(Color(0x33F59E0B))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text("DESCANSO", color = Color(0xFFF59E0B), fontSize = 9.sp, fontWeight = FontWeight.Black)
+                                        }
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
                                                 text = "Descanso en ${telemetry.restStopMinutes}m • ${mapRestStop.first.name.ifEmpty { "Área de Servicio" }} (~${mapRestStop.second.roundToInt()} km)",
@@ -319,6 +513,26 @@ fun AtsNavMainApp(
                                         destinationName = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "DESTINO",
                                         distanceMeters = telemetry.navDistanceMeters,
                                         speedLimitKmh = telemetry.speedLimitKmh
+                                    )
+                                }
+                            }
+
+                            // 3.5. Alerta Visual de Sentido Contrario (Wrong-Way)
+                            if (isWrongWay) {
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopCenter)
+                                        .padding(top = 76.dp, start = 20.dp, end = 20.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(Color(0xEEB91C1C))
+                                        .border(2.dp, Color(0xFFFCA5A5), RoundedCornerShape(14.dp))
+                                        .padding(horizontal = 18.dp, vertical = 10.dp)
+                                ) {
+                                    Text(
+                                        text = "ALERTA: SENTIDO CONTRARIO - RECALCULANDO RUTA",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 14.sp
                                     )
                                 }
                             }
@@ -426,18 +640,7 @@ fun AtsNavMainApp(
                                     shape = CircleShape,
                                     modifier = Modifier.size(50.dp)
                                 ) {
-                                    Text("🎯", fontSize = 20.sp)
-                                }
-
-                                // Selector Manual de Destino (Opcional si no hay carga activa)
-                                FloatingActionButton(
-                                    onClick = { showDestSelector = true },
-                                    containerColor = Color(0xFF1E293B),
-                                    contentColor = Color(0xFFFACC15),
-                                    shape = CircleShape,
-                                    modifier = Modifier.size(50.dp)
-                                ) {
-                                    Text("📍", fontSize = 20.sp)
+                                    Text("CTR", fontSize = 12.sp, fontWeight = FontWeight.Black)
                                 }
 
                                 // Botón de Diagnóstico Rápido G1
@@ -448,7 +651,7 @@ fun AtsNavMainApp(
                                     shape = CircleShape,
                                     modifier = Modifier.size(50.dp)
                                 ) {
-                                    Text("⚙️", fontSize = 20.sp)
+                                    Text("CFG", fontSize = 12.sp, fontWeight = FontWeight.Black)
                                 }
                             }
 
@@ -467,7 +670,7 @@ fun AtsNavMainApp(
                                         .padding(horizontal = 16.dp, vertical = 8.dp)
                                 ) {
                                     Text(
-                                        text = "📍 Explorando mapa libremente • Pulsa para volver al camión",
+                                        text = "EXPLORACION LIBRE - PULSA PARA CENTRAR",
                                         color = Color.White,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 12.sp
@@ -476,24 +679,22 @@ fun AtsNavMainApp(
                             }
                         }
                     }
-                    AppTab.TABLERO -> {
+                    AppTab.TELEMETRIA -> {
                         DashboardScreen(
                             telemetry = telemetry,
                             onOpenDiagnostics = { showDiagnostics = true },
-                            onSendKey = { action ->
-                                coroutineScope.launch {
-                                    networkClient.sendControlKey(serverIp, serverPort.toIntOrNull() ?: 35500, action)
-                                }
-                            },
                             nearestRestStop = mapGraph?.findNearestRestStop(telemetry.posX.toFloat(), telemetry.posZ.toFloat()),
                             onRouteToRestStop = { poi ->
                                 val nearestNode = mapGraph?.findNearestNode(poi.x, poi.z)
                                 if (nearestNode != null) {
                                     telemetry = telemetry.copy(targetNodeIndex = nearestNode.toLong())
-                                    selectedTab = AppTab.MAPA_GPS
+                                    selectedTab = AppTab.MAPA
                                 }
                             }
                         )
+                    }
+                    AppTab.ACERCA_DE -> {
+                        AboutScreen()
                     }
                 }
 
@@ -537,7 +738,7 @@ fun AtsNavMainApp(
 }
 
 // =====================================================================
-// COMPONENTES UI: NAVEGACIÓN, PESTAÑAS Y DIÁLOGOS
+// COMPONENTES UI: NAVEGACIÓN, PESTAÑAS Y DIÁLOGOS (FIGMA DESIGN SYSTEM)
 // =====================================================================
 
 @Composable
@@ -548,185 +749,125 @@ fun TopNavigationBar(
     graph: MapGraph?,
     onOpenDiagnostics: () -> Unit
 ) {
-    val nearestCity = remember(telemetry.posX, telemetry.posZ, graph) {
-        if (graph != null && (telemetry.posX != 0.0 || telemetry.posZ != 0.0)) {
-            graph.findNearestCity(telemetry.posX.toFloat(), telemetry.posZ.toFloat())
-        } else null
-    }
-
-    // Detección robusta de trabajo activo (G1): soporta Customer Priority, carga oculta o campos vacíos
-    val hasActiveJob = telemetry.destinationCity.isNotEmpty() ||
-            telemetry.targetNodeIndex != null ||
-            telemetry.onJob ||
-            telemetry.isCargoLoaded ||
-            telemetry.jobIncome > 0 ||
-            (telemetry.navDistanceMeters > 50f && telemetry.speedLimitKmh > 0f)
-
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xE60A0F1D))
+            .background(Color(0xF50C1013))
             .statusBarsPadding()
-            .padding(horizontal = 14.dp, vertical = 6.dp)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        // Fila 1: Pestañas de control y estado de velocidad
+        // Branding + Status Badge
         Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Estado y Ubicación rápida
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(if (hasActiveJob) Color(0xFF166534) else Color(0xFF1E293B))
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        text = if (hasActiveJob) "📦 RUTA ACTIVA" else "🚚 CONDUCCIÓN LIBRE",
-                        color = if (hasActiveJob) Color(0xFF4ADE80) else Color(0xFF94A3B8),
-                        fontWeight = FontWeight.Black,
-                        fontSize = 11.sp
-                    )
-                }
+            Text(
+                text = "Telemetría GPS",
+                color = Color(0xFFF3F6F7),
+                fontWeight = FontWeight.Black,
+                fontSize = 16.sp
+            )
 
-                if (telemetry.gamePaused) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0xFF854D0E))
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            text = "⏸ PAUSA",
-                            color = Color(0xFFFDE047),
-                            fontWeight = FontWeight.Black,
-                            fontSize = 11.sp
-                        )
-                    }
-                } else if (telemetry.speedLimitKmh > 5f) {
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color.White)
-                            .padding(horizontal = 6.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            text = "LÍMITE ${telemetry.speedLimitKmh.roundToInt()}",
-                            color = Color.Black,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 10.sp
-                        )
-                    }
-                }
+            // Connection / Game status pill
+            val isPaused = telemetry.gamePaused
+            val isLive = telemetry.connected && !isPaused
+            val badgeBg = when {
+                isPaused -> Color(0x33F7C948)
+                isLive -> Color(0x33C7F36B)
+                else -> Color(0x33EF4444)
+            }
+            val badgeBorder = when {
+                isPaused -> Color(0xFFF7C948)
+                isLive -> Color(0xFFC7F36B)
+                else -> Color(0xFFEF4444)
+            }
+            val badgeText = when {
+                isPaused -> "JUEGO EN PAUSA"
+                isLive -> "SIMULADOR CONECTADO"
+                else -> "DESCONECTADO"
             }
 
-            // Pestañas MAPA / TABLERO
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                TabButton("MAPA GPS", selectedTab == AppTab.MAPA_GPS) { onTabSelected(AppTab.MAPA_GPS) }
-                TabButton("TABLERO", selectedTab == AppTab.TABLERO) { onTabSelected(AppTab.TABLERO) }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(badgeBg)
+                    .border(1.dp, badgeBorder, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(badgeBorder)
+                    )
+                    Text(
+                        text = badgeText,
+                        color = badgeBorder,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 9.sp,
+                        letterSpacing = 0.5.sp
+                    )
+                }
             }
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
-
-        // Fila 2: Tarjeta informativa de la Carga y Ruta (G1)
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = Color(0xCC1E293B)),
-            shape = RoundedCornerShape(10.dp)
+        // Segmented Tabs: [ Mapa ] [ Telemetría ] [ Acerca de ]
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFF151C21))
+                .border(1.dp, Color(0xFF222D35), RoundedCornerShape(10.dp))
+                .padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                if (hasActiveJob) {
-                    // Detalle de la Carga
-                    val cargoTitle = if (telemetry.cargoName.isNotEmpty()) telemetry.cargoName
-                    else if (telemetry.specialJob) "Transporte Especial"
-                    else if (telemetry.isCargoLoaded) "Envío Prioritario"
-                    else "Carga Asignada"
+            FigmaTabButton("Mapa", selectedTab == AppTab.MAPA) { onTabSelected(AppTab.MAPA) }
+            FigmaTabButton("Telemetría", selectedTab == AppTab.TELEMETRIA) { onTabSelected(AppTab.TELEMETRIA) }
+            FigmaTabButton("Acerca de", selectedTab == AppTab.ACERCA_DE) { onTabSelected(AppTab.ACERCA_DE) }
+        }
 
-                    val massTons = if (telemetry.cargoMassKg > 0f) String.format(" • %.1f t", telemetry.cargoMassKg / 1000f) else ""
-                    val incomeStr = if (telemetry.jobIncome > 0) String.format(" • \$%,d", telemetry.jobIncome) else ""
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "$cargoTitle$massTons$incomeStr",
-                            color = Color(0xFF38BDF8),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp
-                        )
-
-                        if (telemetry.navDistanceMeters > 0f) {
-                            val kmRemaining = telemetry.navDistanceMeters / 1000f
-                            val minRemaining = telemetry.navTimeSeconds / 60f
-                            Text(
-                                text = String.format("%.1f km  (%.0f min)", kmRemaining, minRemaining),
-                                color = Color(0xFFFACC15),
-                                fontWeight = FontWeight.Black,
-                                fontSize = 13.sp
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(2.dp))
-
-                    // Origen y Destino
-                    val srcStr = if (telemetry.sourceCity.isNotEmpty()) {
-                        if (telemetry.sourceCompany.isNotEmpty()) "${telemetry.sourceCity} (${telemetry.sourceCompany})" else telemetry.sourceCity
-                    } else (nearestCity?.name ?: "Origen")
-
-                    val dstStr = if (telemetry.destinationCity.isNotEmpty()) {
-                        if (telemetry.destinationCompany.isNotEmpty()) "${telemetry.destinationCity} (${telemetry.destinationCompany})" else telemetry.destinationCity
-                    } else "Destino"
-
-                    Text(
-                        text = "🚩 $srcStr ➔ 🏁 $dstStr",
-                        color = Color.White,
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 12.sp
-                    )
-                } else {
-                    // Modo Libre (Sin Carga Activa)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            val cityName = nearestCity?.name?.uppercase() ?: "ZONA RURAL / EN RUTA"
-                            Text(
-                                text = "📍 Cerca de: $cityName",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
-                            Text(
-                                text = "Acepta un trabajo en ATS o pulsa 🎯 para navegar libremente",
-                                color = Color(0xFF94A3B8),
-                                fontSize = 11.sp
-                            )
-                        }
-                    }
-                }
-            }
+        // Settings / Diagnostics button
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(Color(0xFF151C21))
+                .border(1.dp, Color(0xFF222D35), CircleShape)
+                .clickable(onClick = onOpenDiagnostics),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("CFG", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color(0xFF38BDF8))
         }
     }
 }
 
 @Composable
-fun TabButton(text: String, isSelected: Boolean, onClick: () -> Unit) {
+fun FigmaTabButton(text: String, isSelected: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (isSelected) Color(0xFF0284C7) else Color(0xFF1E293B))
+            .clip(RoundedCornerShape(7.dp))
+            .background(if (isSelected) Color(0xFF1E262C) else Color.Transparent)
+            .border(
+                1.dp,
+                if (isSelected) Color(0xFFC7F36B).copy(alpha = 0.5f) else Color.Transparent,
+                RoundedCornerShape(7.dp)
+            )
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Text(text = text, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+        Text(
+            text = text,
+            color = if (isSelected) Color(0xFFC7F36B) else Color(0xFF94A3B8),
+            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+            fontSize = 12.sp
+        )
     }
 }
 
@@ -735,55 +876,107 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(Color(0xE60A0F1D))
+            .background(Color(0xF50C1013))
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 20.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Marcha y Velocidad (o Aviso de Juego en Pausa G2)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            if (telemetry.gamePaused) {
+        // Vehicle quick glanceable telemetry
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Gear badge
+            val gearText = when {
+                telemetry.gear == 0 -> "N"
+                telemetry.gear < 0 -> "R"
+                else -> "D${telemetry.gear}"
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0xFF151C21))
+                    .border(1.dp, Color(0xFF222D35), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center
+            ) {
                 Text(
-                    text = "⏸ JUEGO EN PAUSA",
-                    color = Color(0xFFFACC15),
+                    text = gearText,
+                    color = Color(0xFFC7F36B),
                     fontWeight = FontWeight.Black,
+                    fontSize = 14.sp
+                )
+            }
+
+            // Speed
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "${telemetry.speedKmh.roundToInt()}",
+                    color = Color(0xFFF3F6F7),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 20.sp
+                )
+                Text(
+                    text = "km/h",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 2.dp)
+                )
+            }
+
+            // RPM
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "${telemetry.engineRpm.roundToInt()}",
+                    color = Color(0xFFF3F6F7),
+                    fontWeight = FontWeight.Bold,
                     fontSize = 15.sp
                 )
-            } else {
                 Text(
-                    text = if (telemetry.gear == 0) "N" else if (telemetry.gear < 0) "R" else "D${telemetry.gear}",
-                    color = Color(0xFF38BDF8),
-                    fontWeight = FontWeight.Black,
-                    fontSize = 18.sp
+                    text = "rpm",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 2.dp)
                 )
+            }
+
+            // Fuel
+            val fuelPct = if (telemetry.fuelCapacity > 0f) {
+                ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt()
+            } else 0
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("FUEL", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
                 Text(
-                    text = "${telemetry.speedKmh.roundToInt()} km/h",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
+                    text = "${telemetry.fuel.roundToInt()} L ($fuelPct%)",
+                    color = if (fuelPct < 15) Color(0xFFEF4444) else Color(0xFF94A3B8),
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 12.sp
                 )
             }
         }
 
-        // Estado conexión PC y Pausa
+        // Simulator connectivity text
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            val statusColor = when {
+                telemetry.gamePaused -> Color(0xFFF7C948)
+                telemetry.connected -> Color(0xFFC7F36B)
+                else -> Color(0xFFEF4444)
+            }
             Box(
                 modifier = Modifier
-                    .size(10.dp)
+                    .size(8.dp)
                     .clip(CircleShape)
-                    .background(
-                        if (telemetry.gamePaused) Color(0xFFFACC15)
-                        else if (telemetry.connected) Color(0xFF22C55E)
-                        else Color(0xFFEF4444)
-                    )
+                    .background(statusColor)
             )
             Text(
-                text = if (telemetry.gamePaused) "Pausa"
-                else if (telemetry.connected) "PC Conectada"
-                else "Desconectado",
+                text = when {
+                    telemetry.gamePaused -> "Pausa"
+                    telemetry.connected -> "Simulador Activo"
+                    else -> "Sin Conexión"
+                },
                 color = Color(0xFF94A3B8),
-                fontSize = 12.sp
+                fontSize = 11.sp
             )
         }
     }
@@ -956,7 +1149,7 @@ fun DestinationSelectorDialog(
                                     color = Color.White,
                                     fontSize = 15.sp
                                 )
-                                Text("Navegar ➔", color = Color(0xFF38BDF8), fontSize = 13.sp)
+                                Text("Navegar ->", color = Color(0xFF38BDF8), fontSize = 13.sp)
                             }
                         }
                     }

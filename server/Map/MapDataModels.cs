@@ -49,7 +49,7 @@ namespace AtsGpsServer.Map
     public class MapPoi
     {
         public uint PoiId { get; set; }
-        public byte PoiType { get; set; } // 1=GasStation (⛽), 2=RestStop (🛏️), 3=ServiceRepair (🔧), 4=Dealership (🏬), 5=Company (🏢), 6=TollGate (🛂)
+        public byte PoiType { get; set; } // 1=GasStation (GAS), 2=RestStop (RST), 3=ServiceRepair (SRV), 4=Dealership (DLR), 5=Company (LOG), 6=WeighStation (WGH)
         public string Name { get; set; } = string.Empty;
         public float X { get; set; }
         public float Y { get; set; }

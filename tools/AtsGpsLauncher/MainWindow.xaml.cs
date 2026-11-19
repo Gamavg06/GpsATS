@@ -28,7 +28,7 @@ public partial class MainWindow : Window
     {
         ResolveDirectories();
         DisplayLocalIps();
-        AppendLog("[INFO] Inicializando Panel de Control SGNIA ATS GPS v1.3.0...");
+        AppendLog("[INFO] Inicializando Panel de Control SGNIA ATS GPS v1.3.8...");
 
         // 1. Iniciar Servidor en segundo plano (sin ventana negra cmd)
         StartServer();
@@ -112,7 +112,9 @@ public partial class MainWindow : Window
                 UseShellExecute = false,
                 CreateNoWindow = true, // SIN VENTANA NEGRA DE CMD
                 RedirectStandardOutput = true,
-                RedirectStandardError = true
+                RedirectStandardError = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8
             };
 
             _serverProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
@@ -135,7 +137,7 @@ public partial class MainWindow : Window
             _serverProcess.BeginOutputReadLine();
             _serverProcess.BeginErrorReadLine();
 
-            ServerStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#22C55E"));
+            ServerStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
             ServerStatusText.Text = "ACTIVO • PUERTO 35500";
             ServerStatusText.Foreground = ServerStatusLed.Fill;
             AppendLog($"[INFO] Servidor AtsGpsServer iniciado con éxito (PID {_serverProcess.Id}).");
@@ -143,7 +145,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppendLog($"[ERROR] Fallo al iniciar el servidor: {ex.Message}");
-            ServerStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#EF4444"));
+            ServerStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF5252"));
             ServerStatusText.Text = "DETENIDO";
             ServerStatusText.Foreground = ServerStatusLed.Fill;
         }
@@ -186,7 +188,7 @@ public partial class MainWindow : Window
 
         if (line.Contains("SDK", StringComparison.OrdinalIgnoreCase) || line.Contains("telemetry", StringComparison.OrdinalIgnoreCase))
         {
-            AtsStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#22C55E"));
+            AtsStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
             AtsStatusText.Text = "SDK SCS ACTIVO";
             AtsStatusText.Foreground = AtsStatusLed.Fill;
         }
@@ -206,7 +208,7 @@ public partial class MainWindow : Window
             if (hasDevice)
             {
                 string revOutput = await RunCommandAsync(_adbPath, "reverse tcp:35500 tcp:35500");
-                UsbStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#22C55E"));
+                UsbStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
                 UsbStatusText.Text = "CONECTADO • REVERSE ACTIVO";
                 UsbStatusText.Foreground = UsbStatusLed.Fill;
                 UsbDeviceText.Text = "Celular detectado y enlazado vía USB";
@@ -214,7 +216,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                UsbStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F59E0B"));
+                UsbStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F7C948"));
                 UsbStatusText.Text = "ESPERANDO CABLE USB";
                 UsbStatusText.Foreground = UsbStatusLed.Fill;
                 UsbDeviceText.Text = "Conecta el celular con Depuración USB";
@@ -224,7 +226,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppendLog($"[USB] Error al verificar ADB: {ex.Message}");
-            UsbStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#EF4444"));
+            UsbStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF5252"));
             UsbStatusText.Text = "ERROR ADB";
             UsbStatusText.Foreground = UsbStatusLed.Fill;
         }
@@ -248,7 +250,7 @@ public partial class MainWindow : Window
 
         AppendLog($"[INSTALL] Instalando {Path.GetFileName(apkPath)} en el celular vía USB...");
         TxtFooterStatus.Text = "Instalando APK en celular...";
-        TxtFooterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F59E0B"));
+        TxtFooterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F7C948"));
 
         try
         {
@@ -257,13 +259,13 @@ public partial class MainWindow : Window
             if (result.Contains("Success"))
             {
                 TxtFooterStatus.Text = "¡APK instalada con éxito en el celular!";
-                TxtFooterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#22C55E"));
+                TxtFooterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
                 MessageBox.Show("¡La aplicación se instaló y actualizó correctamente en tu celular!", "Instalación Exitosa", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             else
             {
                 TxtFooterStatus.Text = "Error al instalar APK (revisa logs).";
-                TxtFooterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#EF4444"));
+                TxtFooterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF5252"));
             }
         }
         catch (Exception ex)
@@ -320,6 +322,8 @@ public partial class MainWindow : Window
                     Arguments = args,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    StandardOutputEncoding = System.Text.Encoding.UTF8,
+                    StandardErrorEncoding = System.Text.Encoding.UTF8,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };

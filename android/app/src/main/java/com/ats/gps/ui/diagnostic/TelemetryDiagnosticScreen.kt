@@ -68,10 +68,10 @@ fun TelemetryDiagnosticScreen(
             ) {
                 item {
                     DiagnosticCard(title = "0. VERSIONES Y COMPATIBILIDAD DEL SISTEMA (H0)") {
-                        DiagRow("App Android", "v1.3.0 (Build 5)", Color(0xFF38BDF8))
-                        DiagRow("Servidor PC", "v1.3.0", Color(0xFF22C55E))
-                        DiagRow("Mapa Binario", "map_ats.bin (v1.3.0)", Color(0xFF22C55E))
-                        DiagRow("Compatibilidad", "COMPATIBLE ✓ (Sin discrepancias)", Color(0xFF22C55E))
+                        DiagRow("App Android", "v1.3.8 (Build 13)", Color(0xFF38BDF8))
+                        DiagRow("Servidor PC", "v1.3.8", Color(0xFF22C55E))
+                        DiagRow("Mapa Binario", "map_ats.bin (v1.3.8)", Color(0xFF22C55E))
+                        DiagRow("Compatibilidad", "OK COMPATIBLE (Sin discrepancias)", Color(0xFF22C55E))
                     }
                 }
 

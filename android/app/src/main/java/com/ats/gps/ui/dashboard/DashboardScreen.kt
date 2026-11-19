@@ -5,7 +5,6 @@ import android.media.ToneGenerator
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -18,9 +17,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -32,30 +28,14 @@ import kotlin.math.roundToInt
 fun DashboardScreen(
     telemetry: TelemetryData,
     onOpenDiagnostics: () -> Unit = {},
-    onSendKey: (String) -> Unit = {},
     nearestRestStop: Pair<MapPoi, Float>? = null,
     onRouteToRestStop: (MapPoi) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val haptic = LocalHapticFeedback.current
-
-    // Estado de alerta sonora configurable (G3)
+    // Alerta sonora configurable de exceso de velocidad
     var isAudioAlertEnabled by remember { mutableStateOf(true) }
     val isSpeeding = telemetry.speedLimitKmh > 5f && telemetry.speedKmh > (telemetry.speedLimitKmh + 1.5f)
 
-    // Animación de pulso para exceso de velocidad (G3)
-    val infiniteTransition = rememberInfiniteTransition(label = "speeding_pulse")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.4f,
-        targetValue = 1.0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(450, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse_alpha"
-    )
-
-    // Tono audible configurable en exceso de velocidad (G3)
     LaunchedEffect(isSpeeding, isAudioAlertEnabled) {
         if (isSpeeding && isAudioAlertEnabled && !telemetry.gamePaused) {
             try {
@@ -66,712 +46,590 @@ fun DashboardScreen(
         }
     }
 
-    // Atenuación visual si el juego está pausado (G2)
-    val contentAlpha = if (telemetry.gamePaused) 0.52f else 1.0f
+    // Atenuación visual elegante si el juego está pausado (HUD · Juego en Pausa)
+    val contentAlpha = if (telemetry.gamePaused) 0.88f else 1.0f
 
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF070B14))
-            .navigationBarsPadding()
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .background(Color(0xFF0C1013)) // Fondo ultra oscuro Figma
+            .padding(top = 88.dp, bottom = 48.dp, start = 16.dp, end = 16.dp)
+            .alpha(contentAlpha)
     ) {
-        val isLandscape = maxWidth > maxHeight
+        val isLandscape = maxWidth > 850.dp
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Espacio de separación para la barra superior flotante (TopNavigationBar con HUD de ruta)
-            Spacer(modifier = Modifier.height(98.dp))
+            // 1. Tarjeta Resumen de Entrega y Trabajo (Delivery summary de Figma)
+            DeliverySummaryCard(telemetry = telemetry)
 
-            // 1. Barra de Luces e Indicadores de Estado (Contraste >= 3:1)
-            TopIndicatorsBar(
-                telemetry = telemetry,
-                isAudioAlertEnabled = isAudioAlertEnabled,
-                onToggleAudio = { isAudioAlertEnabled = !isAudioAlertEnabled },
-                onOpenDiagnostics = onOpenDiagnostics
-            )
-
-            // 2. Banner de Juego en Pausa (G2)
-            if (telemetry.gamePaused) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0x33FACC15))
-                        .border(1.5.dp, Color(0xFFFACC15), RoundedCornerShape(8.dp))
-                        .padding(vertical = 8.dp, horizontal = 14.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text("⏸", fontSize = 18.sp)
-                        Text(
-                            text = "JUEGO EN PAUSA — TELEMETRÍA CONGELADA",
-                            color = Color(0xFFFACC15),
-                            fontWeight = FontWeight.Black,
-                            fontSize = 13.sp
-                        )
-                    }
-                }
-            }
-
-            // 3. Banner de Exceso de Velocidad (G3)
-            if (isSpeeding && !telemetry.gamePaused) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0xFFDC2626).copy(alpha = pulseAlpha * 0.35f))
-                        .border(2.dp, Color(0xFFEF4444).copy(alpha = pulseAlpha), RoundedCornerShape(8.dp))
-                        .padding(vertical = 8.dp, horizontal = 14.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text("⚠️", fontSize = 18.sp)
-                        Text(
-                            text = "¡EXCESO DE VELOCIDAD! LÍMITE: ${telemetry.speedLimitKmh.roundToInt()} KM/H",
-                            color = Color(0xFFFCA5A5),
-                            fontWeight = FontWeight.Black,
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-            }
-
-            // 4. Tablero de Relojes Analógicos Propios (G4)
             if (isLandscape) {
+                // Disposición horizontal de 2 columnas para Tablets (1280x800)
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .alpha(contentAlpha),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    GaugesSection(telemetry, gaugeSize = 175.dp)
+                    // Columna 1: Instrumentación digital y Relojes
+                    InstrumentGaugesCard(
+                        telemetry = telemetry,
+                        modifier = Modifier.weight(1f)
+                    )
+
+                    // Columna 2: Desgaste Mecánico y Combustible
                     Column(
-                        modifier = Modifier.weight(1f).padding(start = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        VehicleStateCard(telemetry)
-                        FuelAndIncomeCard(telemetry)
-                        RestStopCard(telemetry, nearestRestStop, onRouteToRestStop)
+                        VehicleWearCard(telemetry = telemetry)
+                        FuelAndRangeCard(
+                            telemetry = telemetry,
+                            nearestRestStop = nearestRestStop,
+                            onRouteToRestStop = onRouteToRestStop
+                        )
                     }
                 }
             } else {
-                Box(modifier = Modifier.fillMaxWidth().alpha(contentAlpha)) {
-                    GaugesSection(telemetry, gaugeSize = 165.dp)
-                }
-
-                VehicleStateCard(telemetry = telemetry, modifier = Modifier.alpha(contentAlpha))
-                FuelAndIncomeCard(telemetry = telemetry, modifier = Modifier.alpha(contentAlpha))
-                RestStopCard(telemetry, nearestRestStop, onRouteToRestStop, modifier = Modifier.alpha(contentAlpha))
+                // Disposición vertical para pantallas compactas
+                InstrumentGaugesCard(telemetry = telemetry)
+                VehicleWearCard(telemetry = telemetry)
+                FuelAndRangeCard(
+                    telemetry = telemetry,
+                    nearestRestStop = nearestRestStop,
+                    onRouteToRestStop = onRouteToRestStop
+                )
             }
-
-            // 5. BOTONERA DE CABINA INTERACTIVA (VIRTUAL BUTTON BOX)
-            CabinControlDeck(
-                telemetry = telemetry,
-                onKeyClick = { action ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onSendKey(action)
-                },
-                modifier = Modifier.alpha(contentAlpha)
-            )
-
-            Spacer(modifier = Modifier.height(75.dp)) // Espacio seguro para barra inferior
         }
     }
 }
 
+// =====================================================================
+// 1. RESUMEN DE ENTREGA (Delivery Summary)
+// =====================================================================
 @Composable
-private fun GaugesSection(telemetry: TelemetryData, gaugeSize: androidx.compose.ui.unit.Dp) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // Velocímetro Circular Propio
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            CircularGauge(
-                value = telemetry.speedKmh,
-                maxValue = 160f,
-                label = "VELOCIDAD",
-                unit = "KM/H",
-                gaugeSize = gaugeSize,
-                primaryColor = Color(0xFF38BDF8),
-                warningColor = Color(0xFFEF4444),
-                warningThreshold = if (telemetry.speedLimitKmh > 5f) telemetry.speedLimitKmh else 130f
-            )
+private fun DeliverySummaryCard(
+    telemetry: TelemetryData,
+    modifier: Modifier = Modifier
+) {
+    val hasJob = telemetry.destinationCity.isNotEmpty() || telemetry.isCargoLoaded || telemetry.jobIncome > 0
 
-            if (telemetry.speedLimitKmh > 0f) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .clip(CircleShape)
-                        .background(Color.White)
-                        .border(2.5.dp, Color(0xFFEF4444), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xFF151C21))
+            .border(1.dp, Color(0xFF1E262C), RoundedCornerShape(18.dp))
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Badge superior verde neón de Figma
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(Color(0x22C7F36B))
+                    .border(1.dp, Color(0x55C7F36B), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = if (hasJob) "ENTREGA EN CURSO" else "CONDUCCIÓN LIBRE",
+                    color = Color(0xFFC7F36B),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+            }
+
+            if (telemetry.jobIncome > 0) {
+                Text(
+                    text = "$${telemetry.jobIncome}",
+                    color = Color(0xFFC7F36B),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Bottom
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                val destText = when {
+                    telemetry.destinationCity.isNotEmpty() && telemetry.destinationCompany.isNotEmpty() ->
+                        "${telemetry.destinationCity} • ${telemetry.destinationCompany}"
+                    telemetry.destinationCity.isNotEmpty() -> telemetry.destinationCity
+                    else -> "Sin destino asignado"
+                }
+
+                Text(
+                    text = destText,
+                    color = Color(0xFFF3F6F7),
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold
+                )
+
+                val cargoText = if (telemetry.cargoName.isNotEmpty() && telemetry.cargoMassKg > 0) {
+                    val tonnes = telemetry.cargoMassKg / 1000f
+                    "${telemetry.cargoName} • ${String.format("%.1f", tonnes)} t"
+                } else if (telemetry.cargoName.isNotEmpty()) {
+                    telemetry.cargoName
+                } else {
+                    "Sin carga en remolque"
+                }
+
+                Text(
+                    text = cargoText,
+                    color = Color(0xFF94A3B8),
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            if (telemetry.navDistanceMeters > 0f) {
+                Column(horizontalAlignment = Alignment.End) {
+                    val distKm = (telemetry.navDistanceMeters / 1000f).roundToInt()
                     Text(
-                        text = "${telemetry.speedLimitKmh.roundToInt()}",
-                        color = Color.Black,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 14.sp
+                        text = "$distKm km",
+                        color = Color(0xFFF3F6F7),
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    val timeMin = (telemetry.navTimeSeconds / 60).roundToInt()
+                    val etaH = timeMin / 60
+                    val etaM = timeMin % 60
+                    val etaText = if (etaH > 0) "${etaH}h ${etaM}m restantes" else "${etaM}m restantes"
+                    Text(
+                        text = etaText,
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp
                     )
                 }
             }
         }
+    }
+}
 
-        // Indicador de Marcha Central
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF1E293B))
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
+// =====================================================================
+// 2. INSTRUMENTACIÓN DIGITAL DE CABINA
+// =====================================================================
+@Composable
+private fun InstrumentGaugesCard(
+    telemetry: TelemetryData,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xFF151C21))
+            .border(1.dp, Color(0xFF1E262C), RoundedCornerShape(18.dp))
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text(
+            text = "INSTRUMENTACIÓN DIGITAL",
+            color = Color(0xFF94A3B8),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp
+        )
+
+        val speed = telemetry.speedKmh.coerceAtLeast(0f)
+        val rpm = telemetry.engineRpm.coerceAtLeast(0f)
+        val fuel = telemetry.fuel.coerceAtLeast(0f)
+
+        // Interpoladores animados continuos para 60-120Hz sin saltos
+        val animatedSpeed by animateFloatAsState(
+            targetValue = speed,
+            animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow),
+            label = "speedAnim"
+        )
+        val animatedRpm by animateFloatAsState(
+            targetValue = rpm,
+            animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
+            label = "rpmAnim"
+        )
+        val animatedFuel by animateFloatAsState(
+            targetValue = fuel,
+            animationSpec = tween(durationMillis = 350, easing = LinearOutSlowInEasing),
+            label = "fuelAnim"
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceAround,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Velocímetro Digital con Límite de Velocidad
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = if (telemetry.gear == 0) "N" else if (telemetry.gear < 0) "R${-telemetry.gear}" else "D${telemetry.gear}",
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Black,
-                    color = Color(0xFF38BDF8)
+                    text = "${animatedSpeed.roundToInt()}",
+                    color = Color(0xFFF3F6F7),
+                    fontSize = 54.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "KM / H",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                if (telemetry.speedLimitKmh > 5f) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(Color.White)
+                            .border(3.dp, Color(0xFFEF4444), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "${telemetry.speedLimitKmh.roundToInt()}",
+                            color = Color.Black,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Black
+                        )
+                    }
+                }
+            }
+
+            // Marcha Actual (Caja de cambios)
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                val gearText = when {
+                    telemetry.gear < 0 -> "R${-telemetry.gear}"
+                    telemetry.gear == 0 -> "N"
+                    else -> "D${telemetry.gear}"
+                }
+                Box(
+                    modifier = Modifier
+                        .size(width = 80.dp, height = 70.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFF0C1013))
+                        .border(1.5.dp, Color(0xFF38BDF8), RoundedCornerShape(14.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = gearText,
+                        color = Color(0xFF38BDF8),
+                        fontSize = 32.sp,
+                        fontWeight = FontWeight.Black
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "MARCHA",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
                 )
             }
-            Text("MARCHA", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
+
+            // Tacómetro RPM
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "${animatedRpm.roundToInt()}",
+                    color = Color(0xFFC7F36B),
+                    fontSize = 42.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "RPM",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
         }
 
-        // Tacómetro Circular Propio
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            val maxRpm = if (telemetry.engineRpmMax > 1000f) telemetry.engineRpmMax else 2500f
-            CircularGauge(
-                value = telemetry.engineRpm,
-                maxValue = maxRpm,
-                label = "MOTOR",
-                unit = "RPM",
-                gaugeSize = gaugeSize,
-                primaryColor = Color(0xFF10B981),
-                warningColor = Color(0xFFEF4444),
-                warningThreshold = maxRpm * 0.82f
-            )
+        // Fila de Métricas Secundarias (Presión, Consumo y Rango)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            val fuelPct = if (telemetry.fuelCapacity > 0f) {
+                ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt()
+            } else 0
+            val range = if (telemetry.fuelRangeKm > 0f) telemetry.fuelRangeKm.roundToInt() else (telemetry.fuel * 2.2f).roundToInt()
+
+            MetricPill("Nivel Combustible", "$fuelPct %")
+            MetricPill("Autonomía Est.", "~$range km")
+            MetricPill("Marcha Tablero", if (telemetry.gear == 0) "N" else if (telemetry.gear < 0) "R" else "D${telemetry.gear}")
         }
     }
 }
 
 @Composable
-private fun RestStopCard(
+private fun MetricPill(label: String, value: String) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFF0C1013))
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Text(text = label, color = Color(0xFF94A3B8), fontSize = 10.sp)
+        Text(text = value, color = Color(0xFFF3F6F7), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+// =====================================================================
+// 3. DESGASTE MECÁNICO POR COMPONENTE (Vehicle wear de Figma)
+// =====================================================================
+@Composable
+private fun VehicleWearCard(
+    telemetry: TelemetryData,
+    modifier: Modifier = Modifier
+) {
+    val maxWear = maxOf(
+        telemetry.wearWheels,
+        telemetry.wearTransmission,
+        telemetry.wearEngine,
+        telemetry.wearChassis,
+        telemetry.wearCabin
+    )
+    val isAllGood = maxWear < 0.10f
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xFF151C21))
+            .border(1.dp, Color(0xFF1E262C), RoundedCornerShape(18.dp))
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "DESGASTE POR COMPONENTE",
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            )
+
+            // Health Badge idéntico a Figma
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (isAllGood) Color(0x22C7F36B) else Color(0x22F7C948))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = if (isAllGood) "OK Todo en orden" else "AVISO Revision requerida",
+                    color = if (isAllGood) Color(0xFFC7F36B) else Color(0xFFF7C948),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        // 5 Barras de Desgaste (Neumáticos, Transmisión, Motor, Chasis, Cabina)
+        WearRow("Neumáticos", telemetry.wearWheels)
+        WearRow("Transmisión", telemetry.wearTransmission)
+        WearRow("Motor", telemetry.wearEngine)
+        WearRow("Chasis", telemetry.wearChassis)
+        WearRow("Cabina", telemetry.wearCabin)
+    }
+}
+
+@Composable
+private fun WearRow(label: String, wearFraction: Float) {
+    val pct = (wearFraction * 100f).roundToInt().coerceIn(0, 100)
+    val barColor = when {
+        pct < 6 -> Color(0xFFC7F36B) // Verde Neón Figma
+        pct < 15 -> Color(0xFFF7C948) // Amarillo Ámbar
+        else -> Color(0xFFEF4444)     // Rojo Alerta
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = label,
+            color = Color(0xFFF3F6F7),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.width(90.dp)
+        )
+
+        // Barra de progreso estilizada
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(0xFF1E262C))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction = (pct / 100f).coerceIn(0.01f, 1f))
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(barColor)
+            )
+        }
+
+        Text(
+            text = "$pct%",
+            color = barColor,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(36.dp)
+        )
+    }
+}
+
+// =====================================================================
+// 4. COMBUSTIBLE Y AUTONOMÍA (Fuel level de Figma)
+// =====================================================================
+@Composable
+private fun FuelAndRangeCard(
     telemetry: TelemetryData,
     nearestRestStop: Pair<MapPoi, Float>?,
     onRouteToRestStop: (MapPoi) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    if (telemetry.restStopMinutes <= 0 && nearestRestStop == null) return
+    val fuelPct = if (telemetry.fuelCapacity > 0f) {
+        ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt()
+    } else 0
 
-    val restMins = telemetry.restStopMinutes
-    val hours = restMins / 60
-    val mins = restMins % 60
-    val isUrgent = restMins in 1..45
-    val isWarning = restMins in 46..90
-
-    val badgeColor = when {
-        isUrgent -> Color(0xFFEF4444)
-        isWarning -> Color(0xFFF59E0B)
-        else -> Color(0xFF10B981)
+    val avgL100 = telemetry.fuelAvgConsumption
+    val rangeKm = if (telemetry.fuelRangeKm > 0f) {
+        telemetry.fuelRangeKm.roundToInt()
+    } else {
+        (telemetry.fuel * 2.4f).roundToInt()
     }
-
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
-        shape = RoundedCornerShape(10.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("🛏️", fontSize = 14.sp)
-                    Text(
-                        "TIEMPO PARA DESCANSO (MANDATORY)",
-                        fontSize = 11.sp,
-                        color = Color(0xFF94A3B8),
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(badgeColor.copy(alpha = 0.2f))
-                        .border(1.dp, badgeColor, RoundedCornerShape(6.dp))
-                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                ) {
-                    Text(
-                        text = if (restMins > 0) "${hours}h ${mins}m" else "N/D",
-                        color = badgeColor,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 13.sp
-                    )
-                }
-            }
-
-            // Recomendación automática de parada de descanso más cercana
-            if (nearestRestStop != null) {
-                val poi = nearestRestStop.first
-                val distKm = nearestRestStop.second
-                val icon = if (poi.poiType == 1.toByte()) "⛽" else "🛏️"
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0xFF1E293B))
-                        .padding(8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "$icon Parada más cercana: ${poi.name.ifEmpty { "Área de Servicio" }}",
-                            fontSize = 11.sp,
-                            color = Color(0xFFE2E8F0),
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "Distancia aproximada: ~${distKm.roundToInt()} km",
-                            fontSize = 10.sp,
-                            color = Color(0xFF38BDF8)
-                        )
-                    }
-
-                    Button(
-                        onClick = { onRouteToRestStop(poi) },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB)),
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                        shape = RoundedCornerShape(6.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Text("📍 Marcar", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CabinControlDeck(
-    telemetry: TelemetryData,
-    onKeyClick: (String) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "CONTROL DE CABINA • BOTONERA VIRTUAL",
-                    fontSize = 11.sp,
-                    color = Color(0xFF94A3B8),
-                    fontWeight = FontWeight.Black
-                )
-                Text(
-                    text = "Control Remoto PC",
-                    fontSize = 10.sp,
-                    color = Color(0xFF22C55E),
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            // Fila 1: Luces y Señalización
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "◀ Izq",
-                    sub = "[",
-                    icon = "⬅️",
-                    active = telemetry.blinkerLeft,
-                    activeColor = Color(0xFF22C55E),
-                    onClick = { onKeyClick("blinker_left") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Emerg",
-                    sub = "F",
-                    icon = "⚠️",
-                    active = telemetry.lightsHazard,
-                    activeColor = Color(0xFFF97316),
-                    onClick = { onKeyClick("hazard") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Der ▶",
-                    sub = "]",
-                    icon = "➡️",
-                    active = telemetry.blinkerRight,
-                    activeColor = Color(0xFF22C55E),
-                    onClick = { onKeyClick("blinker_right") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Luces",
-                    sub = "L",
-                    icon = "💡",
-                    active = telemetry.lightsBeamLow || telemetry.lightsParking,
-                    activeColor = Color(0xFF22C55E),
-                    onClick = { onKeyClick("lights_mode") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Altas",
-                    sub = "K",
-                    icon = "🔆",
-                    active = telemetry.lightsBeamHigh,
-                    activeColor = Color(0xFF38BDF8),
-                    onClick = { onKeyClick("lights_high") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Baliza",
-                    sub = "O",
-                    icon = "🚨",
-                    active = telemetry.lightsBeacon,
-                    activeColor = Color(0xFFF59E0B),
-                    onClick = { onKeyClick("beacon") }
-                )
-            }
-
-            // Fila 2: Cabina y Conducción
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Limpia",
-                    sub = "P",
-                    icon = "🌧️",
-                    active = telemetry.wipers,
-                    activeColor = Color(0xFF06B6D4),
-                    onClick = { onKeyClick("wipers") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "F. Mano",
-                    sub = "C",
-                    icon = "🛑",
-                    active = false,
-                    activeColor = Color(0xFFEF4444),
-                    onClick = { onKeyClick("handbrake") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Parking",
-                    sub = "Espacio",
-                    icon = "🅿️",
-                    active = telemetry.parkingBrake,
-                    activeColor = Color(0xFFEF4444),
-                    onClick = { onKeyClick("parking_brake") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Motor",
-                    sub = "E",
-                    icon = "🔑",
-                    active = telemetry.engineRpm > 300f,
-                    activeColor = Color(0xFF10B981),
-                    onClick = { onKeyClick("engine") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Corneta",
-                    sub = "N",
-                    icon = "📢",
-                    active = false,
-                    activeColor = Color(0xFFEAB308),
-                    onClick = { onKeyClick("airhorn") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Dif Lock",
-                    sub = "V",
-                    icon = "🔒",
-                    active = telemetry.differentialLock,
-                    activeColor = Color(0xFFF97316),
-                    onClick = { onKeyClick("diff_lock") }
-                )
-                DeckButton(
-                    modifier = Modifier.weight(1f),
-                    title = "Eje",
-                    sub = "U",
-                    icon = "🚜",
-                    active = telemetry.liftAxle,
-                    activeColor = Color(0xFFA855F7),
-                    onClick = { onKeyClick("lift_axle") }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun DeckButton(
-    modifier: Modifier = Modifier,
-    title: String,
-    sub: String,
-    icon: String,
-    active: Boolean,
-    activeColor: Color,
-    onClick: () -> Unit
-) {
-    val bg = if (active) activeColor.copy(alpha = 0.28f) else Color(0xFF1E293B)
-    val border = if (active) activeColor else Color(0xFF334155)
 
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(bg)
-            .border(1.2.dp, border, RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp, horizontal = 2.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(icon, fontSize = 16.sp)
-        Text(
-            text = title,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Bold,
-            color = if (active) activeColor else Color.White,
-            maxLines = 1
-        )
-        Text(
-            text = sub,
-            fontSize = 8.sp,
-            color = Color(0xFF94A3B8),
-            maxLines = 1
-        )
-    }
-}
-
-@Composable
-private fun TopIndicatorsBar(
-    telemetry: TelemetryData,
-    isAudioAlertEnabled: Boolean,
-    onToggleAudio: () -> Unit,
-    onOpenDiagnostics: () -> Unit
-) {
-    Row(
-        modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFF111827))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color(0xFF151C21))
+            .border(1.dp, Color(0xFF1E262C), RoundedCornerShape(18.dp))
+            .padding(18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Direccional Izquierda
-        Text(
-            text = "◀",
-            fontSize = 22.sp,
-            color = if (telemetry.blinkerLeft) Color(0xFF22C55E) else Color(0xFF334155),
-            fontWeight = FontWeight.Black
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "COMBUSTIBLE Y AUTONOMÍA",
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            )
 
-        // Fila Central de Luces (Contraste >= 3:1)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IndicatorBadge(label = "POS", active = telemetry.lightsParking, activeColor = Color(0xFFEAB308))
-            IndicatorBadge(label = "BAJAS", active = telemetry.lightsBeamLow, activeColor = Color(0xFF22C55E))
-            IndicatorBadge(label = "ALTAS", active = telemetry.lightsBeamHigh, activeColor = Color(0xFF38BDF8))
-            IndicatorBadge(label = "BALIZA", active = telemetry.lightsBeacon, activeColor = Color(0xFFF59E0B))
-            IndicatorBadge(label = "(P)", active = telemetry.parkingBrake, activeColor = Color(0xFFEF4444))
-            IndicatorBadge(label = "CRUISE", active = telemetry.cruiseControl, activeColor = Color(0xFF10B981))
-        }
+            // Recomendación de parada
+            val restMin = telemetry.restStopMinutes
+            val recText = when {
+                restMin in 1..45 -> "Descanso pronto"
+                fuelPct < 15 -> "Repostaje urgente"
+                else -> "Sin paradas necesarias"
+            }
+            val recColor = if (fuelPct < 15 || restMin in 1..45) Color(0xFFF7C948) else Color(0xFFC7F36B)
 
-        // Botones de Diagnóstico y Audio
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .background(if (isAudioAlertEnabled) Color(0xFF1E3A5F) else Color(0xFF1F2937))
-                    .clickable(onClick = onToggleAudio)
-                    .padding(horizontal = 7.dp, vertical = 4.dp)
+                    .background(recColor.copy(alpha = 0.15f))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
             ) {
                 Text(
-                    text = if (isAudioAlertEnabled) "🔔" else "🔕",
+                    text = recText,
+                    color = recColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
+        // Barra de combustible visual animada con estilo Figma
+        val animatedFuelPct by animateFloatAsState(
+            targetValue = fuelPct.toFloat(),
+            animationSpec = tween(durationMillis = 400, easing = LinearOutSlowInEasing),
+            label = "fuelPctAnim"
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    text = "${telemetry.fuel.roundToInt()} L (${animatedFuelPct.roundToInt()}%)",
+                    color = Color(0xFFF3F6F7),
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = if (avgL100 > 0.05f) "Consumo medio: ${String.format("%.1f", avgL100)} L/100km" else "Consumo estimado normal",
+                    color = Color(0xFF94A3B8),
                     fontSize = 12.sp
                 )
             }
 
-            Box(
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = "~$rangeKm km",
+                    color = Color(0xFF38BDF8),
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Autonomía estimada",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 12.sp
+                )
+            }
+        }
+
+        // Temporizador de Descanso y Desvío Rápido
+        if (nearestRestStop != null) {
+            Spacer(modifier = Modifier.height(2.dp))
+            Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color(0xFF0284C7))
-                    .clickable(onClick = onOpenDiagnostics)
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFF0C1013))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("DIAG", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Black)
-            }
-
-            // Direccional Derecha
-            Text(
-                text = "▶",
-                fontSize = 22.sp,
-                color = if (telemetry.blinkerRight) Color(0xFF22C55E) else Color(0xFF334155),
-                fontWeight = FontWeight.Black
-            )
-        }
-    }
-}
-
-@Composable
-private fun IndicatorBadge(label: String, active: Boolean, activeColor: Color) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(4.dp))
-            .background(if (active) activeColor.copy(alpha = 0.22f) else Color(0xFF1F2937))
-            .border(1.dp, if (active) activeColor else Color(0xFF374151), RoundedCornerShape(4.dp))
-            .padding(horizontal = 5.dp, vertical = 2.dp)
-    ) {
-        Text(
-            text = label,
-            fontWeight = FontWeight.Black,
-            fontSize = 10.sp,
-            color = if (active) activeColor else Color(0xFF6B7280)
-        )
-    }
-}
-
-@Composable
-private fun VehicleStateCard(telemetry: TelemetryData, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF111827)),
-        shape = RoundedCornerShape(10.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                "ESTADO DEL VEHÍCULO Y REMOLQUE",
-                fontSize = 11.sp,
-                color = Color(0xFF38BDF8),
-                fontWeight = FontWeight.Black,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
-
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                WearItem("Motor", telemetry.wearEngine)
-                WearItem("Transmisión", telemetry.wearTransmission)
-                WearItem("Cabina", telemetry.wearCabin)
-                WearItem("Chasis", telemetry.wearChassis)
-                WearItem("Ruedas", telemetry.wearWheels)
-
-                if (telemetry.cargoDamage > 0f || telemetry.trailerCargoDamage > 0f) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        "REMOLQUE Y CARGA ASIGNADA",
-                        fontSize = 10.sp,
-                        color = Color(0xFFFBBF24),
-                        fontWeight = FontWeight.Bold
-                    )
-                    WearItem("Daño de Carga", telemetry.cargoDamage)
-                }
-                if (telemetry.trailerAttached) {
-                    WearItem("Remolque: Chasis", telemetry.trailerWearChassis)
-                    WearItem("Remolque: Ruedas", telemetry.trailerWearWheels)
-                    WearItem("Remolque: Carrocería", telemetry.trailerWearBody)
+                Text(
+                    text = "Parada cercana: ${nearestRestStop.first.name.ifEmpty { "Área de Servicio" }} (~${nearestRestStop.second.roundToInt()} km)",
+                    color = Color(0xFFCBD5E1),
+                    fontSize = 11.sp
+                )
+                Button(
+                    onClick = { onRouteToRestStop(nearestRestStop.first) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF38BDF8)),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.height(26.dp)
+                ) {
+                    Text("Marcar", color = Color(0xFF0C1013), fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun FuelAndIncomeCard(telemetry: TelemetryData, modifier: Modifier = Modifier) {
-    val tankPct = if (telemetry.fuelCapacity > 0f) {
-        ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt().coerceIn(0, 100)
-    } else 0
-
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFF111827))
-            .padding(12.dp),
-        horizontalArrangement = Arrangement.SpaceAround
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("COMBUSTIBLE", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
-            Text("${telemetry.fuel.roundToInt()} L ($tankPct%)", fontSize = 14.sp, color = Color(0xFFFBBF24), fontWeight = FontWeight.Black)
-        }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("AUTONOMÍA", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
-            val rangeText = if (telemetry.fuelRangeKm > 0f) "~${telemetry.fuelRangeKm.roundToInt()} km" else "Calculando"
-            Text(rangeText, fontSize = 14.sp, color = Color(0xFF38BDF8), fontWeight = FontWeight.Black)
-        }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("CONSUMO MEDIO", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
-            Text(String.format("%.1f L/100", telemetry.fuelAvgConsumption * 100f), fontSize = 14.sp, color = Color.White, fontWeight = FontWeight.Black)
-        }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("GANANCIA", fontSize = 10.sp, color = Color(0xFF94A3B8), fontWeight = FontWeight.Bold)
-            Text("$${telemetry.jobIncome}", fontSize = 14.sp, color = Color(0xFF10B981), fontWeight = FontWeight.Black)
-        }
-    }
-}
-
-@Composable
-private fun WearItem(label: String, wearValue: Float) {
-    val pct = (wearValue * 100f).coerceIn(0f, 100f)
-    val color = when {
-        pct < 10f -> Color(0xFF22C55E) // Verde
-        pct < 25f -> Color(0xFFFBBF24) // Amarillo
-        pct < 50f -> Color(0xFFF97316) // Naranja
-        else -> Color(0xFFEF4444)      // Rojo
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(text = label, modifier = Modifier.width(130.dp), fontSize = 12.sp, color = Color(0xFFCBD5E1))
-        LinearProgressIndicator(
-            progress = { wearValue.coerceIn(0f, 1f) },
-            modifier = Modifier
-                .weight(1f)
-                .height(7.dp)
-                .clip(RoundedCornerShape(4.dp)),
-            color = color,
-            trackColor = Color(0xFF1E293B)
-        )
-        Text(
-            text = "${pct.roundToInt()}%",
-            modifier = Modifier.width(42.dp),
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
-            color = color,
-            fontWeight = FontWeight.Bold,
-            textAlign = androidx.compose.ui.text.style.TextAlign.End
-        )
     }
 }
