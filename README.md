@@ -1,6 +1,6 @@
 # SGNIA - ATS Telemetry & GPS Companion System
 
-[![Version: v1.3.8](https://img.shields.io/badge/Version-v1.3.8%20(Build%2013)-00E5FF.svg)](CHANGELOG.md)
+[![Version: v1.4.0](https://img.shields.io/badge/Version-v1.4.0%20(Build%2015)-00E5FF.svg)](CHANGELOG.md)
 [![Server License: GPL-2.0](https://img.shields.io/badge/Server%20License-GPL--2.0-blue.svg)](LICENSE)
 [![Android App License: MIT](https://img.shields.io/badge/App%20License-MIT-green.svg)](android/LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
@@ -8,16 +8,16 @@
 [![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack%20Compose%20Canvas-4285F4.svg)](https://developer.android.com/jetpack/compose)
 [![SCS SDK](https://img.shields.io/badge/SCS%20Telemetry%20SDK-v1.14%2B-FF6F00.svg)](https://modding.scssoft.com/wiki/Documentation/Engine/SDK/Telemetry)
 
-Sistema integral de telemetria en cabina, navegacion por satelite (GPS) en tiempo real y panel de instrumentos complementario para **American Truck Simulator** (y compatible con Euro Truck Simulator 2). Desarrollado desde cero bajo arquitectura clean-room, con renderizado por hardware de baja latencia y comunicacion directa a 30 Hz por USB (ADB Reverse) o Wi-Fi local.
+Sistema integral de telemetria en cabina, navegacion por satelite (GPS) en tiempo real y panel de instrumentos complementario para **American Truck Simulator** (y compatible con Euro Truck Simulator 2). Desarrollado desde cero bajo arquitectura clean-room, con renderizado por hardware de 60-120 FPS estables sin lag, asistente de voz interactivo, bitacora de viajes y comunicacion directa a 30 Hz por USB (ADB Reverse) o Wi-Fi local.
 
 ---
 
-## Galeria Visual (v1.3.8 - Figma Dark OLED)
+## Galeria Visual (v1.4.0 - Figma Dark OLED)
 
 | Vista 3D en Autopista | Vista 2D Trazo Continuo (Oakland) | Alerta de Sentido Contrario | Tablero de Telemetria | Informacion y Licencias |
 | :---: | :---: | :---: | :---: | :---: |
 | ![Vista 3D en Autopista](docs/screenshots/vista_3d_autopista.png) | ![Vista 2D en Oakland](docs/screenshots/vista_2d_trazo_continuo.png) | ![Alerta de Sentido Contrario](docs/screenshots/alerta_sentido_contrario.png) | ![Tablero de Telemetria](docs/screenshots/tablero_telemetria.png) | ![Informacion y Licencias](docs/screenshots/informacion_licencias.png) |
-| Proyeccion 3D con recorte de plano cercano, suavizado Chaikin, cinta cian de 4 capas y guia de carriles | Renderizado 2D en 2 pases globales sin costuras internas negras ni micro-conectores de prefab | Deteccion en vivo de sentido contrario, alerta visual/TTS y recalculo A* con momento hacia adelante | Velocimetro digital, limite de velocidad, marcha, RPM, 5 canales de desgaste y autonomia | Licencias del proyecto y avisos de componentes de terceros en scroll vertical unico |
+| Proyeccion 3D con pools estaticos sin GC, cinta cian y guia de carriles | Renderizado 2D en 2 pases globales sin costuras internas negras ni micro-conectores | Deteccion en vivo de sentido contrario, alerta visual/TTS y recalculo A* | Velocimetro digital, limite de velocidad, marcha, RPM, desgaste y autonomia | Licencias del proyecto y avisos de componentes de terceros en scroll vertical |
 
 ---
 
@@ -26,13 +26,30 @@ Sistema integral de telemetria en cabina, navegacion por satelite (GPS) en tiemp
 ### Motor Cartografico Vectorial y Map-Matching
 - **Generacion Local On-Demand (`--build-map`):** La base de datos cartografica (`map_ats.bin`, formato `ATSMAP03`) se extrae directamente de los archivos `.scs` instalados en la PC del usuario. No se distribuyen activos propietarios del juego.
 - **Cobertura Completa:** Escaneo dinamico via HashFS de `base_map*.scs` y `dlc_*.scs` (147,268 nodos, 653,410 aristas, 168 ciudades, 971 empresas y 2,103 POIs).
-- **Map-Matching (`snapToRoad`) y Anclaje Vial:** Proyeccion ortogonal con alineacion por rumbo (`headingDeg`) que penaliza carriles de sentido opuesto en autopistas divididas (`4.5x` cuando `dot < -0.35`) para mantener el cursor centrado sobre la calzada real incluso en curvas pronunciadas y salidas de intercambiador.
+- **Map-Matching (`snapToRoad`) Inteligente:** Proyeccion ortogonal con alineacion por rumbo (`headingDeg`) que penaliza carriles opuestos (`4.5x` cuando `dot < -0.35`) y throttling adaptativo que evita calculos redundantes a menos de 1.8 metros.
 - **Insignias de POIs Limpias:** Clasificacion tipografica de alto contraste sobre el mapa (`GAS`, `RST`, `SRV`, `DLR`, `LOG`, `WGH`).
 
 ### Ruteo A* Estilo ATS, Recalculo Dinamico y Sentido Contrario
 - **Costo por Tiempo, Jerarquia y Momento Inicial:** El algoritmo `AStarRouter` pondera la velocidad limite (`105 / speed`), jerarquia de via (autopistas, carreteras principales, calles locales y rampas), semaforos, giros en U (`cosTurn < -0.60`), cruces sinteticos de mediana y momento hacia adelante desde el nodo de origen.
-- **Recalculo Automatico Fuera de Ruta:** `evaluateRouteTracking()` evalua la distancia ortogonal y alineacion respecto a la ruta activa en cada frame a 30 Hz. Al confirmar desvio (`> 48 m` o `>= 4` frames fuera de ruta), lanza un recalculo asincrono en `Dispatchers.Default` sin cancelar busquedas activas en cada tick de posicion.
-- **Deteccion y Alerta de Sentido Contrario:** Cuando el vehiculo avanza (`speedKmh > 8` y `gear > 0`) contra el flujo dirigido de la via (`dot < -0.45`) o en sentido opuesto a la ruta activa (`dot < -0.60`), activa el banner de alerta roja (`ALERTA: SENTIDO CONTRARIO - RECALCULANDO RUTA`), aviso por voz TTS (`Precaucion, sentido contrario`) y recalculo hacia la siguiente salida o retorno legal.
+- **Recalculo Automatico Fuera de Ruta:** `evaluateRouteTracking()` en segundo plano (`Dispatchers.Default`). Al confirmar desvio (`> 48 m` o `>= 4` frames fuera de ruta), recalcula la ruta sin bloquear la interfaz.
+- **Deteccion y Alerta de Sentido Contrario:** Cuando el vehiculo avanza (`speedKmh > 8` y `gear > 0`) contra el flujo dirigido de la via (`dot < -0.45`) o en sentido opuesto a la ruta activa (`dot < -0.60`), activa el banner de alerta roja, aviso por voz TTS y recalculo hacia retorno legal.
+
+### Rendimiento Extremo y Eliminacion de Lag (v1.4.0)
+- **Cero Asignacion Heap en Bucle de Dibujo (Zero GC Churn):** Uso de `RoadSegPool3D` y `RouteSegPool3D` con buffers estaticos pre-alocados y QuickSort in-place sobre indices enteros (`IntArray`).
+- **Caché Topologico de Vías:** `Viewport2DCache` y `Viewport3DCache` pre-procesan el encadenado y suavizado de vias solo al moverse entre cuadrantes (> 25 m), manteniendo 60-120 FPS estables.
+- **Ruta Activa con Ventana Deslizante $O(1)$:** El trazado suavizado se almacena en memoria y el recorte por progreso se realiza localmente en microsegundos.
+- **Temas de Mapa Dinamicos (`STY`):** Selector rapido entre `DARK_PREMIUM`, `HIGH_CONTRAST` (OLED) y `CYBER_NEON`.
+
+### Asistente de Voz y Seguridad en Cabina
+- **Guia Giro a Giro por Audio (TTS):** Avisos de maniobra con anticipacion en hitos metricos (1000m, 500m, 200m, 50m) y anuncio de llegada a la ciudad de destino.
+- **Alerta de Exceso de Velocidad:** Aviso sonoro y visual cuando la velocidad supera en > 5 km/h el limite legal de la carretera.
+- **Alertas Tempranas:** Deteccion de combustible bajo (< 12%) y fatiga de descanso (< 35 min).
+
+### Bitacora de Entregas (Trip Log)
+- **Registro de Viajes:** Pestaña dedicada con resumen de ganancias acumuladas, kilometros totales recorridos y bitacora de cargas entregadas con dano e ingresos guardados de forma persistente.
+
+### Instalador Setup de Escritorio (.exe)
+- **`Instalador_AtsGps_v1.4.0_Setup.exe`:** Asistente autocontenido que detecta la instalacion de Steam de ATS, copia `scs-telemetry.dll` a la carpeta de plugins, configura el servidor y despliega el APK de Android en un solo paso.
 
 ### Renderizador Dual 2D / 3D (Canvas Compose)
 - **Vista 3D en Perspectiva:** Cielo crepuscular, resplandor en horizonte (`horizonY = 0.26 * h`), recorte estricto bajo horizonte (`clipRect`), recorte geometrico de segmentos en plano cercano (`projectSegment3D` con `minDepth = 8f`), subdivision de primer plano con suavizado Chaikin, 3 pases globales de carreteras (bordes, asfalto y divisores de carril) y 4 pases globales para la ruta cian iniciando exactamente bajo el cursor del camion.
@@ -117,10 +134,14 @@ GpsATS/
 ├── LICENSE                         # Licencia GNU GPL-2.0 (Servidor)
 ├── LICENSES.md                     # Registro de licencias y terceros
 ├── README.md                       # Documentacion principal
+├── apks/                           # Distribucion de paquetes APK firmados
+│   ├── release.apk                 # APK Release v1.4.0 (Build 15)
+│   └── AtsGpsApp_v1.4.0.apk        # APK Release versionado
 ├── docs/
-│   └── screenshots/                # Capturas oficiales de v1.3.8 (1080x2200)
+│   └── screenshots/                # Capturas oficiales de v1.4.0 (1080x2200)
 ├── tools/
-│   └── AtsGpsLauncher/             # Codigo fuente del panel de control WPF (.NET 10)
+│   ├── AtsGpsLauncher/             # Panel de control WPF (.NET 10)
+│   └── AtsGpsInstaller/            # Codigo fuente de Instalador Setup autogestionado C#
 ├── server/                         # Servidor .NET 10 (GPL-2.0)
 │   ├── Program.cs                  # Host Kestrel, WebSocket y CLI --build-map
 │   ├── Hubs/                       # TelemetryBroadcaster (30 Hz)
@@ -133,14 +154,16 @@ GpsATS/
 │       ├── data/
 │       │   ├── map/                # AStarRouter.kt, BinaryMapReader.kt
 │       │   ├── model/              # MapGraph.kt (snapToRoad, evaluateRouteTracking)
-│       │   └── network/            # AtsNetworkClient.kt
+│       │   ├── network/            # AtsNetworkClient.kt
+│       │   └── triplog/            # TripLogManager.kt (registro y persistencia de entregas)
 │       └── ui/
-│           ├── map/GpsMapCanvas.kt # Renderizador 2D/3D por pases globales
-│           ├── navigation/         # TurnByTurnCard.kt
+│           ├── map/GpsMapCanvas.kt # Renderizador 2D/3D con pools estaticos cero lag
+│           ├── navigation/         # TurnByTurnCard.kt con cache O(1) de maniobras
 │           ├── dashboard/          # DashboardScreen.kt
 │           ├── diagnostic/         # TelemetryDiagnosticScreen.kt
 │           ├── junction/           # JunctionView.kt
 │           ├── tts/                # NavigationVoiceAssistant.kt
+│           ├── triplog/            # TripLogScreen.kt (vista de bitacora y metricas)
 │           └── about/              # AboutScreen.kt
 └── tests/
     └── AtsGpsServer.Tests/         # Pruebas xUnit (.NET 10)

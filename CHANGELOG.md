@@ -4,6 +4,33 @@ Todas las modificaciones notables, correcciones de errores y nuevas funcionalida
 
 ---
 
+## [v1.4.0] - 2026-11-19
+### Agregado y Optimizado (Rendimiento Extremo y Nuevas Funcionalidades)
+- **Eliminacion Total de Lag y Stuttering en Renderizado 2D/3D:**
+  - `GpsMapCanvas.kt`: Implementacion de `Viewport2DCache` y `Viewport3DCache` para pre-calcular y encadenar polilineas viales una sola vez al cambiar de cuadrante (> 25 m en 2D, > 15 m en 3D), eliminando llamadas repetitivas a `chainEdges` y `smoothPolyline` a 60-120 Hz.
+  - Creacion de `RoadSegPool3D` y `RouteSegPool3D` con buffers estaticos pre-asignados y algoritmo QuickSort in-place de indices primitivos (`IntArray`), reduciendo a **0 bytes** la generacion de objetos en el heap durante el dibujo continuo.
+  - Implementacion de `RouteRenderCache` con ventana de busqueda deslizante $O(1)$ para recorte y proyeccion de la ruta activa en tiempo real.
+  - Snapping inteligente con umbral de desplazamiento (`SnapCache`): calculo de `snapToRoad` restringido a desplazamientos > 1.8 m o variaciones de rumbo > 8°.
+  - Reutilizacion estatica de `Path` (`reusablePaths.reset()`) y pinturas `Paint`, suprimiendo la sobrecarga del recolector de basura (*Garbage Collector* de Android ART).
+- **Asistente de Voz Paso a Paso Turn-by-Turn:**
+  - `NavigationVoiceAssistant.kt` y `TurnByTurnCard.kt`: Anuncios de audio dinamicos mediante Text-to-Speech (TTS) en hitos de distancia (1000m, 500m, 200m, 50m) y anuncio de llegada a la ciudad de destino.
+  - Optimizacion algoritmica en `calculateNavigationInstruction`: busqueda focalizada en ventana local $[-2 .. +8]$ tramos para deduccion inmediata de giros y carriles en tiempo $O(1)$.
+- **Bitacora de Entregas y Registro de Viajes (`TripLogScreen` / `TripLogManager`):**
+  - Nueva pestaña táctil dedicada en la interfaz (`AppTab.BITACORA`).
+  - Registro automatico de cada entrega finalizada: ciudad de origen, destino, tipo de carga, tonelaje transportado, ganancias cobradas, distancia recorrida, velocidad media y porcentaje de daño.
+  - Almacenamiento persistente encriptado localmente en `SharedPreferences` con tarjetas metricas de acumulados (ganancias totales, kilometros totales y viajes completados).
+- **Alertas Tempranas de Telemetria en Cabina:**
+  - Alerta acustica y visual por exceso de velocidad cuando la velocidad del vehiculo supera en > 5 km/h el limite legal de la via.
+  - Alerta temprana de combustible critico (< 12% del tanque) y alerta preventiva de fatiga (< 35 min restantes para descanso obligatorio).
+- **Selector de Temas Visuales del Mapa (`STY`):**
+  - Boton flotante rapido para alternar entre `DARK_PREMIUM` (modo noche Figma), `HIGH_CONTRAST` (negro OLED) y `CYBER_NEON` (cian tactico).
+- **Instalador Autogestionado para PC (.exe / Setup):**
+  - `Instalador_AtsGps_v1.4.0_Setup.exe`: Instalador independiente con deteccion automatica del directorio de Steam de American Truck Simulator, copia automatica de `scs-telemetry.dll` a la carpeta de plugins del juego, configuracion del servidor y APK v1.4.0 en un solo archivo ejecutable con icono nativo.
+- **Compilacion y Version:**
+  - Android bumped to `versionCode = 15`, `versionName = "1.4.0"`.
+
+---
+
 ## [v1.3.8] - 2026-11-19
 ### Mejorado y Corregido
 - **Limpieza Visual Cero Emojis (Android y Lanzador PC):**
