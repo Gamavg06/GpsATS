@@ -4,6 +4,22 @@ Todas las modificaciones notables, correcciones de errores y nuevas funcionalida
 
 ---
 
+## [v1.4.1] - 2026-11-19
+### Corregido y Ampliado
+- **Normalizador Inteligente de Destinos en `MainActivity.kt`:**
+  - Implementacion de algoritmo de coincidencia insensibilizada a espacios, guiones bajos y mayusculas (`norm(s)`), resolviendo emparejamiento exacto entre la telemetria (`"Little Rock"`, `"Las Vegas"`, `"San Francisco"`) y los identificadores binarios del mapa (`"Little_rock"`, `"Las_vegas"`, `"San_francisc"`).
+  - Resolucion automatica de la ruta A*, despliegue inmediato de la cinta cian de navegacion, activacion de la tarjeta Turn-by-Turn y guia de voz hablada.
+- **Cobertura Territorial Expandida al 100% de DLCs (763 Sectores):**
+  - Regeneracion completa de `map_ats.bin` escaneando todos los paquetes instalados (`dlc_ar.scs`, `dlc_ok.scs`, `dlc_tx.scs`, etc.).
+  - Base de datos ampliada a **278,723 nodos**, **1,275,420 aristas**, **243 ciudades** y **3,956 POIs** oficiales.
+- **Correccion Visual de Calzadas 3D en `GpsMapCanvas.kt`:**
+  - Supresion de `chainEdges` en vista 3D: cada arista vial proyecta estrictamente su propia polilinea vectorial nativa (`edge.polyline`), eliminando lineas diagonales espurias y triangulos cruzados en intersecciones.
+- **Distribucion Oficial Unica:**
+  - Android bumped to `versionCode = 16`, `versionName = "1.4.1"`.
+  - Reempaquetado del instalador Setup PC `Instalador_AtsGps_v1.4.1_Setup.exe` con la base cartografica completa.
+
+---
+
 ## [v1.4.0] - 2026-11-19
 ### Agregado y Optimizado (Rendimiento Extremo y Nuevas Funcionalidades)
 - **Eliminacion Total de Lag y Stuttering en Renderizado 2D/3D:**

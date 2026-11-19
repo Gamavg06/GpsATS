@@ -61,7 +61,7 @@ private class Viewport2DCache {
     var hwyChains: List<List<Point3D>> = emptyList()
 }
 
-private class RoadChain3D(
+private class RoadSeg3D(
     val isFreeway: Boolean,
     val lanes: Int,
     val laneWidthFactor: Float,
@@ -72,7 +72,7 @@ private class Viewport3DCache {
     var edges: List<MapEdge> = emptyList()
     var lastX: Float = Float.NaN
     var lastZ: Float = Float.NaN
-    var chains: List<RoadChain3D> = emptyList()
+    var roadSegs: List<RoadSeg3D> = emptyList()
 }
 
 private class RouteRenderCache {
@@ -468,7 +468,7 @@ fun GpsMapCanvas(
                     cache3D.lastX = truckX
                     cache3D.lastZ = truckZ
 
-                    val groupedEdges = HashMap<Int, MutableList<MapEdge>>()
+                    val segs = ArrayList<RoadSeg3D>(nearby.size)
                     val activeEdgeIds = activeRoute?.edgePath?.map { it.edgeId }?.toSet() ?: emptySet()
                     for (edge in nearby) {
                         if (edge.polyline.size < 2) continue
@@ -477,25 +477,10 @@ fun GpsMapCanvas(
 
                         val isFreeway = edge.roadType.toInt() == 0
                         val lanes = edge.lanes.toInt().coerceAtLeast(1)
-                        val key = (if (isFreeway) 100 else 0) + lanes
-                        groupedEdges.getOrPut(key) { ArrayList() }.add(edge)
-                    }
-
-                    val newChains = ArrayList<RoadChain3D>()
-                    for ((key, group) in groupedEdges) {
-                        val isFreeway = key >= 100
-                        val lanes = if (isFreeway) key - 100 else key
                         val laneWidthFactor = 1.0f + (lanes - 1) * 0.38f
-                        val rawChains = chainEdges(group)
-                        for (chain in rawChains) {
-                            val sub = subdivideForegroundSegments(chain, truckX, truckZ, radiusSq = 122500f, maxSegLenMeters = 8f)
-                            val smoothed = smoothPolyline(sub, iterations = 1)
-                            if (smoothed.size >= 2) {
-                                newChains.add(RoadChain3D(isFreeway, lanes, laneWidthFactor, smoothed))
-                            }
-                        }
+                        segs.add(RoadSeg3D(isFreeway, lanes, laneWidthFactor, edge.polyline))
                     }
-                    cache3D.chains = newChains
+                    cache3D.roadSegs = segs
                 }
 
                 // Controlador de zoom dinámico en función de la velocidad
@@ -1212,20 +1197,20 @@ private fun DrawScope.drawMap3D(
 
         // 4. Red Vial 3D proyectada usando pool de memoria estática (CERO asignaciones heap)
         roadPool.reset()
-        for (chain in cache3D.chains) {
-            val pts = chain.points
+        for (road in cache3D.roadSegs) {
+            val pts = road.points
             for (i in 0 until pts.size - 1) {
                 val p0 = pts[i]
                 val p1 = pts[i + 1]
                 val seg = projectSegment3D(p0.x, p0.z, p1.x, p1.z) ?: continue
                 val midY = (seg.first.y + seg.second.y) * 0.5f
                 val depthRatio = ((midY - horizonY) / (targetTruckY - horizonY)).coerceIn(0.08f, 1.4f)
-                val casingW = if (chain.isFreeway) {
-                    (24f * depthRatio * chain.laneWidthFactor).coerceIn(3.5f, 38f)
+                val casingW = if (road.isFreeway) {
+                    (24f * depthRatio * road.laneWidthFactor).coerceIn(3.5f, 38f)
                 } else {
-                    (14f * depthRatio * chain.laneWidthFactor).coerceIn(2.0f, 22f)
+                    (14f * depthRatio * road.laneWidthFactor).coerceIn(2.0f, 22f)
                 }
-                roadPool.add(seg.first.x, seg.first.y, seg.second.x, seg.second.y, casingW, depthRatio, chain.isFreeway, chain.lanes)
+                roadPool.add(seg.first.x, seg.first.y, seg.second.x, seg.second.y, casingW, depthRatio, road.isFreeway, road.lanes)
             }
         }
 

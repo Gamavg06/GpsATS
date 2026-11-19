@@ -1,6 +1,6 @@
 # SGNIA - ATS Telemetry & GPS Companion System
 
-[![Version: v1.4.0](https://img.shields.io/badge/Version-v1.4.0%20(Build%2015)-00E5FF.svg)](CHANGELOG.md)
+[![Version: v1.4.1](https://img.shields.io/badge/Version-v1.4.1%20(Build%2016)-00E5FF.svg)](CHANGELOG.md)
 [![Server License: GPL-2.0](https://img.shields.io/badge/Server%20License-GPL--2.0-blue.svg)](LICENSE)
 [![Android App License: MIT](https://img.shields.io/badge/App%20License-MIT-green.svg)](android/LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
@@ -134,11 +134,12 @@ GpsATS/
 ├── LICENSE                         # Licencia GNU GPL-2.0 (Servidor)
 ├── LICENSES.md                     # Registro de licencias y terceros
 ├── README.md                       # Documentacion principal
+├── Instalador_AtsGps_v1.4.1_Setup.exe # Instalador de escritorio autogestionado
 ├── apks/                           # Distribucion de paquetes APK firmados
-│   ├── release.apk                 # APK Release v1.4.0 (Build 15)
-│   └── AtsGpsApp_v1.4.0.apk        # APK Release versionado
+│   ├── release.apk                 # APK Release v1.4.1 (Build 16)
+│   └── AtsGpsApp_v1.4.1.apk        # APK Release versionado
 ├── docs/
-│   └── screenshots/                # Capturas oficiales de v1.4.0 (1080x2200)
+│   └── screenshots/                # Capturas oficiales de v1.4.1 (1080x2200)
 ├── tools/
 │   ├── AtsGpsLauncher/             # Panel de control WPF (.NET 10)
 │   └── AtsGpsInstaller/            # Codigo fuente de Instalador Setup autogestionado C#

@@ -283,21 +283,35 @@ fun AtsNavMainApp(
         // Autodetección: 1) Destino manual explícito, 2) Destino del trabajo en curso de ATS
         val targetNode: Int? = if (telemetry.targetNodeIndex != null) {
             telemetry.targetNodeIndex!!.toInt()
-        } else if (telemetry.destinationCity.isNotEmpty()) {
+        } else if (telemetry.destinationCity.isNotEmpty() || telemetry.destinationCityId.isNotEmpty()) {
             val destCity = telemetry.destinationCity.trim()
+            val destCityId = telemetry.destinationCityId.trim()
             val destCompany = telemetry.destinationCompany.trim()
+            val destCompanyId = telemetry.destinationCompanyId.trim()
+
+            fun norm(s: String): String = s.lowercase().replace("_", "").replace(" ", "").replace("-", "")
+
+            val normCity = norm(destCity)
+            val normCityId = norm(destCityId)
+            val normComp = norm(destCompany)
+            val normCompId = norm(destCompanyId)
 
             // 1. Coincidencia por empresa y ciudad
             val compMatch = graph.companies.firstOrNull { c ->
-                c.cityName.equals(destCity, ignoreCase = true) &&
-                (destCompany.isEmpty() || c.name.contains(destCompany, ignoreCase = true) || destCompany.contains(c.name, ignoreCase = true))
+                val cCityNorm = norm(c.cityName)
+                val cityMatches = (normCity.isNotEmpty() && (cCityNorm.contains(normCity) || normCity.contains(cCityNorm))) ||
+                                  (normCityId.isNotEmpty() && (cCityNorm.contains(normCityId) || normCityId.contains(cCityNorm)))
+                val cNameNorm = norm(c.name)
+                val compMatches = normComp.isEmpty() || cNameNorm.contains(normComp) || normComp.contains(cNameNorm) ||
+                                  (normCompId.isNotEmpty() && (cNameNorm.contains(normCompId) || normCompId.contains(cNameNorm)))
+                cityMatches && compMatches
             }
 
             // 2. Coincidencia por ciudad
             compMatch?.nearestNodeIndex ?: graph.cities.firstOrNull { c ->
-                c.name.equals(destCity, ignoreCase = true) ||
-                c.name.contains(destCity, ignoreCase = true) ||
-                destCity.contains(c.name, ignoreCase = true)
+                val cNorm = norm(c.name)
+                (normCity.isNotEmpty() && (cNorm == normCity || cNorm.contains(normCity) || normCity.contains(cNorm))) ||
+                (normCityId.isNotEmpty() && (cNorm == normCityId || cNorm.contains(normCityId) || normCityId.contains(cNorm)))
             }?.nearestNodeIndex
         } else {
             null
