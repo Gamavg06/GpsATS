@@ -20,9 +20,9 @@ namespace AtsGpsServer.Map
         public uint ToNodeIndex { get; set; }
         public float Length { get; set; }
         public float SpeedLimitKmh { get; set; }
-        public byte RoadType { get; set; } // 0=Highway, 1=MajorRoad, 2=LocalStreet, 3=PrefabTurn/Ramp, 4=Service/Depot
+        public byte RoadType { get; set; } // 0=Highway, 1=MajorRoad, 2=LocalStreet, 3=PrefabTurn/Ramp, 4=Service/Depot, 5=HiddenRoad
         public byte Lanes { get; set; }
-        public byte Flags { get; set; } // bit 0: OneWay, bit 1: HasTrafficLight, bit 2: Toll
+        public byte Flags { get; set; } // bit 0: OneWay, bit 1: HasTrafficLight, bit 2: Toll, bit 3: HiddenSecretRoad
         public List<Vector3> Polyline { get; set; } = new();
     }
 

@@ -42,6 +42,28 @@ object AStarRouter {
             }
         }
 
+        // Búsqueda de respaldo: aristas de autopista o carretera principal cercanas a startNode (< 350m)
+        val startPt = graph.nodes[startNode]
+        val nearbyStartEdges = graph.getEdgesNear(startPt.x, startPt.z, 350f)
+        for (edge in nearbyStartEdges.take(6)) {
+            val cand = edge.fromNodeIndex
+            if (cand in 0 until nodeCount && cand != startNode && cand != targetNode) {
+                val altRoute = executeAStar(graph, cand, targetNode, nodeCount, Float.NaN, null)
+                if (altRoute != null) return altRoute
+            }
+        }
+
+        // Búsqueda de respaldo: aristas cercanas a targetNode (< 350m)
+        val targetPt = graph.nodes[targetNode]
+        val nearbyTargetEdges = graph.getEdgesNear(targetPt.x, targetPt.z, 350f)
+        for (edge in nearbyTargetEdges.take(6)) {
+            val candTarget = edge.toNodeIndex
+            if (candTarget in 0 until nodeCount && candTarget != targetNode && candTarget != startNode) {
+                val altRoute = executeAStar(graph, startNode, candTarget, nodeCount, headingDeg, initialEdge)
+                if (altRoute != null) return altRoute
+            }
+        }
+
         return null
     }
 
@@ -78,7 +100,7 @@ object AStarRouter {
         gScore[startNode] = 0f
         openSet.add(NodeScore(startNode, 0f, heuristic(graph, startNode, targetNode)))
 
-        val maxSteps = 150000 // Límite de seguridad para evitar bloqueos
+        val maxSteps = 500000 // Límite de seguridad para evitar bloqueos
         var steps = 0
 
         while (!openSet.isEmpty() && steps++ < maxSteps) {
@@ -172,6 +194,7 @@ object AStarRouter {
                     1 -> 1.15f
                     2 -> 1.38f
                     3 -> 1.30f
+                    5 -> 1.22f
                     else -> 1.35f
                 }
                 val semaphorePenalty = if ((edge.flags.toInt() and 2) != 0) 65f else 0f

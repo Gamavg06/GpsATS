@@ -47,7 +47,8 @@ data class NavigationInstruction(
     val subtitle: String,
     val totalLanes: Int, // Ej: 1, 2, 3, 4
     val activeLaneIndex: Int, // 0-indexed de izquierda a derecha
-    val isTwoPlusOne: Boolean = false // Modo 2+1 carril
+    val isTwoPlusOne: Boolean = false, // Modo 2+1 carril
+    val isHiddenRoad: Boolean = false
 )
 
 @Composable
@@ -71,19 +72,30 @@ fun TurnByTurnCard(
             .clip(RoundedCornerShape(16.dp))
             .background(
                 Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF3F2B66), // Púrpura oscuro idéntico a la referencia
-                        Color(0xFF291C47)
-                    )
+                    colors = if (instruction.isHiddenRoad) {
+                        listOf(
+                            Color(0xFF5B3900), // Tono ámbar/dorado de camino oculto
+                            Color(0xFF2E1C00)
+                        )
+                    } else {
+                        listOf(
+                            Color(0xFF3F2B66), // Púrpura oscuro idéntico a la referencia
+                            Color(0xFF291C47)
+                        )
+                    }
                 )
             )
-            .border(1.2.dp, Color(0x40FFFFFF), RoundedCornerShape(16.dp))
+            .border(
+                1.2.dp,
+                if (instruction.isHiddenRoad) Color(0xFFF59E0B) else Color(0x40FFFFFF),
+                RoundedCornerShape(16.dp)
+            )
             .padding(14.dp)
     ) {
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Fila superior: Flecha de maniobra grande + Distancia
+            // Fila superior: Flecha de maniobra grande + Distancia + Badge Camino Oculto
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -94,6 +106,22 @@ fun TurnByTurnCard(
                     maneuver = instruction.maneuver,
                     modifier = Modifier.size(36.dp)
                 )
+
+                if (instruction.isHiddenRoad) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(Color(0xFFF59E0B))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "CAMINO OCULTO",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF1E1100)
+                        )
+                    }
+                }
 
                 // Distancia restante a la maniobra
                 val distText = if (instruction.distanceMeters >= 1000f) {
@@ -427,7 +455,11 @@ fun calculateNavigationInstruction(
         }
     }
 
-    if (nextManeuver == ManeuverType.STRAIGHT) {
+    val isCurrentHidden = currentEdge.isHidden
+    if (isCurrentHidden && nextManeuver == ManeuverType.STRAIGHT) {
+        maneuverTitle = "Camino Oculto / Atajo"
+        maneuverSubtitle = "Tramo secreto no cartografiado"
+    } else if (nextManeuver == ManeuverType.STRAIGHT) {
         distAcc = route.totalDistanceMeters
         maneuverTitle = "Continúa recto"
         targetLane = if (totalLanes > 2) totalLanes - 2 else totalLanes - 1 // Carril central/derecho
@@ -440,7 +472,8 @@ fun calculateNavigationInstruction(
         subtitle = maneuverSubtitle,
         totalLanes = totalLanes,
         activeLaneIndex = targetLane.coerceIn(0, totalLanes - 1),
-        isTwoPlusOne = isTwoPlusOne
+        isTwoPlusOne = isTwoPlusOne,
+        isHiddenRoad = isCurrentHidden
     )
 
     lastCachedRoute = route

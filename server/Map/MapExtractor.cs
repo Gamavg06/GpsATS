@@ -238,16 +238,20 @@ namespace AtsGpsServer.Map
 
                         var polylineFwd = GenerateRoadPolyline(pStart, pEnd);
 
+                        bool isHidden = road.Secret || !road.ShowInUiMap;
+                        byte roadType = isHidden ? (byte)5 : (byte)0;
+                        byte roadFlags = isHidden ? (byte)8 : (byte)0;
+
                         graph.Edges.Add(new MapEdge
                         {
                             EdgeId = (uint)graph.Edges.Count,
                             FromNodeIndex = startIdx,
                             ToNodeIndex = endIdx,
                             Length = length,
-                            SpeedLimitKmh = 105.0f,
-                            RoadType = 0,
+                            SpeedLimitKmh = isHidden ? 55.0f : 105.0f,
+                            RoadType = roadType,
                             Lanes = 2,
-                            Flags = 0,
+                            Flags = roadFlags,
                             Polyline = polylineFwd
                         });
 
@@ -260,10 +264,10 @@ namespace AtsGpsServer.Map
                             FromNodeIndex = endIdx,
                             ToNodeIndex = startIdx,
                             Length = length,
-                            SpeedLimitKmh = 105.0f,
-                            RoadType = 0,
+                            SpeedLimitKmh = isHidden ? 55.0f : 105.0f,
+                            RoadType = roadType,
                             Lanes = 2,
-                            Flags = 0,
+                            Flags = roadFlags,
                             Polyline = polylineBwd
                         });
                     }
@@ -313,11 +317,20 @@ namespace AtsGpsServer.Map
 
                                 var nodeAPos = new Vector3(nodeA.Position.X, nodeA.Position.Y, nodeA.Position.Z);
                                 var nodeBPos = new Vector3(nodeB.Position.X, nodeB.Position.Y, nodeB.Position.Z);
-
-                                var turnPolyline = new List<Vector3> { nodeAPos, worldStart, worldEnd, nodeBPos };
                                 float straightDist = Vector3.Distance(nodeAPos, nodeBPos);
-                                float polyDist = Vector3.Distance(nodeAPos, worldStart) + (nc.Length > 0 ? nc.Length : Vector3.Distance(worldStart, worldEnd)) + Vector3.Distance(worldEnd, nodeBPos);
+
+                                float distStart = Vector3.Distance(nodeAPos, worldStart);
+                                float distEnd = Vector3.Distance(worldEnd, nodeBPos);
+                                var turnPolyline = (straightDist <= 38.0f || distStart > 30.0f || distEnd > 30.0f)
+                                    ? new List<Vector3> { nodeAPos, nodeBPos }
+                                    : new List<Vector3> { nodeAPos, worldStart, worldEnd, nodeBPos };
+
+                                float polyDist = distStart + (nc.Length > 0 ? nc.Length : Vector3.Distance(worldStart, worldEnd)) + distEnd;
                                 float edgeLength = Math.Max(straightDist, polyDist);
+
+                                bool isPrefabHidden = prefab.Secret || !prefab.ShowInUiMap;
+                                byte prefabRoadType = isPrefabHidden ? (byte)5 : (byte)3;
+                                byte prefabFlags = (byte)((nc.SemaphoreId >= 0 ? 2 : 0) | (isPrefabHidden ? 8 : 0));
 
                                 graph.Edges.Add(new MapEdge
                                 {
@@ -325,10 +338,10 @@ namespace AtsGpsServer.Map
                                     FromNodeIndex = globalA,
                                     ToNodeIndex = globalB,
                                     Length = edgeLength,
-                                    SpeedLimitKmh = 45.0f,
-                                    RoadType = 3,
+                                    SpeedLimitKmh = isPrefabHidden ? 35.0f : 45.0f,
+                                    RoadType = prefabRoadType,
                                     Lanes = 1,
-                                    Flags = (byte)(nc.SemaphoreId >= 0 ? 2 : 0),
+                                    Flags = prefabFlags,
                                     Polyline = turnPolyline
                                 });
                             }

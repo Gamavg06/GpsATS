@@ -34,11 +34,13 @@ data class MapEdge(
     val toNodeIndex: Int,
     val length: Float,
     val speedLimitKmh: Float,
-    val roadType: Byte, // 0=Highway, 1=MajorRoad, 2=LocalStreet, 3=PrefabTurn, 4=Service
+    val roadType: Byte, // 0=Highway, 1=MajorRoad, 2=LocalStreet, 3=PrefabTurn, 4=Service, 5=HiddenRoad
     val lanes: Byte,
     val flags: Byte,
     val polyline: List<Point3D>
-)
+) {
+    val isHidden: Boolean get() = roadType.toInt() == 5 || (flags.toInt() and 8) != 0
+}
 
 data class MapCity(
     val cityToken: Long,

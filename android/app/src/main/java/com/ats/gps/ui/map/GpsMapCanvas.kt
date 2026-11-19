@@ -59,13 +59,15 @@ private class Viewport2DCache {
     var localChains: List<List<Point3D>> = emptyList()
     var mainChains: List<List<Point3D>> = emptyList()
     var hwyChains: List<List<Point3D>> = emptyList()
+    var hiddenChains: List<List<Point3D>> = emptyList()
 }
 
 private class RoadSeg3D(
     val isFreeway: Boolean,
     val lanes: Int,
     val laneWidthFactor: Float,
-    val points: List<Point3D>
+    val points: List<Point3D>,
+    val isHidden: Boolean = false
 )
 
 private class Viewport3DCache {
@@ -92,7 +94,8 @@ private class ReusableRoadSeg(
     var casingW: Float = 0f,
     var depthRatio: Float = 0f,
     var isFreeway: Boolean = false,
-    var lanes: Int = 1
+    var lanes: Int = 1,
+    var isHidden: Boolean = false
 )
 
 private class RoadSegPool3D(capacity: Int = 3000) {
@@ -107,7 +110,8 @@ private class RoadSegPool3D(capacity: Int = 3000) {
     fun add(
         x1: Float, y1: Float, x2: Float, y2: Float,
         casingW: Float, depthRatio: Float,
-        isFreeway: Boolean, lanes: Int
+        isFreeway: Boolean, lanes: Int,
+        isHidden: Boolean = false
     ) {
         if (count >= pool.size) return
         val s = pool[count]
@@ -119,6 +123,7 @@ private class RoadSegPool3D(capacity: Int = 3000) {
         s.depthRatio = depthRatio
         s.isFreeway = isFreeway
         s.lanes = lanes
+        s.isHidden = isHidden
         indices[count] = count
         count++
     }
@@ -188,6 +193,7 @@ private class ReusableCanvasPaths {
     val localPath = Path()
     val mainPath = Path()
     val hwyPath = Path()
+    val hiddenPath = Path()
     val routePath = Path()
     val headlightPath = Path()
     val leftFacet = Path()
@@ -411,6 +417,7 @@ fun GpsMapCanvas(
                     val mainEdges = ArrayList<MapEdge>()
                     val localEdges = ArrayList<MapEdge>()
                     val rampEdges = ArrayList<MapEdge>()
+                    val hiddenEdges = ArrayList<MapEdge>()
 
                     val activeEdgeIds = activeRoute?.edgePath?.map { it.edgeId }?.toSet() ?: emptySet()
                     for (edge in visible) {
@@ -418,11 +425,15 @@ fun GpsMapCanvas(
                         val isRouteEdge = activeEdgeIds.contains(edge.edgeId)
                         if (!isRouteEdge && edge.roadType.toInt() == 3 && edge.length < 18f) continue
 
-                        when (edge.roadType.toInt()) {
-                            0 -> hwyEdges.add(edge)
-                            1 -> mainEdges.add(edge)
-                            2 -> localEdges.add(edge)
-                            else -> rampEdges.add(edge)
+                        if (edge.isHidden) {
+                            hiddenEdges.add(edge)
+                        } else {
+                            when (edge.roadType.toInt()) {
+                                0 -> hwyEdges.add(edge)
+                                1 -> mainEdges.add(edge)
+                                2 -> localEdges.add(edge)
+                                else -> rampEdges.add(edge)
+                            }
                         }
                     }
 
@@ -431,6 +442,7 @@ fun GpsMapCanvas(
                     cache2D.localChains = chainEdges(localEdges).map { smoothPolyline(it, iterations = 1) }
                     cache2D.mainChains = chainEdges(mainEdges).map { smoothPolyline(it, iterations = 1) }
                     cache2D.hwyChains = chainEdges(hwyEdges).map { smoothPolyline(it, iterations = 1) }
+                    cache2D.hiddenChains = chainEdges(hiddenEdges).map { smoothPolyline(it, iterations = 1) }
                 }
 
                 drawMap2D(
@@ -476,9 +488,10 @@ fun GpsMapCanvas(
                         if (!isRouteEdge && edge.roadType.toInt() == 3 && edge.length < 18f) continue
 
                         val isFreeway = edge.roadType.toInt() == 0
+                        val isHidden = edge.isHidden
                         val lanes = edge.lanes.toInt().coerceAtLeast(1)
                         val laneWidthFactor = 1.0f + (lanes - 1) * 0.38f
-                        segs.add(RoadSeg3D(isFreeway, lanes, laneWidthFactor, edge.polyline))
+                        segs.add(RoadSeg3D(isFreeway, lanes, laneWidthFactor, edge.polyline, isHidden))
                     }
                     cache3D.roadSegs = segs
                 }
@@ -895,11 +908,13 @@ private fun DrawScope.drawMap2D(
     val hasLocal = populateChainsToPath(cache2D.localChains, reusablePaths.localPath, viewCenterX, viewCenterZ, cx, cy, baseScale)
     val hasMain = populateChainsToPath(cache2D.mainChains, reusablePaths.mainPath, viewCenterX, viewCenterZ, cx, cy, baseScale)
     val hasHwy = populateChainsToPath(cache2D.hwyChains, reusablePaths.hwyPath, viewCenterX, viewCenterZ, cx, cy, baseScale)
+    val hasHidden = populateChainsToPath(cache2D.hiddenChains, reusablePaths.hiddenPath, viewCenterX, viewCenterZ, cx, cy, baseScale)
 
     val rampW = getRoadStrokeWidth(3, zoomScale)
     val localW = getRoadStrokeWidth(2, zoomScale)
     val mainW = getRoadStrokeWidth(1, zoomScale)
     val hwyW = getRoadStrokeWidth(0, zoomScale)
+    val hiddenW = (localW * 0.95f).coerceAtLeast(4.0f)
 
     // GLOBAL PASS 1: Todos los bordes exteriores
     val borderColor = Color(0xFF0B1017)
@@ -907,14 +922,40 @@ private fun DrawScope.drawMap2D(
     if (hasLocal) drawPath(reusablePaths.localPath, borderColor, style = Stroke(localW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     if (hasMain) drawPath(reusablePaths.mainPath, borderColor, style = Stroke(mainW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     if (hasHwy) drawPath(reusablePaths.hwyPath, borderColor, style = Stroke(hwyW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (hasHidden) drawPath(reusablePaths.hiddenPath, Color(0xFF0C0A09), style = Stroke(hiddenW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
 
     // GLOBAL PASS 2: Todos los rellenos de asfalto unificados encima
     val streetFill = Color(0xFF2B3846)
     val hwyFill = Color(0xFF334354)
+    val hiddenBaseFill = Color(0xFF292524)
     if (hasRamp) drawPath(reusablePaths.rampPath, streetFill, style = Stroke(rampW, cap = StrokeCap.Round, join = StrokeJoin.Round))
     if (hasLocal) drawPath(reusablePaths.localPath, streetFill, style = Stroke(localW, cap = StrokeCap.Round, join = StrokeJoin.Round))
     if (hasMain) drawPath(reusablePaths.mainPath, streetFill, style = Stroke(mainW, cap = StrokeCap.Round, join = StrokeJoin.Round))
     if (hasHwy) drawPath(reusablePaths.hwyPath, hwyFill, style = Stroke(hwyW, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (hasHidden) drawPath(reusablePaths.hiddenPath, hiddenBaseFill, style = Stroke(hiddenW, cap = StrokeCap.Round, join = StrokeJoin.Round))
+
+    // GLOBAL PASS 3: Brillo y trazo discontinuo neón para caminos ocultos (Secret Roads)
+    if (hasHidden) {
+        val dashEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
+            floatArrayOf(14f * zoomScale.coerceIn(0.6f, 2.0f), 8f * zoomScale.coerceIn(0.6f, 2.0f)),
+            0f
+        )
+        drawPath(
+            reusablePaths.hiddenPath,
+            Color(0x40F59E0B),
+            style = Stroke(hiddenW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+        drawPath(
+            reusablePaths.hiddenPath,
+            Color(0xFFF59E0B),
+            style = Stroke(
+                width = (hiddenW * 0.75f).coerceAtLeast(3.2f),
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round,
+                pathEffect = dashEffect
+            )
+        )
+    }
 
     // 2. Ruta activa GPS (Cinta continua con Path reutilizable)
     if (routePoints.size >= 2) {
@@ -1000,6 +1041,7 @@ private fun getRoadStrokeWidth(roadType: Int, zoomScale: Float): Float {
         0 -> 15f * z
         1 -> 11f * z
         2 -> 7f * z
+        5 -> 8.5f * z
         else -> 8f * z
     }
 }
@@ -1186,6 +1228,9 @@ private fun DrawScope.drawMap3D(
         if ((sy1 < horizonY - 2f && sy2 < horizonY - 2f) || (sy1 > h + 300f && sy2 > h + 300f)) {
             return null
         }
+        if ((sx1 < -w * 1.5f && sx2 < -w * 1.5f) || (sx1 > w * 2.5f && sx2 > w * 2.5f)) {
+            return null
+        }
         return Pair(Offset(sx1, sy1), Offset(sx2, sy2))
     }
 
@@ -1210,7 +1255,7 @@ private fun DrawScope.drawMap3D(
                 } else {
                     (14f * depthRatio * road.laneWidthFactor).coerceIn(2.0f, 22f)
                 }
-                roadPool.add(seg.first.x, seg.first.y, seg.second.x, seg.second.y, casingW, depthRatio, road.isFreeway, road.lanes)
+                roadPool.add(seg.first.x, seg.first.y, seg.second.x, seg.second.y, casingW, depthRatio, road.isFreeway, road.lanes, road.isHidden)
             }
         }
 
@@ -1222,7 +1267,7 @@ private fun DrawScope.drawMap3D(
         for (i in 0 until roadPool.count) {
             val seg = roadPool.pool[roadPool.indices[i]]
             drawLine(
-                color = roadBorderColor,
+                color = if (seg.isHidden) Color(0xFF0C0A09) else roadBorderColor,
                 start = Offset(seg.x1, seg.y1),
                 end = Offset(seg.x2, seg.y2),
                 strokeWidth = seg.casingW + 3f,
@@ -1233,10 +1278,11 @@ private fun DrawScope.drawMap3D(
         // PASS 2: Rellenos de asfalto
         val hwyAsphalt = Color(0xFF26323F)
         val otherAsphalt = Color(0xFF1F2A35)
+        val hiddenAsphalt = Color(0xFF292524)
         for (i in 0 until roadPool.count) {
             val seg = roadPool.pool[roadPool.indices[i]]
             drawLine(
-                color = if (seg.isFreeway) hwyAsphalt else otherAsphalt,
+                color = if (seg.isHidden) hiddenAsphalt else if (seg.isFreeway) hwyAsphalt else otherAsphalt,
                 start = Offset(seg.x1, seg.y1),
                 end = Offset(seg.x2, seg.y2),
                 strokeWidth = seg.casingW,
@@ -1248,13 +1294,28 @@ private fun DrawScope.drawMap3D(
         val dividerColor = Color(0x5594A3B8)
         for (i in 0 until roadPool.count) {
             val seg = roadPool.pool[roadPool.indices[i]]
-            if (seg.lanes >= 2 && seg.depthRatio > 0.35f) {
+            if (!seg.isHidden && seg.lanes >= 2 && seg.depthRatio > 0.35f) {
                 val dividerW = (1.5f * seg.depthRatio).coerceIn(0.8f, 2.5f)
                 drawLine(
                     color = dividerColor,
                     start = Offset(seg.x1, seg.y1),
                     end = Offset(seg.x2, seg.y2),
                     strokeWidth = dividerW,
+                    cap = StrokeCap.Round
+                )
+            }
+        }
+
+        // PASS 4: Resaltado neón de caminos ocultos en 3D
+        val hiddenNeonAmber = Color(0xFFF59E0B)
+        for (i in 0 until roadPool.count) {
+            val seg = roadPool.pool[roadPool.indices[i]]
+            if (seg.isHidden) {
+                drawLine(
+                    color = hiddenNeonAmber,
+                    start = Offset(seg.x1, seg.y1),
+                    end = Offset(seg.x2, seg.y2),
+                    strokeWidth = (seg.casingW * 0.45f).coerceIn(2.5f, 6.0f),
                     cap = StrokeCap.Round
                 )
             }

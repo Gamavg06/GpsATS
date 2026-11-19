@@ -26,34 +26,37 @@ namespace AtsGpsServer.Map
             string cleanCity = cityDst.Trim();
             string? cleanComp = compDst?.Trim();
 
-            // 1. Si hay empresa especificada, buscar coincidencia por empresa y ciudad
-            if (!string.IsNullOrWhiteSpace(cleanComp))
+            static string Norm(string s) => s.ToLowerInvariant().Replace("_", "").Replace(" ", "").Replace("-", "");
+
+            string normCity = Norm(cleanCity);
+            string normComp = cleanComp != null ? Norm(cleanComp) : string.Empty;
+
+            // 1. Si hay empresa especificada, buscar coincidencia por empresa Y ciudad
+            if (!string.IsNullOrEmpty(normComp))
             {
-                var match = graph.Companies.FirstOrDefault(c =>
-                    (c.Name.Equals(cleanComp, StringComparison.OrdinalIgnoreCase) || c.CompanyToken.ToString().Equals(cleanComp, StringComparison.OrdinalIgnoreCase)) &&
-                    (c.CityName.Equals(cleanCity, StringComparison.OrdinalIgnoreCase) || c.CityToken.ToString().Equals(cleanCity, StringComparison.OrdinalIgnoreCase)));
-
-                if (match != null)
+                var matchBoth = graph.Companies.FirstOrDefault(c =>
                 {
-                    return (match.NearestNodeIndex, match.X, match.Z);
-                }
+                    string cCity = Norm(c.CityName);
+                    string cName = Norm(c.Name);
+                    bool cityMatches = cCity.Contains(normCity) || normCity.Contains(cCity);
+                    bool compMatches = cName.Contains(normComp) || normComp.Contains(cName) ||
+                                      c.CompanyToken.ToString().Equals(cleanComp, StringComparison.OrdinalIgnoreCase);
+                    return cityMatches && compMatches;
+                });
 
-                // Coincidencia por nombre de empresa
-                var matchCompOnly = graph.Companies.FirstOrDefault(c =>
-                    c.Name.Contains(cleanComp, StringComparison.OrdinalIgnoreCase));
-
-                if (matchCompOnly != null)
+                if (matchBoth != null)
                 {
-                    return (matchCompOnly.NearestNodeIndex, matchCompOnly.X, matchCompOnly.Z);
+                    return (matchBoth.NearestNodeIndex, matchBoth.X, matchBoth.Z);
                 }
             }
 
             // 2. Coincidencia por Ciudad destino
             var matchCity = graph.Cities.FirstOrDefault(c =>
-                c.Name.Equals(cleanCity, StringComparison.OrdinalIgnoreCase) ||
-                c.CityToken.ToString().Equals(cleanCity, StringComparison.OrdinalIgnoreCase) ||
-                c.Name.Contains(cleanCity, StringComparison.OrdinalIgnoreCase) ||
-                cleanCity.Contains(c.Name, StringComparison.OrdinalIgnoreCase));
+            {
+                string cNorm = Norm(c.Name);
+                return cNorm == normCity || cNorm.Contains(normCity) || normCity.Contains(cNorm) ||
+                       c.CityToken.ToString().Equals(cleanCity, StringComparison.OrdinalIgnoreCase);
+            });
 
             if (matchCity != null)
             {
