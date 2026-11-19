@@ -49,7 +49,7 @@ namespace AtsGpsInstaller
 
         public InstallerForm()
         {
-            this.Text = "Instalador SGNIA - ATS Telemetria GPS v1.3.8";
+            this.Text = "Instalador SGNIA - ATS Telemetria GPS v1.4.0";
             this.Size = new Size(680, 560);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -91,7 +91,7 @@ namespace AtsGpsInstaller
             header.Controls.Add(title);
 
             Label subtitle = new Label();
-            subtitle.Text = "Asistente de configuracion y sincronizacion companion v1.3.8";
+            subtitle.Text = "Asistente de configuracion y sincronizacion companion v1.4.0";
             subtitle.Font = new Font("Segoe UI", 9.5F, FontStyle.Regular);
             subtitle.ForeColor = textGray;
             subtitle.Location = new Point(25, 48);

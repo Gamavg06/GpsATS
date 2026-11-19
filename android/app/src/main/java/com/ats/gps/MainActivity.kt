@@ -34,6 +34,7 @@ import com.ats.gps.ui.diagnostic.TelemetryDiagnosticScreen
 import com.ats.gps.ui.junction.JunctionView
 import com.ats.gps.ui.map.GpsMapCanvas
 import com.ats.gps.ui.map.MapViewMode
+import com.ats.gps.ui.map.MapThemeStyle
 import com.ats.gps.ui.navigation.TurnByTurnCard
 import com.ats.gps.ui.tts.NavigationVoiceAssistant
 import kotlinx.coroutines.Dispatchers
@@ -41,9 +42,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
+import androidx.compose.ui.platform.LocalContext
+import com.ats.gps.data.triplog.TripLogManager
+import com.ats.gps.data.triplog.TripRecord
+import com.ats.gps.ui.triplog.TripLogScreen
+
 enum class AppTab {
     MAPA,
     TELEMETRIA,
+    BITACORA,
     ACERCA_DE
 }
 
@@ -89,6 +96,7 @@ fun AtsNavMainApp(
 
     var selectedTab by remember { mutableStateOf(AppTab.MAPA) }
     var viewMode by remember { mutableStateOf(MapViewMode.MODE_3D_PERSPECTIVE) }
+    var mapTheme by remember { mutableStateOf(MapThemeStyle.DARK_PREMIUM) }
     var showDestSelector by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
 
@@ -98,6 +106,123 @@ fun AtsNavMainApp(
     var isFollowingTruck by remember { mutableStateOf(true) }
 
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val tripLogManager = remember { TripLogManager(context) }
+
+    // Alertas de Voz y Asistente Turn-by-Turn
+    var lastSpeedWarningTime by remember { mutableLongStateOf(0L) }
+    var lastFuelWarningTime by remember { mutableLongStateOf(0L) }
+    var lastRestWarningTime by remember { mutableLongStateOf(0L) }
+    var lastArrivalAnnouncedCity by remember { mutableStateOf("") }
+
+    // Rastreo de trabajo para Bitácora automática
+    var jobOriginSnapshot by remember { mutableStateOf("") }
+    var jobDestSnapshot by remember { mutableStateOf("") }
+    var jobCargoSnapshot by remember { mutableStateOf("") }
+    var jobMassSnapshot by remember { mutableFloatStateOf(0f) }
+    var jobIncomeSnapshot by remember { mutableLongStateOf(0L) }
+    var jobInitialDistSnapshot by remember { mutableFloatStateOf(0f) }
+    var wasOnJob by remember { mutableStateOf(false) }
+
+    // 1. Asistente de Giro a Giro por Voz continuo
+    val currentInstruction = remember(telemetry.posX, telemetry.posZ, activeRoute) {
+        if (activeRoute != null && (telemetry.posX != 0.0 || telemetry.posZ != 0.0)) {
+            com.ats.gps.ui.navigation.calculateNavigationInstruction(
+                truckX = telemetry.posX.toFloat(),
+                truckZ = telemetry.posZ.toFloat(),
+                route = activeRoute!!,
+                destinationCity = telemetry.destinationCity
+            )
+        } else null
+    }
+
+    LaunchedEffect(currentInstruction?.distanceMeters, currentInstruction?.title) {
+        if (currentInstruction != null && isFollowingTruck && !telemetry.gamePaused) {
+            voiceAssistant.updateNavigation(currentInstruction.distanceMeters, currentInstruction.title)
+        }
+    }
+
+    // 2. Anuncio de Llegada a Destino
+    LaunchedEffect(telemetry.navDistanceMeters, activeRoute) {
+        if (activeRoute != null && telemetry.destinationCity.isNotEmpty() &&
+            telemetry.navDistanceMeters in 1f..45f &&
+            lastArrivalAnnouncedCity != telemetry.destinationCity
+        ) {
+            lastArrivalAnnouncedCity = telemetry.destinationCity
+            voiceAssistant.announceArrival(telemetry.destinationCity)
+        }
+    }
+
+    // 3. Alerta de Exceso de Velocidad
+    val isSpeeding = telemetry.speedLimitKmh > 15f && telemetry.speedKmh > (telemetry.speedLimitKmh + 5f)
+    LaunchedEffect(isSpeeding) {
+        if (isSpeeding && !telemetry.gamePaused) {
+            val now = System.currentTimeMillis()
+            if (now - lastSpeedWarningTime > 25000L) {
+                lastSpeedWarningTime = now
+                voiceAssistant.speak("Atención, reduce tu velocidad, límite superado")
+            }
+        }
+    }
+
+    // 4. Alerta Temprana de Combustible Crítico
+    val isFuelCritical = telemetry.fuelCapacity > 0f && (telemetry.fuel / telemetry.fuelCapacity) < 0.12f
+    LaunchedEffect(isFuelCritical) {
+        if (isFuelCritical && !telemetry.gamePaused) {
+            val now = System.currentTimeMillis()
+            if (now - lastFuelWarningTime > 150000L) {
+                lastFuelWarningTime = now
+                voiceAssistant.speak("Combustible bajo, busca una gasolinera próxima")
+            }
+        }
+    }
+
+    // 5. Alerta Temprana de Descanso y Fatiga
+    val isRestCritical = telemetry.restStopMinutes in 1..35
+    LaunchedEffect(isRestCritical) {
+        if (isRestCritical && !telemetry.gamePaused) {
+            val now = System.currentTimeMillis()
+            if (now - lastRestWarningTime > 150000L) {
+                lastRestWarningTime = now
+                voiceAssistant.speak("Conductor fatigado, planifica una parada en la siguiente zona de descanso")
+            }
+        }
+    }
+
+    // 6. Registro Automático en Bitácora de Conducción al Entregar Carga
+    LaunchedEffect(telemetry.onJob, telemetry.destinationCity, telemetry.jobIncome) {
+        if (telemetry.onJob || telemetry.destinationCity.isNotEmpty()) {
+            wasOnJob = true
+            if (telemetry.sourceCity.isNotEmpty()) jobOriginSnapshot = telemetry.sourceCity
+            if (telemetry.destinationCity.isNotEmpty()) jobDestSnapshot = telemetry.destinationCity
+            if (telemetry.cargoName.isNotEmpty()) jobCargoSnapshot = telemetry.cargoName
+            if (telemetry.cargoMassKg > 0f) jobMassSnapshot = telemetry.cargoMassKg
+            if (telemetry.jobIncome > 0L) jobIncomeSnapshot = telemetry.jobIncome
+            if (telemetry.navDistanceMeters > jobInitialDistSnapshot) jobInitialDistSnapshot = telemetry.navDistanceMeters
+        } else if (wasOnJob && jobDestSnapshot.isNotEmpty()) {
+            wasOnJob = false
+            val drivenKm = if (jobInitialDistSnapshot > 0f) jobInitialDistSnapshot / 1000f else 15f
+            tripLogManager.addTrip(
+                TripRecord(
+                    originCity = jobOriginSnapshot.ifEmpty { "Origen" },
+                    destinationCity = jobDestSnapshot,
+                    cargoName = jobCargoSnapshot.ifEmpty { "Carga general" },
+                    cargoMassKg = jobMassSnapshot,
+                    incomeEarned = jobIncomeSnapshot,
+                    distanceKm = drivenKm,
+                    avgSpeedKmh = telemetry.speedKmh.coerceAtLeast(60f),
+                    damagePercent = telemetry.cargoDamage * 100f
+                )
+            )
+            voiceAssistant.speak("Felicidades, trabajo de entrega completado con éxito")
+            jobOriginSnapshot = ""
+            jobDestSnapshot = ""
+            jobCargoSnapshot = ""
+            jobMassSnapshot = 0f
+            jobIncomeSnapshot = 0L
+            jobInitialDistSnapshot = 0f
+        }
+    }
 
     // Control de cálculo de ruta: se activa cuando hay destino y origen válido
     val hasValidPos = telemetry.posX != 0.0 || telemetry.posZ != 0.0
@@ -110,6 +235,9 @@ fun AtsNavMainApp(
     var lastWrongWayVoiceTime by remember { mutableLongStateOf(0L) }
     var offRouteCounter by remember { mutableIntStateOf(0) }
     var routeJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var lastTrackingCheckTime by remember { mutableLongStateOf(0L) }
+    var lastTrackingX by remember { mutableFloatStateOf(0f) }
+    var lastTrackingZ by remember { mutableFloatStateOf(0f) }
 
     LaunchedEffect(
         telemetry.posX,
@@ -123,20 +251,34 @@ fun AtsNavMainApp(
         val graph = mapGraph ?: return@LaunchedEffect
         if (graph.nodes.isEmpty() || !hasValidPos) return@LaunchedEffect
 
-        val tracking = graph.evaluateRouteTracking(
-            telemetry.posX.toFloat(),
-            telemetry.posZ.toFloat(),
-            telemetry.headingDegrees.toFloat(),
-            telemetry.speedKmh,
-            telemetry.gear,
-            activeRoute
-        )
-        isWrongWay = tracking.isWrongWay
-        if (tracking.isWrongWay && System.currentTimeMillis() - lastWrongWayVoiceTime > 9000L) {
-            lastWrongWayVoiceTime = System.currentTimeMillis()
-            voiceAssistant.speak("Precaución, sentido contrario")
+        val curX = telemetry.posX.toFloat()
+        val curZ = telemetry.posZ.toFloat()
+        val curHeading = telemetry.headingDegrees.toFloat()
+        val curSpeed = telemetry.speedKmh
+        val curGear = telemetry.gear
+        val now = System.currentTimeMillis()
+
+        val movedDistSq = (curX - lastTrackingX) * (curX - lastTrackingX) + (curZ - lastTrackingZ) * (curZ - lastTrackingZ)
+        val shouldEvaluateTracking = (now - lastTrackingCheckTime > 200L) || (movedDistSq > 4.0f)
+
+        val tracking = if (shouldEvaluateTracking) {
+            val t = withContext(Dispatchers.Default) {
+                graph.evaluateRouteTracking(curX, curZ, curHeading, curSpeed, curGear, activeRoute)
+            }
+            lastTrackingCheckTime = now
+            lastTrackingX = curX
+            lastTrackingZ = curZ
+            t
+        } else null
+
+        if (tracking != null) {
+            isWrongWay = tracking.isWrongWay
+            if (tracking.isWrongWay && now - lastWrongWayVoiceTime > 9000L) {
+                lastWrongWayVoiceTime = now
+                voiceAssistant.speak("Precaución, sentido contrario")
+            }
+            if (tracking.isOffRoute) offRouteCounter++ else offRouteCounter = 0
         }
-        if (tracking.isOffRoute) offRouteCounter++ else offRouteCounter = 0
 
         // Autodetección: 1) Destino manual explícito, 2) Destino del trabajo en curso de ATS
         val targetNode: Int? = if (telemetry.targetNodeIndex != null) {
@@ -165,8 +307,7 @@ fun AtsNavMainApp(
             val isNewDestination = telemetry.destinationCity != lastRoutedDestCity ||
                 telemetry.destinationCompany != lastRoutedDestComp ||
                 targetNode != lastTargetNodeIndex
-            val now = System.currentTimeMillis()
-            val isConfirmedOffRoute = (tracking.distanceToRouteMeters > 48f || offRouteCounter >= 4) &&
+            val isConfirmedOffRoute = tracking != null && (tracking.distanceToRouteMeters > 48f || offRouteCounter >= 4) &&
                 (now - lastRouteCalcTime > 1500L)
             val shouldCompute = activeRoute == null || isNewDestination || isConfirmedOffRoute
 
@@ -175,19 +316,13 @@ fun AtsNavMainApp(
                     routeJob?.cancel()
                 }
                 if (isNewDestination || routeJob == null || !routeJob!!.isActive) {
-                    val snap = tracking.currentSnap ?: graph.snapToRoad(
-                        telemetry.posX.toFloat(),
-                        telemetry.posZ.toFloat(),
-                        telemetry.headingDegrees.toFloat(),
-                        null,
-                        45f
-                    )
+                    val snap = tracking?.currentSnap ?: withContext(Dispatchers.Default) {
+                        graph.snapToRoad(curX, curZ, curHeading, null, 45f)
+                    }
                     val startNode = snap?.edge?.fromNodeIndex?.takeIf { graph.adjacency.containsKey(it) }
-                        ?: graph.findBestRouteStartNode(
-                            telemetry.posX.toFloat(),
-                            telemetry.posZ.toFloat(),
-                            telemetry.headingDegrees.toFloat()
-                        )
+                        ?: withContext(Dispatchers.Default) {
+                            graph.findBestRouteStartNode(curX, curZ, curHeading)
+                        }
                     lastRoutedDestCity = telemetry.destinationCity
                     lastRoutedDestComp = telemetry.destinationCompany
                     lastTargetNodeIndex = targetNode
@@ -299,6 +434,7 @@ fun AtsNavMainApp(
                                 telemetry = telemetry,
                                 activeRoute = activeRoute,
                                 viewMode = viewMode,
+                                mapTheme = mapTheme,
                                 zoomScale = zoomScale,
                                 panOffset = panOffset,
                                 onZoomChange = { zoomScale = it },
@@ -353,6 +489,7 @@ fun AtsNavMainApp(
                                     truckZ = telemetry.posZ.toFloat(),
                                     activeRoute = activeRoute,
                                     destinationCity = telemetry.destinationCity,
+                                    instructionOverride = currentInstruction,
                                     modifier = Modifier
                                         .align(Alignment.TopStart)
                                         .padding(top = 80.dp, start = 14.dp)
@@ -450,8 +587,12 @@ fun AtsNavMainApp(
                             }
 
                             // 2. Alerta de Parada de Descanso Obligatorio (Automática en mapa cuando queda poco tiempo)
-                            val mapRestStop = remember(telemetry.posX, telemetry.posZ, mapGraph) {
-                                mapGraph?.findNearestRestStop(telemetry.posX.toFloat(), telemetry.posZ.toFloat())
+                            val isRestStopRelevant = telemetry.restStopMinutes in 1..45
+                            val currentMapGraph = mapGraph
+                            val mapRestStop = remember(telemetry.posX, telemetry.posZ, currentMapGraph, isRestStopRelevant) {
+                                if (isRestStopRelevant && currentMapGraph != null) {
+                                    currentMapGraph.findNearestRestStop(telemetry.posX.toFloat(), telemetry.posZ.toFloat())
+                                } else null
                             }
                             if (telemetry.restStopMinutes in 1..45 && mapRestStop != null) {
                                 Box(
@@ -653,6 +794,23 @@ fun AtsNavMainApp(
                                 ) {
                                     Text("CFG", fontSize = 12.sp, fontWeight = FontWeight.Black)
                                 }
+
+                                // Botón de Estilo de Mapa
+                                FloatingActionButton(
+                                    onClick = {
+                                        mapTheme = when (mapTheme) {
+                                            MapThemeStyle.DARK_PREMIUM -> MapThemeStyle.HIGH_CONTRAST
+                                            MapThemeStyle.HIGH_CONTRAST -> MapThemeStyle.CYBER_NEON
+                                            MapThemeStyle.CYBER_NEON -> MapThemeStyle.DARK_PREMIUM
+                                        }
+                                    },
+                                    containerColor = Color(0xFF1E293B),
+                                    contentColor = Color(0xFFC7F36B),
+                                    shape = CircleShape,
+                                    modifier = Modifier.size(50.dp)
+                                ) {
+                                    Text("STY", fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                }
                             }
 
                             // 4. Pastilla flotante de aviso si se desplazó el mapa libremente
@@ -691,6 +849,11 @@ fun AtsNavMainApp(
                                     selectedTab = AppTab.MAPA
                                 }
                             }
+                        )
+                    }
+                    AppTab.BITACORA -> {
+                        TripLogScreen(
+                            tripLogManager = tripLogManager
                         )
                     }
                     AppTab.ACERCA_DE -> {
@@ -829,6 +992,7 @@ fun TopNavigationBar(
         ) {
             FigmaTabButton("Mapa", selectedTab == AppTab.MAPA) { onTabSelected(AppTab.MAPA) }
             FigmaTabButton("Telemetría", selectedTab == AppTab.TELEMETRIA) { onTabSelected(AppTab.TELEMETRIA) }
+            FigmaTabButton("Bitácora", selectedTab == AppTab.BITACORA) { onTabSelected(AppTab.BITACORA) }
             FigmaTabButton("Acerca de", selectedTab == AppTab.ACERCA_DE) { onTabSelected(AppTab.ACERCA_DE) }
         }
 

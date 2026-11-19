@@ -31,18 +31,169 @@ enum class MapViewMode {
     MODE_3D_PERSPECTIVE
 }
 
-// Clases de caché internas normales (NO snapshot states) para evitar excepciones en Compose DrawScope
+enum class MapThemeStyle {
+    DARK_PREMIUM,
+    HIGH_CONTRAST,
+    CYBER_NEON
+}
+
+// =====================================================================
+// ESTRUCTURAS DE CACHÉ DE ALTO RENDIMIENTO (CERO ASIGNACIÓN POR FRAME)
+// =====================================================================
+
+private class SnapCache {
+    var lastX: Float = Float.NaN
+    var lastZ: Float = Float.NaN
+    var lastHeading: Float = Float.NaN
+    var cachedSnap: RoadSnapResult? = null
+}
+
 private class Viewport2DCache {
     var edges: List<MapEdge> = emptyList()
     var lastX: Float = Float.NaN
     var lastZ: Float = Float.NaN
     var lastScale: Float = 1.0f
+
+    // Cadenas pre-calculadas y suavizadas en coordenadas del mundo
+    var rampChains: List<List<Point3D>> = emptyList()
+    var localChains: List<List<Point3D>> = emptyList()
+    var mainChains: List<List<Point3D>> = emptyList()
+    var hwyChains: List<List<Point3D>> = emptyList()
 }
+
+private class RoadChain3D(
+    val isFreeway: Boolean,
+    val lanes: Int,
+    val laneWidthFactor: Float,
+    val points: List<Point3D>
+)
 
 private class Viewport3DCache {
     var edges: List<MapEdge> = emptyList()
     var lastX: Float = Float.NaN
     var lastZ: Float = Float.NaN
+    var chains: List<RoadChain3D> = emptyList()
+}
+
+private class RouteRenderCache {
+    var cachedRoute: RouteResult? = null
+    var fullSmoothedPoints: List<Point3D> = emptyList()
+    var lastTruckX: Float = Float.NaN
+    var lastTruckZ: Float = Float.NaN
+    var trimmedPoints: List<Point3D> = emptyList()
+    var lastTrimIdx: Int = 0
+}
+
+private class ReusableRoadSeg(
+    var x1: Float = 0f,
+    var y1: Float = 0f,
+    var x2: Float = 0f,
+    var y2: Float = 0f,
+    var casingW: Float = 0f,
+    var depthRatio: Float = 0f,
+    var isFreeway: Boolean = false,
+    var lanes: Int = 1
+)
+
+private class RoadSegPool3D(capacity: Int = 3000) {
+    val pool = Array(capacity) { ReusableRoadSeg() }
+    val indices = IntArray(capacity) { it }
+    var count = 0
+
+    fun reset() {
+        count = 0
+    }
+
+    fun add(
+        x1: Float, y1: Float, x2: Float, y2: Float,
+        casingW: Float, depthRatio: Float,
+        isFreeway: Boolean, lanes: Int
+    ) {
+        if (count >= pool.size) return
+        val s = pool[count]
+        s.x1 = x1
+        s.y1 = y1
+        s.x2 = x2
+        s.y2 = y2
+        s.casingW = casingW
+        s.depthRatio = depthRatio
+        s.isFreeway = isFreeway
+        s.lanes = lanes
+        indices[count] = count
+        count++
+    }
+
+    fun sortBackToFront() {
+        if (count > 1) {
+            quickSort(0, count - 1)
+        }
+    }
+
+    private fun quickSort(low: Int, high: Int) {
+        if (low >= high) return
+        val pivotY = getMidY(indices[(low + high) ushr 1])
+        var i = low
+        var j = high
+        while (i <= j) {
+            while (getMidY(indices[i]) < pivotY) i++
+            while (getMidY(indices[j]) > pivotY) j--
+            if (i <= j) {
+                val temp = indices[i]
+                indices[i] = indices[j]
+                indices[j] = temp
+                i++
+                j--
+            }
+        }
+        if (low < j) quickSort(low, j)
+        if (i < high) quickSort(i, high)
+    }
+
+    private inline fun getMidY(idx: Int): Float {
+        val s = pool[idx]
+        return s.y1 + s.y2
+    }
+}
+
+private class ReusableRouteSeg(
+    var x1: Float = 0f,
+    var y1: Float = 0f,
+    var x2: Float = 0f,
+    var y2: Float = 0f,
+    var rWidth: Float = 0f
+)
+
+private class RouteSegPool3D(capacity: Int = 1000) {
+    val pool = Array(capacity) { ReusableRouteSeg() }
+    var count = 0
+
+    fun reset() {
+        count = 0
+    }
+
+    fun add(x1: Float, y1: Float, x2: Float, y2: Float, rWidth: Float) {
+        if (count >= pool.size) return
+        val s = pool[count]
+        s.x1 = x1
+        s.y1 = y1
+        s.x2 = x2
+        s.y2 = y2
+        s.rWidth = rWidth
+        count++
+    }
+}
+
+private class ReusableCanvasPaths {
+    val rampPath = Path()
+    val localPath = Path()
+    val mainPath = Path()
+    val hwyPath = Path()
+    val routePath = Path()
+    val headlightPath = Path()
+    val leftFacet = Path()
+    val rightFacet = Path()
+    val outlinePath = Path()
+    val cursorPath = Path()
 }
 
 @Composable
@@ -51,6 +202,7 @@ fun GpsMapCanvas(
     telemetry: TelemetryData,
     activeRoute: RouteResult?,
     viewMode: MapViewMode = MapViewMode.MODE_3D_PERSPECTIVE,
+    mapTheme: MapThemeStyle = MapThemeStyle.DARK_PREMIUM,
     zoomScale: Float = 1.0f,
     panOffset: Offset = Offset.Zero,
     onZoomChange: (Float) -> Unit = {},
@@ -123,11 +275,16 @@ fun GpsMapCanvas(
         }
     }
 
-    // Objetos de caché normales (sin Snapshot Mutation inside Canvas)
+    // Estructuras de caché persistentes en memoria (reutilizadas sin recolector de basura)
+    val snapCache = remember { SnapCache() }
     val cache2D = remember { Viewport2DCache() }
     val cache3D = remember { Viewport3DCache() }
+    val routeCache = remember { RouteRenderCache() }
+    val roadSegPool = remember { RoadSegPool3D() }
+    val routeSegPool = remember { RouteSegPool3D() }
+    val reusablePaths = remember { ReusableCanvasPaths() }
 
-    // Pinturas cacheadas para texto y POIs
+    // Pinturas cacheadas para texto y marcadores POI
     val cityPaint = remember {
         android.graphics.Paint().apply {
             color = android.graphics.Color.WHITE
@@ -153,11 +310,23 @@ fun GpsMapCanvas(
             setShadowLayer(3f, 0f, 0f, android.graphics.Color.BLACK)
         }
     }
+    val poiBgPaint = remember {
+        android.graphics.Paint().apply {
+            color = android.graphics.Color.argb(220, 15, 23, 42)
+            isAntiAlias = true
+        }
+    }
+
+    val canvasBg = when (mapTheme) {
+        MapThemeStyle.DARK_PREMIUM -> Color(0xFF0A0F1D)
+        MapThemeStyle.HIGH_CONTRAST -> Color(0xFF000000)
+        MapThemeStyle.CYBER_NEON -> Color(0xFF070B12)
+    }
 
     Canvas(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF0A0F1D))
+            .background(canvasBg)
             .pointerInput(Unit) {
                 detectTapGestures { tapOffset ->
                     val cx = size.width / 2f
@@ -184,17 +353,34 @@ fun GpsMapCanvas(
             return@Canvas
         }
 
-        val snap = graph.snapToRoad(
-            x = smoothTruckX,
-            z = smoothTruckZ,
-            headingDeg = smoothHeading,
-            preferredEdges = activeRoute?.edgePath,
-            maxDistMeters = 26f
-        )
+        // Snapping inteligente throttled: sólo se ejecuta si el camión se movió > 1.8 metros
+        val dxSnap = smoothTruckX - snapCache.lastX
+        val dzSnap = smoothTruckZ - snapCache.lastZ
+        val dHeadingSnap = abs(smoothHeading - snapCache.lastHeading)
+        val snap = if (snapCache.lastX.isNaN() || (dxSnap * dxSnap + dzSnap * dzSnap) > 3.24f || dHeadingSnap > 8f) {
+            val s = graph.snapToRoad(
+                x = smoothTruckX,
+                z = smoothTruckZ,
+                headingDeg = smoothHeading,
+                preferredEdges = activeRoute?.edgePath,
+                maxDistMeters = 26f
+            )
+            snapCache.lastX = smoothTruckX
+            snapCache.lastZ = smoothTruckZ
+            snapCache.lastHeading = smoothHeading
+            snapCache.cachedSnap = s
+            s
+        } else {
+            snapCache.cachedSnap
+        }
+
         val truckX = snap?.snappedX ?: smoothTruckX
         val truckY = smoothTruckY
         val truckZ = snap?.snappedZ ?: smoothTruckZ
         val headingDeg = smoothHeading
+
+        // Trazado de ruta activa pre-suavizado con ventana deslizante O(1)
+        val smoothRoutePoints = getOrUpdateSmoothedRoute(activeRoute, truckX, truckZ, routeCache)
 
         when (viewMode) {
             MapViewMode.MODE_2D_TOP_DOWN -> {
@@ -206,24 +392,51 @@ fun GpsMapCanvas(
                 val viewCenterZ = truckZ - (if (!isFollowingTruck) panOffset.y / baseScale else 0f)
                 val viewRadius = (max(size.width, size.height) / baseScale) * 1.5f
 
-                // Comprobación de caché de carreteras 2D
+                // Comprobación de caché de carreteras 2D: sólo reconstruir cadenas si se desplazó > 25 metros
                 val distFromLast2D = if (cache2D.lastX.isNaN()) Float.MAX_VALUE else {
                     val qx = viewCenterX - cache2D.lastX
                     val qz = viewCenterZ - cache2D.lastZ
                     qx * qx + qz * qz
                 }
-                val scaleRatio = abs(baseScale - cache2D.lastScale) / cache2D.lastScale
+                val scaleRatio = if (cache2D.lastScale > 0f) abs(baseScale - cache2D.lastScale) / cache2D.lastScale else 1f
 
                 if (distFromLast2D > 625f || scaleRatio > 0.08f || cache2D.edges.isEmpty()) {
-                    cache2D.edges = graph.getEdgesNear(viewCenterX, viewCenterZ, viewRadius * 1.25f)
+                    val visible = graph.getEdgesNear(viewCenterX, viewCenterZ, viewRadius * 1.25f)
+                    cache2D.edges = visible
                     cache2D.lastX = viewCenterX
                     cache2D.lastZ = viewCenterZ
                     cache2D.lastScale = baseScale
+
+                    val hwyEdges = ArrayList<MapEdge>()
+                    val mainEdges = ArrayList<MapEdge>()
+                    val localEdges = ArrayList<MapEdge>()
+                    val rampEdges = ArrayList<MapEdge>()
+
+                    val activeEdgeIds = activeRoute?.edgePath?.map { it.edgeId }?.toSet() ?: emptySet()
+                    for (edge in visible) {
+                        if (edge.polyline.size < 2) continue
+                        val isRouteEdge = activeEdgeIds.contains(edge.edgeId)
+                        if (!isRouteEdge && edge.roadType.toInt() == 3 && edge.length < 18f) continue
+
+                        when (edge.roadType.toInt()) {
+                            0 -> hwyEdges.add(edge)
+                            1 -> mainEdges.add(edge)
+                            2 -> localEdges.add(edge)
+                            else -> rampEdges.add(edge)
+                        }
+                    }
+
+                    // Se suavizan y encadenan UNA SOLA VEZ al mover de sector, nunca en cada frame
+                    cache2D.rampChains = chainEdges(rampEdges).map { smoothPolyline(it, iterations = 1) }
+                    cache2D.localChains = chainEdges(localEdges).map { smoothPolyline(it, iterations = 1) }
+                    cache2D.mainChains = chainEdges(mainEdges).map { smoothPolyline(it, iterations = 1) }
+                    cache2D.hwyChains = chainEdges(hwyEdges).map { smoothPolyline(it, iterations = 1) }
                 }
 
                 drawMap2D(
                     graph = graph,
-                    visibleEdges = cache2D.edges,
+                    cache2D = cache2D,
+                    reusablePaths = reusablePaths,
                     truckX = truckX,
                     truckZ = truckZ,
                     viewCenterX = viewCenterX,
@@ -234,12 +447,13 @@ fun GpsMapCanvas(
                     baseScale = baseScale,
                     headingDeg = headingDeg,
                     activeRoute = activeRoute,
-                    snap = snap,
+                    routePoints = smoothRoutePoints,
                     zoomScale = zoomScale,
                     isFollowingTruck = isFollowingTruck,
                     cityPaint = cityPaint,
                     poiIconPaint = poiIconPaint,
-                    poiLabelPaint = poiLabelPaint
+                    poiLabelPaint = poiLabelPaint,
+                    poiBgPaint = poiBgPaint
                 )
             }
             MapViewMode.MODE_3D_PERSPECTIVE -> {
@@ -249,29 +463,62 @@ fun GpsMapCanvas(
                     qx * qx + qz * qz
                 }
                 if (distFromLast3D > 225f || cache3D.edges.isEmpty()) {
-                    cache3D.edges = graph.getEdgesNear(truckX, truckZ, 1400f)
+                    val nearby = graph.getEdgesNear(truckX, truckZ, 1400f)
+                    cache3D.edges = nearby
                     cache3D.lastX = truckX
                     cache3D.lastZ = truckZ
+
+                    val groupedEdges = HashMap<Int, MutableList<MapEdge>>()
+                    val activeEdgeIds = activeRoute?.edgePath?.map { it.edgeId }?.toSet() ?: emptySet()
+                    for (edge in nearby) {
+                        if (edge.polyline.size < 2) continue
+                        val isRouteEdge = activeEdgeIds.contains(edge.edgeId)
+                        if (!isRouteEdge && edge.roadType.toInt() == 3 && edge.length < 18f) continue
+
+                        val isFreeway = edge.roadType.toInt() == 0
+                        val lanes = edge.lanes.toInt().coerceAtLeast(1)
+                        val key = (if (isFreeway) 100 else 0) + lanes
+                        groupedEdges.getOrPut(key) { ArrayList() }.add(edge)
+                    }
+
+                    val newChains = ArrayList<RoadChain3D>()
+                    for ((key, group) in groupedEdges) {
+                        val isFreeway = key >= 100
+                        val lanes = if (isFreeway) key - 100 else key
+                        val laneWidthFactor = 1.0f + (lanes - 1) * 0.38f
+                        val rawChains = chainEdges(group)
+                        for (chain in rawChains) {
+                            val sub = subdivideForegroundSegments(chain, truckX, truckZ, radiusSq = 122500f, maxSegLenMeters = 8f)
+                            val smoothed = smoothPolyline(sub, iterations = 1)
+                            if (smoothed.size >= 2) {
+                                newChains.add(RoadChain3D(isFreeway, lanes, laneWidthFactor, smoothed))
+                            }
+                        }
+                    }
+                    cache3D.chains = newChains
                 }
 
-                // Controlador de zoom dinamico en funcion de la velocidad:
-                // A velocidad alta (autopista) la cámara se eleva y amplía el campo visual; a baja velocidad se acerca.
+                // Controlador de zoom dinámico en función de la velocidad
                 val speedKmh = telemetry.speedKmh.coerceAtLeast(0f)
                 val speedZoomRatio = (speedKmh / 90f).coerceIn(0f, 1f)
                 val dynamicZoom = zoomScale * (0.85f + speedZoomRatio * 0.35f)
 
                 drawMap3D(
                     graph = graph,
-                    nearbyEdges = cache3D.edges,
+                    cache3D = cache3D,
+                    roadPool = roadSegPool,
+                    routePool = routeSegPool,
+                    reusablePaths = reusablePaths,
                     truckX = truckX,
                     truckY = truckY,
                     truckZ = truckZ,
                     headingDeg = headingDeg,
                     activeRoute = activeRoute,
-                    snap = snap,
+                    routePoints = smoothRoutePoints,
                     zoomScale = dynamicZoom,
                     poiIconPaint = poiIconPaint,
-                    poiLabelPaint = poiLabelPaint
+                    poiLabelPaint = poiLabelPaint,
+                    poiBgPaint = poiBgPaint
                 )
             }
         }
@@ -279,7 +526,7 @@ fun GpsMapCanvas(
 }
 
 // =====================================================================
-// SUAVIZADO DE CURVAS, ENCADENADO DE VÍAS Y RECORTE DE RUTA ACTIVA
+// SUAVIZADO DE CURVAS Y ENCADENADO DE VÍAS
 // =====================================================================
 private fun smoothPolyline(points: List<Point3D>, iterations: Int = 1): List<Point3D> {
     if (points.size < 3 || iterations <= 0 || points.size > 2000) return points
@@ -368,49 +615,81 @@ private fun subdivideForegroundSegments(
     return out
 }
 
-private fun buildSmoothActiveRoutePoints(
-    activeRoute: RouteResult,
+private fun getOrUpdateSmoothedRoute(
+    activeRoute: RouteResult?,
     truckX: Float,
     truckZ: Float,
-    snap: RoadSnapResult?
+    routeCache: RouteRenderCache
 ): List<Point3D> {
-    if (activeRoute.edgePath.isEmpty()) return emptyList()
+    if (activeRoute == null || activeRoute.edgePath.isEmpty()) {
+        routeCache.cachedRoute = null
+        routeCache.fullSmoothedPoints = emptyList()
+        routeCache.trimmedPoints = emptyList()
+        return emptyList()
+    }
 
-    val rawPoints = ArrayList<Point3D>(activeRoute.edgePath.size * 4)
-    var snapStartIdx = -1
-    var snapEndIdx = -1
-    val snapEdgeId = snap?.edge?.edgeId
-
-    for (edge in activeRoute.edgePath) {
-        val poly = edge.polyline
-        if (poly.isEmpty()) continue
-        val edgeBeginIdx = (rawPoints.size - 1).coerceAtLeast(0)
-        for (pt in poly) {
-            if (rawPoints.isNotEmpty()) {
-                val prev = rawPoints.last()
-                val dx = pt.x - prev.x
-                val dz = pt.z - prev.z
-                if (dx * dx + dz * dz < 0.04f) continue
+    // Si la ruta cambió, construir el trazado suavizado completo de la ruta UNA SOLA VEZ
+    if (routeCache.cachedRoute !== activeRoute) {
+        val raw = ArrayList<Point3D>(activeRoute.edgePath.size * 4)
+        for (edge in activeRoute.edgePath) {
+            for (pt in edge.polyline) {
+                if (raw.isNotEmpty()) {
+                    val prev = raw.last()
+                    val dx = pt.x - prev.x
+                    val dz = pt.z - prev.z
+                    if (dx * dx + dz * dz < 0.04f) continue
+                }
+                raw.add(pt)
             }
-            rawPoints.add(pt)
         }
-        if (snapEdgeId != null && edge.edgeId == snapEdgeId && snapStartIdx == -1 && rawPoints.size > edgeBeginIdx) {
-            snapStartIdx = edgeBeginIdx
-            snapEndIdx = rawPoints.size - 1
+        val sub = subdivideLongSegments(raw, 6f)
+        routeCache.fullSmoothedPoints = smoothPolyline(sub, iterations = 2)
+        routeCache.cachedRoute = activeRoute
+        routeCache.lastTruckX = Float.NaN
+        routeCache.lastTruckZ = Float.NaN
+        routeCache.lastTrimIdx = 0
+        routeCache.trimmedPoints = routeCache.fullSmoothedPoints
+    }
+
+    val fullPoints = routeCache.fullSmoothedPoints
+    if (fullPoints.size < 2) return fullPoints
+
+    // Solo recortar si el camión se movió más de 2.0 metros
+    val dx = truckX - routeCache.lastTruckX
+    val dz = truckZ - routeCache.lastTruckZ
+    if (!routeCache.lastTruckX.isNaN() && (dx * dx + dz * dz) < 4.0f) {
+        return routeCache.trimmedPoints
+    }
+
+    // Búsqueda en ventana cercana a la posición anterior para O(1)
+    var bestIdx = -1
+    var bestDistSq = Float.MAX_VALUE
+    val startWindow = (routeCache.lastTrimIdx - 2).coerceAtLeast(0)
+    val endWindow = (routeCache.lastTrimIdx + 25).coerceAtMost(fullPoints.size - 2)
+
+    for (i in startWindow..endWindow) {
+        val p1 = fullPoints[i]
+        val p2 = fullPoints[i + 1]
+        val vx = p2.x - p1.x
+        val vz = p2.z - p1.z
+        val lenSq = vx * vx + vz * vz
+        val t = if (lenSq > 0.0001f) {
+            (((truckX - p1.x) * vx + (truckZ - p1.z) * vz) / lenSq).coerceIn(0f, 1f)
+        } else 0f
+        val px = p1.x + t * vx
+        val pz = p1.z + t * vz
+        val dSq = (truckX - px) * (truckX - px) + (truckZ - pz) * (truckZ - pz)
+        if (dSq < bestDistSq) {
+            bestDistSq = dSq
+            bestIdx = i
         }
     }
 
-    if (rawPoints.size < 2) return rawPoints
-
-    fun findClosestInRange(startIdx: Int, endIdx: Int): Triple<Int, Float, Pair<Float, Float>> {
-        var bestIdx = -1
-        var bestDistSq = Float.MAX_VALUE
-        var bestProjX = 0f
-        var bestProjZ = 0f
-        val lastSeg = (endIdx - 1).coerceAtMost(rawPoints.size - 2)
-        for (i in startIdx..lastSeg) {
-            val p1 = rawPoints[i]
-            val p2 = rawPoints[i + 1]
+    // Si no está en la ventana cercana (< 45m), buscar en toda la lista
+    if (bestDistSq > 2025f) {
+        for (i in 0 until fullPoints.size - 1) {
+            val p1 = fullPoints[i]
+            val p2 = fullPoints[i + 1]
             val vx = p2.x - p1.x
             val vz = p2.z - p1.z
             val lenSq = vx * vx + vz * vz
@@ -423,70 +702,16 @@ private fun buildSmoothActiveRoutePoints(
             if (dSq < bestDistSq) {
                 bestDistSq = dSq
                 bestIdx = i
-                bestProjX = px
-                bestProjZ = pz
             }
         }
-        return Triple(bestIdx, bestDistSq, Pair(bestProjX, bestProjZ))
     }
 
-    var bestMatch = if (snapStartIdx >= 0 && snapEndIdx > snapStartIdx) {
-        findClosestInRange(snapStartIdx, snapEndIdx)
-    } else {
-        Triple(-1, Float.MAX_VALUE, Pair(0f, 0f))
-    }
-
-    if (bestMatch.first < 0 || bestMatch.second > 3600f) {
-        bestMatch = findClosestInRange(0, rawPoints.size - 1)
-    }
-
-    val trimmed = if (bestMatch.first >= 0 && bestMatch.second <= 3600f) {
-        val segIdx = bestMatch.first
-        val projX = bestMatch.third.first
-        val projZ = bestMatch.third.second
-        ArrayList<Point3D>(rawPoints.size - segIdx).apply {
-            add(Point3D(projX, 0f, projZ))
-            for (i in (segIdx + 1) until rawPoints.size) {
-                val pt = rawPoints[i]
-                if (size == 1) {
-                    val dx = pt.x - projX
-                    val dz = pt.z - projZ
-                    if (dx * dx + dz * dz < 0.04f) continue
-                }
-                add(pt)
-            }
-        }
-    } else {
-        rawPoints
-    }
-
-    if (trimmed.size < 2) return trimmed
-
-    var fgDist = 0f
-    var fgEndIdx = 1
-    while (fgEndIdx < trimmed.size && fgEndIdx < 120 && fgDist < 1200f) {
-        val a = trimmed[fgEndIdx - 1]
-        val b = trimmed[fgEndIdx]
-        val dx = b.x - a.x
-        val dz = b.z - a.z
-        fgDist += sqrt(dx * dx + dz * dz)
-        fgEndIdx++
-    }
-
-    val fgRaw = trimmed.subList(0, fgEndIdx)
-    val fgSub = subdivideLongSegments(fgRaw, 6f)
-    val fgSmooth = smoothPolyline(fgSub, iterations = 2)
-
-    if (fgEndIdx >= trimmed.size) {
-        return fgSmooth
-    }
-
-    val result = ArrayList<Point3D>(fgSmooth.size + (trimmed.size - fgEndIdx))
-    result.addAll(fgSmooth)
-    for (i in fgEndIdx until trimmed.size) {
-        result.add(trimmed[i])
-    }
-    return result
+    val trimStart = if (bestIdx >= 0) bestIdx.coerceAtMost(fullPoints.size - 1) else 0
+    routeCache.lastTrimIdx = trimStart
+    routeCache.lastTruckX = truckX
+    routeCache.lastTruckZ = truckZ
+    routeCache.trimmedPoints = if (trimStart > 0) fullPoints.subList(trimStart, fullPoints.size) else fullPoints
+    return routeCache.trimmedPoints
 }
 
 private fun chainEdges(edges: List<MapEdge>): List<List<Point3D>> {
@@ -614,12 +839,55 @@ private fun chainEdges(edges: List<MapEdge>): List<List<Point3D>> {
     return chains
 }
 
+private fun populateChainsToPath(
+    chains: List<List<Point3D>>,
+    path: Path,
+    viewCenterX: Float,
+    viewCenterZ: Float,
+    cx: Float,
+    cy: Float,
+    scale: Float
+): Boolean {
+    path.reset()
+    if (chains.isEmpty()) return false
+    var hasPoints = false
+    var lastWx = Float.NaN
+    var lastWz = Float.NaN
+
+    for (chain in chains) {
+        if (chain.size < 2) continue
+        for (i in chain.indices) {
+            val p = chain[i]
+            val sx = cx + (p.x - viewCenterX) * scale
+            val sy = cy + (p.z - viewCenterZ) * scale
+            if (sx.isNaN() || sy.isNaN()) continue
+
+            if (i == 0) {
+                val isContiguous = !lastWx.isNaN() &&
+                    ((p.x - lastWx) * (p.x - lastWx) + (p.z - lastWz) * (p.z - lastWz) < 1.0f)
+                if (isContiguous) {
+                    path.lineTo(sx, sy)
+                } else {
+                    path.moveTo(sx, sy)
+                }
+            } else {
+                path.lineTo(sx, sy)
+                hasPoints = true
+            }
+            lastWx = p.x
+            lastWz = p.z
+        }
+    }
+    return hasPoints
+}
+
 // =====================================================================
-// RENDERIZADOR 2D (VISTA AÉREA TÁCTICA CON CINTAS CONTINUAS Y JERARQUÍA VIAL)
+// RENDERIZADOR 2D (VISTA AÉREA CON CINTAS SUAVES Y REUTILIZACIÓN DE PATH)
 // =====================================================================
 private fun DrawScope.drawMap2D(
     graph: MapGraph,
-    visibleEdges: List<MapEdge>,
+    cache2D: Viewport2DCache,
+    reusablePaths: ReusableCanvasPaths,
     truckX: Float,
     truckZ: Float,
     viewCenterX: Float,
@@ -630,103 +898,78 @@ private fun DrawScope.drawMap2D(
     baseScale: Float,
     headingDeg: Float,
     activeRoute: RouteResult?,
-    snap: RoadSnapResult?,
+    routePoints: List<Point3D>,
     zoomScale: Float,
     isFollowingTruck: Boolean,
     cityPaint: android.graphics.Paint,
     poiIconPaint: android.graphics.Paint,
-    poiLabelPaint: android.graphics.Paint
+    poiLabelPaint: android.graphics.Paint,
+    poiBgPaint: android.graphics.Paint
 ) {
-    val activeRouteEdgeIds = if (activeRoute != null && activeRoute.edgePath.isNotEmpty()) {
-        HashSet<Int>(activeRoute.edgePath.size * 2).apply {
-            for (e in activeRoute.edgePath) add(e.edgeId)
-        }
-    } else null
-
-    // Clasificar aristas por tipo de vía filtrando micro-conectores internos de prefab
-    val hwyEdges = ArrayList<MapEdge>()
-    val mainEdges = ArrayList<MapEdge>()
-    val localEdges = ArrayList<MapEdge>()
-    val rampEdges = ArrayList<MapEdge>()
-
-    for (edge in visibleEdges) {
-        if (edge.polyline.size < 2) continue
-        val isRouteEdge = activeRouteEdgeIds?.contains(edge.edgeId) == true
-        if (!isRouteEdge && edge.roadType.toInt() == 3 && edge.length < 18f) continue
-
-        when (edge.roadType.toInt()) {
-            0 -> hwyEdges.add(edge)
-            1 -> mainEdges.add(edge)
-            2 -> localEdges.add(edge)
-            else -> rampEdges.add(edge)
-        }
-    }
-
-    val rampPath = chainEdgesToPaths(rampEdges, viewCenterX, viewCenterZ, cx, cy, baseScale)
-    val localPath = chainEdgesToPaths(localEdges, viewCenterX, viewCenterZ, cx, cy, baseScale)
-    val mainPath = chainEdgesToPaths(mainEdges, viewCenterX, viewCenterZ, cx, cy, baseScale)
-    val hwyPath = chainEdgesToPaths(hwyEdges, viewCenterX, viewCenterZ, cx, cy, baseScale)
+    val hasRamp = populateChainsToPath(cache2D.rampChains, reusablePaths.rampPath, viewCenterX, viewCenterZ, cx, cy, baseScale)
+    val hasLocal = populateChainsToPath(cache2D.localChains, reusablePaths.localPath, viewCenterX, viewCenterZ, cx, cy, baseScale)
+    val hasMain = populateChainsToPath(cache2D.mainChains, reusablePaths.mainPath, viewCenterX, viewCenterZ, cx, cy, baseScale)
+    val hasHwy = populateChainsToPath(cache2D.hwyChains, reusablePaths.hwyPath, viewCenterX, viewCenterZ, cx, cy, baseScale)
 
     val rampW = getRoadStrokeWidth(3, zoomScale)
     val localW = getRoadStrokeWidth(2, zoomScale)
     val mainW = getRoadStrokeWidth(1, zoomScale)
     val hwyW = getRoadStrokeWidth(0, zoomScale)
 
-    // GLOBAL PASS 1: Todos los bordes exteriores (evita cruces negros internos en intersecciones)
+    // GLOBAL PASS 1: Todos los bordes exteriores
     val borderColor = Color(0xFF0B1017)
-    if (rampPath != null) drawPath(rampPath, borderColor, style = Stroke(rampW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    if (localPath != null) drawPath(localPath, borderColor, style = Stroke(localW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    if (mainPath != null) drawPath(mainPath, borderColor, style = Stroke(mainW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    if (hwyPath != null) drawPath(hwyPath, borderColor, style = Stroke(hwyW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (hasRamp) drawPath(reusablePaths.rampPath, borderColor, style = Stroke(rampW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (hasLocal) drawPath(reusablePaths.localPath, borderColor, style = Stroke(localW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (hasMain) drawPath(reusablePaths.mainPath, borderColor, style = Stroke(mainW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (hasHwy) drawPath(reusablePaths.hwyPath, borderColor, style = Stroke(hwyW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
 
     // GLOBAL PASS 2: Todos los rellenos de asfalto unificados encima
     val streetFill = Color(0xFF2B3846)
     val hwyFill = Color(0xFF334354)
-    if (rampPath != null) drawPath(rampPath, streetFill, style = Stroke(rampW, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    if (localPath != null) drawPath(localPath, streetFill, style = Stroke(localW, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    if (mainPath != null) drawPath(mainPath, streetFill, style = Stroke(mainW, cap = StrokeCap.Round, join = StrokeJoin.Round))
-    if (hwyPath != null) drawPath(hwyPath, hwyFill, style = Stroke(hwyW, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (hasRamp) drawPath(reusablePaths.rampPath, streetFill, style = Stroke(rampW, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (hasLocal) drawPath(reusablePaths.localPath, streetFill, style = Stroke(localW, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (hasMain) drawPath(reusablePaths.mainPath, streetFill, style = Stroke(mainW, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    if (hasHwy) drawPath(reusablePaths.hwyPath, hwyFill, style = Stroke(hwyW, cap = StrokeCap.Round, join = StrokeJoin.Round))
 
-    // 2. Ruta activa GPS (Cinta continua suave con resplandor y contorno)
-    if (activeRoute != null && activeRoute.edgePath.isNotEmpty()) {
-        val routePoints = buildSmoothActiveRoutePoints(activeRoute, truckX, truckZ, snap)
-        if (routePoints.size >= 2) {
-            val routePath = Path()
-            var hasPoints = false
-            for (pt in routePoints) {
-                val sx = cx + (pt.x - viewCenterX) * baseScale
-                val sy = cy + (pt.z - viewCenterZ) * baseScale
-                if (sx.isNaN() || sy.isNaN()) continue
-                if (!hasPoints) {
-                    routePath.moveTo(sx, sy)
-                    hasPoints = true
-                } else {
-                    routePath.lineTo(sx, sy)
-                }
+    // 2. Ruta activa GPS (Cinta continua con Path reutilizable)
+    if (routePoints.size >= 2) {
+        val rPath = reusablePaths.routePath
+        rPath.reset()
+        var hasRoute = false
+        for (i in routePoints.indices) {
+            val pt = routePoints[i]
+            val sx = cx + (pt.x - viewCenterX) * baseScale
+            val sy = cy + (pt.z - viewCenterZ) * baseScale
+            if (sx.isNaN() || sy.isNaN()) continue
+            if (i == 0) {
+                rPath.moveTo(sx, sy)
+            } else {
+                rPath.lineTo(sx, sy)
+                hasRoute = true
             }
+        }
 
-            if (hasPoints) {
-                val rw = 16f * zoomScale.coerceIn(0.4f, 2.2f)
-                drawPath(
-                    path = routePath,
-                    color = Color(0x6600E5FF),
-                    style = Stroke(width = rw * 1.55f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                )
-                drawPath(
-                    path = routePath,
-                    color = Color(0xFF0369A1),
-                    style = Stroke(width = rw + 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                )
-                drawPath(
-                    path = routePath,
-                    color = Color(0xFF00E5FF),
-                    style = Stroke(width = rw, cap = StrokeCap.Round, join = StrokeJoin.Round)
-                )
-            }
+        if (hasRoute) {
+            val rw = 16f * zoomScale.coerceIn(0.4f, 2.2f)
+            drawPath(
+                path = rPath,
+                color = Color(0x6600E5FF),
+                style = Stroke(width = rw * 1.55f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+            drawPath(
+                path = rPath,
+                color = Color(0xFF0369A1),
+                style = Stroke(width = rw + 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
+            drawPath(
+                path = rPath,
+                color = Color(0xFF00E5FF),
+                style = Stroke(width = rw, cap = StrokeCap.Round, join = StrokeJoin.Round)
+            )
         }
     }
 
-    // 3. Ciudades y POIs dibujados ERGUIDOS (Sin rotación invertida) para máxima legibilidad táctica
+    // 3. Ciudades y POIs dibujados erguidos
     for (city in graph.cities) {
         val sx = cx + (city.x - viewCenterX) * baseScale
         val sy = cy + (city.z - viewCenterZ) * baseScale
@@ -751,65 +994,19 @@ private fun DrawScope.drawMap2D(
         val sy = cy + realDz * baseScale
         if (sx !in -80f..(size.width + 80f) || sy !in -80f..(size.height + 80f)) continue
 
-        drawPoiMarker2D(poi, sx, sy, zoomScale, poiIconPaint, poiLabelPaint)
+        drawPoiMarker2D(poi, sx, sy, zoomScale, poiIconPaint, poiLabelPaint, poiBgPaint)
     }
 
-    // 4. Cursor táctico del camión: rota en tiempo real siguiendo el rumbo del vehículo sobre la vía
+    // 4. Cursor táctico del camión
     if (isFollowingTruck) {
-        drawTruckCursor(cx, cy, headingDeg)
+        drawTruckCursor(cx, cy, headingDeg, reusablePaths)
     } else {
         val truckSx = cx + (truckX - viewCenterX) * baseScale
         val truckSy = cy + (truckZ - viewCenterZ) * baseScale
         if (!truckSx.isNaN() && !truckSy.isNaN()) {
-            drawTruckCursor(truckSx, truckSy, headingDeg)
+            drawTruckCursor(truckSx, truckSy, headingDeg, reusablePaths)
         }
     }
-}
-
-private fun chainEdgesToPaths(
-    edges: List<MapEdge>,
-    viewCenterX: Float,
-    viewCenterZ: Float,
-    cx: Float,
-    cy: Float,
-    scale: Float
-): Path? {
-    if (edges.isEmpty()) return null
-    val chains = chainEdges(edges)
-    if (chains.isEmpty()) return null
-
-    val path = Path()
-    var hasSegments = false
-    var lastWx = Float.NaN
-    var lastWz = Float.NaN
-
-    for (chain in chains) {
-        val smoothed = smoothPolyline(chain, iterations = 1)
-        if (smoothed.size < 2) continue
-
-        for (i in smoothed.indices) {
-            val p = smoothed[i]
-            val sx = cx + (p.x - viewCenterX) * scale
-            val sy = cy + (p.z - viewCenterZ) * scale
-            if (sx.isNaN() || sy.isNaN()) continue
-
-            if (i == 0) {
-                val isContiguous = !lastWx.isNaN() &&
-                    ((p.x - lastWx) * (p.x - lastWx) + (p.z - lastWz) * (p.z - lastWz) < 1.0f)
-                if (isContiguous) {
-                    path.lineTo(sx, sy)
-                } else {
-                    path.moveTo(sx, sy)
-                }
-            } else {
-                path.lineTo(sx, sy)
-                hasSegments = true
-            }
-            lastWx = p.x
-            lastWz = p.z
-        }
-    }
-    return if (hasSegments) path else null
 }
 
 private fun getRoadStrokeWidth(roadType: Int, zoomScale: Float): Float {
@@ -840,17 +1037,14 @@ private fun DrawScope.drawPoiMarker2D(
     sy: Float,
     zoomScale: Float,
     iconPaint: android.graphics.Paint,
-    labelPaint: android.graphics.Paint
+    labelPaint: android.graphics.Paint,
+    bgPaint: android.graphics.Paint
 ) {
     val (bgColor, iconText, defaultLabel) = poiMarkerStyle(poi.poiType.toInt())
+    val radius = 13f * density
 
-    val radius = 13f * density // 36-40 píxeles táctiles de alto contraste
-
-    // Sombra del marcador
     drawCircle(Color(0x88000000), radius = radius + 3f, center = Offset(sx, sy + 2f))
-    // Círculo coloreado según categoría
     drawCircle(bgColor, radius = radius, center = Offset(sx, sy))
-    // Borde blanco nítido
     drawCircle(Color.White, radius = radius, center = Offset(sx, sy), style = Stroke(width = 2.2f))
 
     val labelText = if (poi.name.isNotEmpty()) poi.name else defaultLabel
@@ -861,7 +1055,6 @@ private fun DrawScope.drawPoiMarker2D(
         iconPaint.textSize = radius * 0.72f
         canvas.nativeCanvas.drawText(iconText, sx, sy + radius * 0.25f, iconPaint)
 
-        // Etiqueta con pastilla oscura debajo del icono (siempre erguida y legible)
         if (zoomScale >= 0.45f) {
             labelPaint.textSize = 9.5f * density
             val textWidth = labelPaint.measureText(labelText)
@@ -871,65 +1064,48 @@ private fun DrawScope.drawPoiMarker2D(
             val pLeft = sx - textWidth / 2f - pillPad
             val pRight = sx + textWidth / 2f + pillPad
 
-            val bgPaint = android.graphics.Paint().apply {
-                color = android.graphics.Color.argb(220, 15, 23, 42)
-                isAntiAlias = true
-            }
             canvas.nativeCanvas.drawRoundRect(pLeft, pTop, pRight, pBottom, 6f, 6f, bgPaint)
             canvas.nativeCanvas.drawText(labelText, sx, pBottom - 3.5f * density, labelPaint)
         }
     }
 }
 
-private data class ProjectedRoadSeg3D(
-    val p1: Offset,
-    val p2: Offset,
-    val casingW: Float,
-    val depthRatio: Float,
-    val isFreeway: Boolean,
-    val lanes: Int
-)
-
-private data class ProjectedRouteSeg3D(
-    val p1: Offset,
-    val p2: Offset,
-    val rWidth: Float
-)
-
 // =====================================================================
-// RENDERIZADOR 3D EN PERSPECTIVA
+// RENDERIZADOR 3D EN PERSPECTIVA (SIN GC, CON POOL REUTILIZABLE)
 // =====================================================================
 private fun DrawScope.drawMap3D(
     graph: MapGraph,
-    nearbyEdges: List<MapEdge>,
+    cache3D: Viewport3DCache,
+    roadPool: RoadSegPool3D,
+    routePool: RouteSegPool3D,
+    reusablePaths: ReusableCanvasPaths,
     truckX: Float,
     truckY: Float,
     truckZ: Float,
     headingDeg: Float,
     activeRoute: RouteResult?,
-    snap: RoadSnapResult?,
+    routePoints: List<Point3D>,
     zoomScale: Float,
     poiIconPaint: android.graphics.Paint,
-    poiLabelPaint: android.graphics.Paint
+    poiLabelPaint: android.graphics.Paint,
+    poiBgPaint: android.graphics.Paint
 ) {
     val w = size.width
     val h = size.height
 
-    // Parametros opticos de proyeccion de camara 3D:
-    // horizonH: 26% de la altura, camDist: 65m, focal: 440f
     val horizonY = h * 0.26f
     val targetTruckY = h * 0.78f
     val camDist3D = 65f
     val focal3D = 440f * zoomScale.coerceIn(0.6f, 2.0f)
     val camHeight3D = (targetTruckY - horizonY) / (focal3D / camDist3D)
 
-    // 1. Cielo crepuscular con degradado atmosférico Figma
+    // 1. Cielo crepuscular
     drawRect(
         brush = Brush.verticalGradient(
             colors = listOf(
-                Color(0xFF030508), // Espacio profundo superior
-                Color(0xFF080F1D), // Azul noche
-                Color(0xFF112238), // Resplandor crepuscular en el horizonte
+                Color(0xFF030508),
+                Color(0xFF080F1D),
+                Color(0xFF112238),
                 Color(0xFF1A3350)
             ),
             startY = 0f,
@@ -939,7 +1115,7 @@ private fun DrawScope.drawMap3D(
         size = Size(w, horizonY)
     )
 
-    // Resplandor atmosferico en la linea de horizonte
+    // Resplandor en el horizonte
     drawRect(
         brush = Brush.verticalGradient(
             listOf(Color(0xFF00E5FF).copy(alpha = 0.35f), Color.Transparent),
@@ -950,7 +1126,7 @@ private fun DrawScope.drawMap3D(
         size = Size(w, 32f)
     )
 
-    // 2. Terreno oscuro de conducción (#0C1013 Figma)
+    // 2. Terreno oscuro
     drawRect(
         brush = Brush.verticalGradient(
             colors = listOf(
@@ -966,7 +1142,7 @@ private fun DrawScope.drawMap3D(
         size = Size(w, h - horizonY)
     )
 
-    // Rotación del mundo según rumbo real (Heading)
+    // Rotación del mundo según Heading
     val camHeadingRad = Math.toRadians(headingDeg.toDouble()).toFloat()
     val cosH = cos(-camHeadingRad)
     val sinH = sin(-camHeadingRad)
@@ -1028,76 +1204,56 @@ private fun DrawScope.drawMap3D(
         return Pair(Offset(sx1, sy1), Offset(sx2, sy2))
     }
 
-    val activeRouteEdgeIds = if (activeRoute != null && activeRoute.edgePath.isNotEmpty()) {
-        HashSet<Int>(activeRoute.edgePath.size * 2).apply {
-            for (e in activeRoute.edgePath) add(e.edgeId)
-        }
-    } else null
-
     clipRect(0f, horizonY, w, h) {
         // 3. Rejilla virtual de perspectiva en el suelo
         drawGroundGrid3D(truckX, truckZ) { x1, z1, x2, z2 ->
             projectSegment3D(x1, z1, x2, z2)
         }
 
-        // 4. Red Vial Real de ATS suavizada y renderizada en pases globales por capa
-        val groupedEdges = HashMap<Int, MutableList<MapEdge>>()
-        for (edge in nearbyEdges) {
-            if (edge.polyline.size < 2) continue
-            val isRouteEdge = activeRouteEdgeIds?.contains(edge.edgeId) == true
-            if (!isRouteEdge && edge.roadType.toInt() == 3 && edge.length < 18f) continue
-
-            val isFreeway = edge.roadType.toInt() == 0
-            val lanes = edge.lanes.toInt().coerceAtLeast(1)
-            val key = (if (isFreeway) 100 else 0) + lanes
-            groupedEdges.getOrPut(key) { ArrayList() }.add(edge)
-        }
-
-        val projectedRoads = ArrayList<ProjectedRoadSeg3D>(nearbyEdges.size * 3)
-        for ((key, group) in groupedEdges) {
-            val isFreeway = key >= 100
-            val lanes = if (isFreeway) key - 100 else key
-            val laneWidthFactor = 1.0f + (lanes - 1) * 0.38f
-
-            val chains = chainEdges(group)
-            for (chain in chains) {
-                val sub = subdivideForegroundSegments(chain, truckX, truckZ, radiusSq = 122500f, maxSegLenMeters = 8f)
-                val smoothed = smoothPolyline(sub, iterations = 1)
-                if (smoothed.size < 2) continue
-
-                for (i in 0 until smoothed.size - 1) {
-                    val p0 = smoothed[i]
-                    val p1 = smoothed[i + 1]
-                    val seg = projectSegment3D(p0.x, p0.z, p1.x, p1.z) ?: continue
-                    val midY = (seg.first.y + seg.second.y) * 0.5f
-                    val depthRatio = ((midY - horizonY) / (targetTruckY - horizonY)).coerceIn(0.08f, 1.4f)
-                    val casingW = if (isFreeway) {
-                        (24f * depthRatio * laneWidthFactor).coerceIn(3.5f, 38f)
-                    } else {
-                        (14f * depthRatio * laneWidthFactor).coerceIn(2.0f, 22f)
-                    }
-                    projectedRoads.add(ProjectedRoadSeg3D(seg.first, seg.second, casingW, depthRatio, isFreeway, lanes))
+        // 4. Red Vial 3D proyectada usando pool de memoria estática (CERO asignaciones heap)
+        roadPool.reset()
+        for (chain in cache3D.chains) {
+            val pts = chain.points
+            for (i in 0 until pts.size - 1) {
+                val p0 = pts[i]
+                val p1 = pts[i + 1]
+                val seg = projectSegment3D(p0.x, p0.z, p1.x, p1.z) ?: continue
+                val midY = (seg.first.y + seg.second.y) * 0.5f
+                val depthRatio = ((midY - horizonY) / (targetTruckY - horizonY)).coerceIn(0.08f, 1.4f)
+                val casingW = if (chain.isFreeway) {
+                    (24f * depthRatio * chain.laneWidthFactor).coerceIn(3.5f, 38f)
+                } else {
+                    (14f * depthRatio * chain.laneWidthFactor).coerceIn(2.0f, 22f)
                 }
+                roadPool.add(seg.first.x, seg.first.y, seg.second.x, seg.second.y, casingW, depthRatio, chain.isFreeway, chain.lanes)
             }
         }
 
-        // Ordenar de atrás hacia adelante para composición limpia
-        projectedRoads.sortBy { it.p1.y + it.p2.y }
+        // Ordenamiento por profundidad in-place
+        roadPool.sortBackToFront()
 
-        // PASS 1: Todos los bordes exteriores
+        // PASS 1: Bordes exteriores
         val roadBorderColor = Color(0xFF0A0F18)
-        for (seg in projectedRoads) {
-            drawLine(roadBorderColor, seg.p1, seg.p2, strokeWidth = seg.casingW + 3f, cap = StrokeCap.Round)
+        for (i in 0 until roadPool.count) {
+            val seg = roadPool.pool[roadPool.indices[i]]
+            drawLine(
+                color = roadBorderColor,
+                start = Offset(seg.x1, seg.y1),
+                end = Offset(seg.x2, seg.y2),
+                strokeWidth = seg.casingW + 3f,
+                cap = StrokeCap.Round
+            )
         }
 
-        // PASS 2: Todos los rellenos de asfalto
+        // PASS 2: Rellenos de asfalto
         val hwyAsphalt = Color(0xFF26323F)
         val otherAsphalt = Color(0xFF1F2A35)
-        for (seg in projectedRoads) {
+        for (i in 0 until roadPool.count) {
+            val seg = roadPool.pool[roadPool.indices[i]]
             drawLine(
                 color = if (seg.isFreeway) hwyAsphalt else otherAsphalt,
-                start = seg.p1,
-                end = seg.p2,
+                start = Offset(seg.x1, seg.y1),
+                end = Offset(seg.x2, seg.y2),
                 strokeWidth = seg.casingW,
                 cap = StrokeCap.Round
             )
@@ -1105,53 +1261,61 @@ private fun DrawScope.drawMap3D(
 
         // PASS 3: Líneas divisorias de carriles
         val dividerColor = Color(0x5594A3B8)
-        for (seg in projectedRoads) {
+        for (i in 0 until roadPool.count) {
+            val seg = roadPool.pool[roadPool.indices[i]]
             if (seg.lanes >= 2 && seg.depthRatio > 0.35f) {
                 val dividerW = (1.5f * seg.depthRatio).coerceIn(0.8f, 2.5f)
-                drawLine(dividerColor, seg.p1, seg.p2, strokeWidth = dividerW, cap = StrokeCap.Round)
+                drawLine(
+                    color = dividerColor,
+                    start = Offset(seg.x1, seg.y1),
+                    end = Offset(seg.x2, seg.y2),
+                    strokeWidth = dividerW,
+                    cap = StrokeCap.Round
+                )
             }
         }
 
-        // 5. Ruta de Navegación Activa GPS en 4 pases globales separados
-        if (activeRoute != null && activeRoute.edgePath.isNotEmpty()) {
-            val smoothRoute = buildSmoothActiveRoutePoints(activeRoute, truckX, truckZ, snap)
-            if (smoothRoute.size >= 2) {
-                val projectedRoute = ArrayList<ProjectedRouteSeg3D>(smoothRoute.size)
-                for (i in 0 until smoothRoute.size - 1) {
-                    val p0 = smoothRoute[i]
-                    val p1 = smoothRoute[i + 1]
-                    val seg = projectSegment3D(p0.x, p0.z, p1.x, p1.z) ?: continue
-                    val midY = (seg.first.y + seg.second.y) * 0.5f
-                    val depthRatio = ((midY - horizonY) / (targetTruckY - horizonY)).coerceIn(0.10f, 1.35f)
-                    val rWidth = (28f * depthRatio).coerceIn(4.5f, 36f)
-                    projectedRoute.add(ProjectedRouteSeg3D(seg.first, seg.second, rWidth))
-                }
+        // 5. Ruta de Navegación Activa GPS en 3D
+        routePool.reset()
+        if (routePoints.size >= 2) {
+            for (i in 0 until routePoints.size - 1) {
+                val p0 = routePoints[i]
+                val p1 = routePoints[i + 1]
+                val seg = projectSegment3D(p0.x, p0.z, p1.x, p1.z) ?: continue
+                val midY = (seg.first.y + seg.second.y) * 0.5f
+                val depthRatio = ((midY - horizonY) / (targetTruckY - horizonY)).coerceIn(0.10f, 1.35f)
+                val rWidth = (28f * depthRatio).coerceIn(4.5f, 36f)
+                routePool.add(seg.first.x, seg.first.y, seg.second.x, seg.second.y, rWidth)
+            }
 
-                // Capa 1: Halo difuso
-                val haloColor = Color(0xFF00E5FF).copy(alpha = 0.28f)
-                for (seg in projectedRoute) {
-                    drawLine(haloColor, seg.p1, seg.p2, strokeWidth = seg.rWidth * 1.55f, cap = StrokeCap.Round)
-                }
-                // Capa 2: Contorno azul oscuro
-                val routeCasingColor = Color(0xFF0284C7)
-                for (seg in projectedRoute) {
-                    drawLine(routeCasingColor, seg.p1, seg.p2, strokeWidth = seg.rWidth + 2.5f, cap = StrokeCap.Round)
-                }
-                // Capa 3: Haz principal neón cyan brillante
-                val routeCyanColor = Color(0xFF00E5FF)
-                for (seg in projectedRoute) {
-                    drawLine(routeCyanColor, seg.p1, seg.p2, strokeWidth = seg.rWidth, cap = StrokeCap.Round)
-                }
-                // Capa 4: Línea blanca central reflectante
-                val routeCoreColor = Color.White.copy(alpha = 0.85f)
-                for (seg in projectedRoute) {
-                    drawLine(routeCoreColor, seg.p1, seg.p2, strokeWidth = (seg.rWidth * 0.24f).coerceAtLeast(1.2f), cap = StrokeCap.Round)
-                }
+            // Capa 1: Halo difuso
+            val haloColor = Color(0xFF00E5FF).copy(alpha = 0.28f)
+            for (i in 0 until routePool.count) {
+                val seg = routePool.pool[i]
+                drawLine(haloColor, Offset(seg.x1, seg.y1), Offset(seg.x2, seg.y2), strokeWidth = seg.rWidth * 1.55f, cap = StrokeCap.Round)
+            }
+            // Capa 2: Contorno
+            val routeCasingColor = Color(0xFF0284C7)
+            for (i in 0 until routePool.count) {
+                val seg = routePool.pool[i]
+                drawLine(routeCasingColor, Offset(seg.x1, seg.y1), Offset(seg.x2, seg.y2), strokeWidth = seg.rWidth + 2.5f, cap = StrokeCap.Round)
+            }
+            // Capa 3: Haz principal neón
+            val routeCyanColor = Color(0xFF00E5FF)
+            for (i in 0 until routePool.count) {
+                val seg = routePool.pool[i]
+                drawLine(routeCyanColor, Offset(seg.x1, seg.y1), Offset(seg.x2, seg.y2), strokeWidth = seg.rWidth, cap = StrokeCap.Round)
+            }
+            // Capa 4: Núcleo reflectante
+            val routeCoreColor = Color.White.copy(alpha = 0.85f)
+            for (i in 0 until routePool.count) {
+                val seg = routePool.pool[i]
+                drawLine(routeCoreColor, Offset(seg.x1, seg.y1), Offset(seg.x2, seg.y2), strokeWidth = (seg.rWidth * 0.24f).coerceAtLeast(1.2f), cap = StrokeCap.Round)
             }
         }
     }
 
-    // 6. POIs en Perspectiva 3D (Gasolineras, Zonas de Descanso, Talleres)
+    // 6. POIs en Perspectiva 3D
     for (poi in graph.pois) {
         val dx = poi.x - truckX
         val dz = poi.z - truckZ
@@ -1160,12 +1324,12 @@ private fun DrawScope.drawMap3D(
         val sp = projectPoint3D(poi.x, poi.z) ?: continue
         if (sp.y in (horizonY + 12f)..(h + 60f) && sp.x in -60f..(w + 60f)) {
             val depthRatio = ((sp.y - horizonY) / (targetTruckY - horizonY)).coerceIn(0.35f, 1.25f)
-            drawPoiMarker3D(poi, sp.x, sp.y - 10f * depthRatio, depthRatio, poiIconPaint, poiLabelPaint)
+            drawPoiMarker3D(poi, sp.x, sp.y - 10f * depthRatio, depthRatio, poiIconPaint, poiLabelPaint, poiBgPaint)
         }
     }
 
-    // 7. Cursor 3D del camión con haz de luz de faros
-    drawTruckCursor3D(w * 0.5f, targetTruckY)
+    // 7. Cursor 3D del camión con haz de luz
+    drawTruckCursor3D(w * 0.5f, targetTruckY, reusablePaths)
 }
 
 private fun DrawScope.drawPoiMarker3D(
@@ -1174,10 +1338,10 @@ private fun DrawScope.drawPoiMarker3D(
     sy: Float,
     depthRatio: Float,
     iconPaint: android.graphics.Paint,
-    labelPaint: android.graphics.Paint
+    labelPaint: android.graphics.Paint,
+    bgPaint: android.graphics.Paint
 ) {
     val (bgColor, iconText, defaultLabel) = poiMarkerStyle(poi.poiType.toInt())
-
     val radius = 12f * density * depthRatio
 
     // Línea de anclaje vertical hacia el suelo
@@ -1205,10 +1369,6 @@ private fun DrawScope.drawPoiMarker3D(
             val pLeft = sx - textWidth / 2f - pillPad
             val pRight = sx + textWidth / 2f + pillPad
 
-            val bgPaint = android.graphics.Paint().apply {
-                color = android.graphics.Color.argb(210, 15, 23, 42)
-                isAntiAlias = true
-            }
             canvas.nativeCanvas.drawRoundRect(pLeft, pTop, pRight, pBottom, 5f, 5f, bgPaint)
             canvas.nativeCanvas.drawText(labelText, sx, pBottom - 3f * density, labelPaint)
         }
@@ -1247,7 +1407,7 @@ private fun DrawScope.drawGroundGrid3D(
     }
 }
 
-private fun DrawScope.drawTruckCursor3D(cx: Float, cy: Float) {
+private fun DrawScope.drawTruckCursor3D(cx: Float, cy: Float, paths: ReusableCanvasPaths) {
     // 1. Sombra de contacto suave en el asfalto
     drawOval(
         color = Color(0x77000000),
@@ -1256,13 +1416,14 @@ private fun DrawScope.drawTruckCursor3D(cx: Float, cy: Float) {
     )
 
     // 2. Haz de luz proyectado hacia adelante (Faros del camión sobre la carretera)
-    val headlightPath = Path().apply {
-        moveTo(cx - 7f, cy - 8f)
-        lineTo(cx - 32f, cy - 95f)
-        lineTo(cx + 32f, cy - 95f)
-        lineTo(cx + 7f, cy - 8f)
-        close()
-    }
+    val headlightPath = paths.headlightPath
+    headlightPath.reset()
+    headlightPath.moveTo(cx - 7f, cy - 8f)
+    headlightPath.lineTo(cx - 32f, cy - 95f)
+    headlightPath.lineTo(cx + 32f, cy - 95f)
+    headlightPath.lineTo(cx + 7f, cy - 8f)
+    headlightPath.close()
+
     drawPath(
         path = headlightPath,
         brush = Brush.verticalGradient(
@@ -1277,47 +1438,46 @@ private fun DrawScope.drawTruckCursor3D(cx: Float, cy: Float) {
     drawCircle(Color(0x6600E5FF), radius = 22f, center = Offset(cx, cy), style = Stroke(width = 1.5f))
 
     // 4. Facetas 3D de la cabina del camión (con perspectiva e iluminación)
-    // Faceta izquierda (Sombra azulada)
-    val leftFacet = Path().apply {
-        moveTo(cx, cy - 22f)
-        lineTo(cx - 14f, cy + 12f)
-        lineTo(cx, cy + 5f)
-        close()
-    }
+    val leftFacet = paths.leftFacet
+    leftFacet.reset()
+    leftFacet.moveTo(cx, cy - 22f)
+    leftFacet.lineTo(cx - 14f, cy + 12f)
+    leftFacet.lineTo(cx, cy + 5f)
+    leftFacet.close()
     drawPath(leftFacet, color = Color(0xFF0284C7))
 
-    // Faceta derecha (Iluminada cian)
-    val rightFacet = Path().apply {
-        moveTo(cx, cy - 22f)
-        lineTo(cx + 14f, cy + 12f)
-        lineTo(cx, cy + 5f)
-        close()
-    }
+    val rightFacet = paths.rightFacet
+    rightFacet.reset()
+    rightFacet.moveTo(cx, cy - 22f)
+    rightFacet.lineTo(cx + 14f, cy + 12f)
+    rightFacet.lineTo(cx, cy + 5f)
+    rightFacet.close()
     drawPath(rightFacet, color = Color(0xFF00E5FF))
 
     // Contorno exterior blanco nítido
-    val outlinePath = Path().apply {
-        moveTo(cx, cy - 22f)
-        lineTo(cx + 14f, cy + 12f)
-        lineTo(cx, cy + 5f)
-        lineTo(cx - 14f, cy + 12f)
-        close()
-    }
+    val outlinePath = paths.outlinePath
+    outlinePath.reset()
+    outlinePath.moveTo(cx, cy - 22f)
+    outlinePath.lineTo(cx + 14f, cy + 12f)
+    outlinePath.lineTo(cx, cy + 5f)
+    outlinePath.lineTo(cx - 14f, cy + 12f)
+    outlinePath.close()
     drawPath(outlinePath, color = Color.White, style = Stroke(width = 2.0f, cap = StrokeCap.Round, join = StrokeJoin.Round))
 
     // Faro frontal central
     drawCircle(Color.White, radius = 3.5f, center = Offset(cx, cy - 20f))
 }
 
-private fun DrawScope.drawTruckCursor(cx: Float, cy: Float, rotationDeg: Float) {
+private fun DrawScope.drawTruckCursor(cx: Float, cy: Float, rotationDeg: Float, paths: ReusableCanvasPaths) {
     rotate(rotationDeg, pivot = Offset(cx, cy)) {
-        val cursorPath = Path().apply {
-            moveTo(cx, cy - 16f)
-            lineTo(cx + 10f, cy + 10f)
-            lineTo(cx, cy + 5f)
-            lineTo(cx - 10f, cy + 10f)
-            close()
-        }
+        val cursorPath = paths.cursorPath
+        cursorPath.reset()
+        cursorPath.moveTo(cx, cy - 16f)
+        cursorPath.lineTo(cx + 10f, cy + 10f)
+        cursorPath.lineTo(cx, cy + 5f)
+        cursorPath.lineTo(cx - 10f, cy + 10f)
+        cursorPath.close()
+
         drawCircle(Color(0x550284C7), radius = 20f, center = Offset(cx, cy))
         drawPath(cursorPath, color = Color(0xFF38BDF8))
         drawPath(cursorPath, color = Color.White, style = Stroke(width = 1.8f))

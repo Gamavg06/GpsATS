@@ -56,11 +56,12 @@ fun TurnByTurnCard(
     truckZ: Float,
     activeRoute: RouteResult?,
     destinationCity: String,
+    instructionOverride: NavigationInstruction? = null,
     modifier: Modifier = Modifier
 ) {
     if (activeRoute == null || activeRoute.edgePath.isEmpty()) return
 
-    val instruction = calculateNavigationInstruction(truckX, truckZ, activeRoute, destinationCity)
+    val instruction = instructionOverride ?: calculateNavigationInstruction(truckX, truckZ, activeRoute, destinationCity)
         ?: return
 
     Box(
@@ -294,11 +295,18 @@ private fun DrawScope.drawManeuverPath(
     )
 }
 
+// Cache interno para evitar recalcular la búsqueda en toda la ruta en cada frame
+private var lastCachedRoute: RouteResult? = null
+private var lastCachedTruckX: Float = Float.NaN
+private var lastCachedTruckZ: Float = Float.NaN
+private var lastCachedEdgeIdx: Int = 0
+private var lastInstruction: NavigationInstruction? = null
+
 /**
  * Analiza la ruta activa y posición del camión para deducir la próxima maniobra,
  * distancia y configuración de carriles de la vía.
  */
-private fun calculateNavigationInstruction(
+fun calculateNavigationInstruction(
     truckX: Float,
     truckZ: Float,
     route: RouteResult,
@@ -307,17 +315,44 @@ private fun calculateNavigationInstruction(
     val edges = route.edgePath
     if (edges.isEmpty()) return null
 
-    // 1. Encontrar el tramo actual más cercano al camión
+    // Si el camión se movió menos de 1.5 metros y la ruta es la misma, devolver la instrucción en caché
+    if (lastCachedRoute === route && !lastCachedTruckX.isNaN()) {
+        val dx = truckX - lastCachedTruckX
+        val dz = truckZ - lastCachedTruckZ
+        if (dx * dx + dz * dz < 2.25f && lastInstruction != null) {
+            return lastInstruction
+        }
+    }
+
+    // 1. Encontrar el tramo actual más cercano: búsqueda con ventana adaptativa O(1)
     var currentEdgeIdx = 0
     var minDistSq = Float.MAX_VALUE
 
-    for (i in edges.indices) {
+    val isSameRoute = (lastCachedRoute === route)
+    val startSearch = if (isSameRoute) (lastCachedEdgeIdx - 2).coerceAtLeast(0) else 0
+    val endSearch = if (isSameRoute) (lastCachedEdgeIdx + 8).coerceAtMost(edges.size - 1) else edges.size - 1
+
+    for (i in startSearch..endSearch) {
         val edge = edges[i]
         for (pt in edge.polyline) {
             val dSq = (pt.x - truckX) * (pt.x - truckX) + (pt.z - truckZ) * (pt.z - truckZ)
             if (dSq < minDistSq) {
                 minDistSq = dSq
                 currentEdgeIdx = i
+            }
+        }
+    }
+
+    // Si la búsqueda local no encontró ningún tramo cercano (< 60m), hacer búsqueda global
+    if (minDistSq > 3600f && (startSearch > 0 || endSearch < edges.size - 1)) {
+        for (i in edges.indices) {
+            val edge = edges[i]
+            for (pt in edge.polyline) {
+                val dSq = (pt.x - truckX) * (pt.x - truckX) + (pt.z - truckZ) * (pt.z - truckZ)
+                if (dSq < minDistSq) {
+                    minDistSq = dSq
+                    currentEdgeIdx = i
+                }
             }
         }
     }
@@ -398,7 +433,7 @@ private fun calculateNavigationInstruction(
         targetLane = if (totalLanes > 2) totalLanes - 2 else totalLanes - 1 // Carril central/derecho
     }
 
-    return NavigationInstruction(
+    val result = NavigationInstruction(
         maneuver = nextManeuver,
         distanceMeters = distAcc,
         title = maneuverTitle,
@@ -407,4 +442,12 @@ private fun calculateNavigationInstruction(
         activeLaneIndex = targetLane.coerceIn(0, totalLanes - 1),
         isTwoPlusOne = isTwoPlusOne
     )
+
+    lastCachedRoute = route
+    lastCachedTruckX = truckX
+    lastCachedTruckZ = truckZ
+    lastCachedEdgeIdx = currentEdgeIdx
+    lastInstruction = result
+
+    return result
 }

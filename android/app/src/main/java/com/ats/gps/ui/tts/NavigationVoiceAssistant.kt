@@ -9,6 +9,7 @@ class NavigationVoiceAssistant(context: Context) : TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = TextToSpeech(context, this)
     private var isInitialized = false
     private var lastAnnouncedDistance = -1
+    private var lastManeuverName = ""
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
@@ -22,24 +23,29 @@ class NavigationVoiceAssistant(context: Context) : TextToSpeech.OnInitListener {
     fun updateNavigation(distanceMeters: Float, nextManeuver: String) {
         if (!isInitialized || distanceMeters <= 0f) return
 
+        if (nextManeuver != lastManeuverName) {
+            lastManeuverName = nextManeuver
+            lastAnnouncedDistance = -1
+        }
+
         val dist = distanceMeters.toInt()
 
-        // Hitos de voz: 1000m, 500m, 200m, 50m
+        // Hitos de voz adaptables para velocidades de carretera: 1000m, 500m, 200m, 50m
         val milestone = when {
-            dist in 950..1050 -> 1000
-            dist in 470..530 -> 500
-            dist in 180..220 -> 200
-            dist in 30..60 -> 50
+            dist in 900..1100 -> 1000
+            dist in 450..580 -> 500
+            dist in 160..250 -> 200
+            dist in 20..80 -> 50
             else -> null
         }
 
         if (milestone != null && milestone != lastAnnouncedDistance) {
             lastAnnouncedDistance = milestone
             val text = when (milestone) {
-                1000 -> "En un kilómetro, $nextManeuver"
+                1000 -> "En un kilometro, $nextManeuver"
                 500 -> "En 500 metros, $nextManeuver"
                 200 -> "En 200 metros, $nextManeuver"
-                50 -> "Gira ahora, $nextManeuver"
+                50 -> "Atencion, $nextManeuver"
                 else -> nextManeuver
             }
             speak(text)
