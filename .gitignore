@@ -60,6 +60,11 @@ _legacy_backup/
 *.bak
 *.tmp
 *.log
+*.zip
+*Setup.exe
+tools/**/build/
+tools/**/standalone/
+server/publish_standalone/
 
 # OS Generated
 Thumbs.db
