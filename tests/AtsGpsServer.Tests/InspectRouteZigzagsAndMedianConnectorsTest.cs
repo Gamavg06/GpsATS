@@ -26,7 +26,10 @@ namespace AtsGpsServer.Tests
 
             var nogales = graph.Cities.FirstOrDefault(c => c.Name.Equals("Nogales", StringComparison.OrdinalIgnoreCase));
             var colville = graph.Cities.FirstOrDefault(c => c.Name.Equals("Colville", StringComparison.OrdinalIgnoreCase));
-            var sf = graph.Cities.FirstOrDefault(c => c.Name.Equals("San Francisco", StringComparison.OrdinalIgnoreCase));
+            var sf = graph.Cities.FirstOrDefault(c =>
+                c.Name.Equals("San_francisc", StringComparison.OrdinalIgnoreCase) ||
+                c.Name.Equals("San Francisco", StringComparison.OrdinalIgnoreCase) ||
+                c.Name.Replace("_", "").StartsWith("sanfrancisc", StringComparison.OrdinalIgnoreCase));
             var redding = graph.Cities.FirstOrDefault(c => c.Name.Equals("Redding", StringComparison.OrdinalIgnoreCase));
 
             Assert.NotNull(nogales);

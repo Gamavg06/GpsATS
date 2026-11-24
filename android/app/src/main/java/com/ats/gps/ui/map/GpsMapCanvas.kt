@@ -42,6 +42,8 @@ enum class MapThemeStyle {
 // =====================================================================
 
 private class SnapCache {
+    var cachedGraph: MapGraph? = null
+    var cachedRoute: RouteResult? = null
     var lastX: Float = Float.NaN
     var lastZ: Float = Float.NaN
     var lastHeading: Float = Float.NaN
@@ -49,6 +51,8 @@ private class SnapCache {
 }
 
 private class Viewport2DCache {
+    var cachedGraph: MapGraph? = null
+    var cachedRoute: RouteResult? = null
     var edges: List<MapEdge> = emptyList()
     var lastX: Float = Float.NaN
     var lastZ: Float = Float.NaN
@@ -71,6 +75,8 @@ private class RoadSeg3D(
 )
 
 private class Viewport3DCache {
+    var cachedGraph: MapGraph? = null
+    var cachedRoute: RouteResult? = null
     var edges: List<MapEdge> = emptyList()
     var lastX: Float = Float.NaN
     var lastZ: Float = Float.NaN
@@ -98,7 +104,7 @@ private class ReusableRoadSeg(
     var isHidden: Boolean = false
 )
 
-private class RoadSegPool3D(capacity: Int = 3000) {
+private class RoadSegPool3D(capacity: Int = 5000) {
     val pool = Array(capacity) { ReusableRoadSeg() }
     val indices = IntArray(capacity) { it }
     var count = 0
@@ -154,7 +160,7 @@ private class RoadSegPool3D(capacity: Int = 3000) {
         if (i < high) quickSort(i, high)
     }
 
-    private inline fun getMidY(idx: Int): Float {
+    private fun getMidY(idx: Int): Float {
         val s = pool[idx]
         return s.y1 + s.y2
     }
@@ -168,7 +174,7 @@ private class ReusableRouteSeg(
     var rWidth: Float = 0f
 )
 
-private class RouteSegPool3D(capacity: Int = 1000) {
+private class RouteSegPool3D(capacity: Int = 2000) {
     val pool = Array(capacity) { ReusableRouteSeg() }
     var count = 0
 
@@ -219,6 +225,9 @@ fun GpsMapCanvas(
 ) {
     val currentZoom by rememberUpdatedState(zoomScale)
     val currentPan by rememberUpdatedState(panOffset)
+    val currentViewMode by rememberUpdatedState(viewMode)
+    val currentFollowing by rememberUpdatedState(isFollowingTruck)
+    val currentSpeedKmh by rememberUpdatedState(telemetry.speedKmh)
     val currentOnZoom by rememberUpdatedState(onZoomChange)
     val currentOnPan by rememberUpdatedState(onPanChange)
     val currentOnMapTapped by rememberUpdatedState(onMapTapped)
@@ -322,6 +331,13 @@ fun GpsMapCanvas(
             isAntiAlias = true
         }
     }
+    val emptyStatePaint = remember {
+        android.graphics.Paint().apply {
+            color = android.graphics.Color.WHITE
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+        }
+    }
 
     val canvasBg = when (mapTheme) {
         MapThemeStyle.DARK_PREMIUM -> Color(0xFF0A0F1D)
@@ -335,35 +351,67 @@ fun GpsMapCanvas(
             .background(canvasBg)
             .pointerInput(Unit) {
                 detectTapGestures { tapOffset ->
-                    val cx = size.width / 2f
-                    val cy = size.height * 0.62f
-                    val baseScale = (0.75f * currentZoom).coerceIn(0.05f, 6.0f)
-                    val viewCenterX = smoothTruckX - (if (!isFollowingTruck) currentPan.x / baseScale else 0f)
-                    val viewCenterZ = smoothTruckZ - (if (!isFollowingTruck) currentPan.y / baseScale else 0f)
-                    
-                    val worldX = viewCenterX + (tapOffset.x - cx) / baseScale
-                    val worldZ = viewCenterZ + (tapOffset.y - cy) / baseScale
-                    currentOnMapTapped(worldX, worldZ)
+                    if (currentViewMode == MapViewMode.MODE_2D_TOP_DOWN) {
+                        val cx = size.width / 2f
+                        val cy = size.height * 0.62f
+                        val baseScale = (0.75f * currentZoom).coerceIn(0.05f, 6.0f)
+                        val viewCenterX = smoothTruckX - (if (!currentFollowing) currentPan.x / baseScale else 0f)
+                        val viewCenterZ = smoothTruckZ - (if (!currentFollowing) currentPan.y / baseScale else 0f)
+
+                        val worldX = viewCenterX + (tapOffset.x - cx) / baseScale
+                        val worldZ = viewCenterZ + (tapOffset.y - cy) / baseScale
+                        currentOnMapTapped(worldX, worldZ)
+                    } else {
+                        val w = size.width.toFloat()
+                        val h = size.height.toFloat()
+                        val horizonY = h * 0.26f
+                        if (tapOffset.y <= horizonY + 8f) return@detectTapGestures
+
+                        val targetTruckY = h * 0.78f
+                        val camDist3D = 65f
+                        val speedRatio = (currentSpeedKmh.coerceAtLeast(0f) / 90f).coerceIn(0f, 1f)
+                        val dynamicZoom = currentZoom * (0.85f + speedRatio * 0.35f)
+                        val focal3D = 440f * dynamicZoom.coerceIn(0.6f, 2.0f)
+                        val camHeight3D = (targetTruckY - horizonY) / (focal3D / camDist3D)
+
+                        val factor = (tapOffset.y - horizonY) / camHeight3D
+                        if (factor <= 0.01f) return@detectTapGestures
+                        val depth = focal3D / factor
+                        if (depth > 2500f) return@detectTapGestures
+                        val rz = depth - camDist3D
+                        val rx = (tapOffset.x - w * 0.5f) / factor
+
+                        val camHeadingRad = Math.toRadians(smoothHeading.toDouble()).toFloat()
+                        val cosH = cos(-camHeadingRad)
+                        val sinH = sin(-camHeadingRad)
+                        val dx = rx * cosH - rz * sinH
+                        val dz = -(rx * sinH + rz * cosH)
+                        currentOnMapTapped(smoothTruckX + dx, smoothTruckZ + dz)
+                    }
                 }
             }
             .pointerInput(Unit) {
                 detectTransformGestures { _, pan, zoom, _ ->
                     val newZoom = (currentZoom * zoom).coerceIn(0.10f, 4.5f)
                     currentOnZoom(newZoom)
-                    currentOnPan(currentPan + pan)
+                    if (currentViewMode == MapViewMode.MODE_2D_TOP_DOWN && (pan.x != 0f || pan.y != 0f)) {
+                        currentOnPan(currentPan + pan)
+                    }
                 }
             }
     ) {
         if (graph == null || graph.nodes.isEmpty()) {
-            drawEmptyState()
+            drawEmptyState(emptyStatePaint)
             return@Canvas
         }
 
-        // Snapping inteligente throttled: sólo se ejecuta si el camión se movió > 1.8 metros
+        // Snapping inteligente throttled: sólo se ejecuta si el camión se movió > 1.8 metros o cambió ruta/grafo
         val dxSnap = smoothTruckX - snapCache.lastX
         val dzSnap = smoothTruckZ - snapCache.lastZ
         val dHeadingSnap = abs(smoothHeading - snapCache.lastHeading)
-        val snap = if (snapCache.lastX.isNaN() || (dxSnap * dxSnap + dzSnap * dzSnap) > 3.24f || dHeadingSnap > 8f) {
+        val snap = if (snapCache.cachedGraph !== graph || snapCache.cachedRoute !== activeRoute ||
+            snapCache.lastX.isNaN() || (dxSnap * dxSnap + dzSnap * dzSnap) > 3.24f || dHeadingSnap > 8f
+        ) {
             val s = graph.snapToRoad(
                 x = smoothTruckX,
                 z = smoothTruckZ,
@@ -371,6 +419,8 @@ fun GpsMapCanvas(
                 preferredEdges = activeRoute?.edgePath,
                 maxDistMeters = 26f
             )
+            snapCache.cachedGraph = graph
+            snapCache.cachedRoute = activeRoute
             snapCache.lastX = smoothTruckX
             snapCache.lastZ = smoothTruckZ
             snapCache.lastHeading = smoothHeading
@@ -381,7 +431,6 @@ fun GpsMapCanvas(
         }
 
         val truckX = snap?.snappedX ?: smoothTruckX
-        val truckY = smoothTruckY
         val truckZ = snap?.snappedZ ?: smoothTruckZ
         val headingDeg = smoothHeading
 
@@ -398,7 +447,7 @@ fun GpsMapCanvas(
                 val viewCenterZ = truckZ - (if (!isFollowingTruck) panOffset.y / baseScale else 0f)
                 val viewRadius = (max(size.width, size.height) / baseScale) * 1.5f
 
-                // Comprobación de caché de carreteras 2D: sólo reconstruir cadenas si se desplazó > 25 metros
+                // Comprobación de caché de carreteras 2D: invalidar si cambia grafo, ruta, escala o posición > 25m
                 val distFromLast2D = if (cache2D.lastX.isNaN()) Float.MAX_VALUE else {
                     val qx = viewCenterX - cache2D.lastX
                     val qz = viewCenterZ - cache2D.lastZ
@@ -406,8 +455,12 @@ fun GpsMapCanvas(
                 }
                 val scaleRatio = if (cache2D.lastScale > 0f) abs(baseScale - cache2D.lastScale) / cache2D.lastScale else 1f
 
-                if (distFromLast2D > 625f || scaleRatio > 0.08f || cache2D.edges.isEmpty()) {
+                if (cache2D.cachedGraph !== graph || cache2D.cachedRoute !== activeRoute ||
+                    distFromLast2D > 625f || scaleRatio > 0.08f || cache2D.edges.isEmpty()
+                ) {
                     val visible = graph.getEdgesNear(viewCenterX, viewCenterZ, viewRadius * 1.25f)
+                    cache2D.cachedGraph = graph
+                    cache2D.cachedRoute = activeRoute
                     cache2D.edges = visible
                     cache2D.lastX = viewCenterX
                     cache2D.lastZ = viewCenterZ
@@ -458,10 +511,10 @@ fun GpsMapCanvas(
                     cy = cy,
                     baseScale = baseScale,
                     headingDeg = headingDeg,
-                    activeRoute = activeRoute,
                     routePoints = smoothRoutePoints,
                     zoomScale = zoomScale,
                     isFollowingTruck = isFollowingTruck,
+                    mapTheme = mapTheme,
                     cityPaint = cityPaint,
                     poiIconPaint = poiIconPaint,
                     poiLabelPaint = poiLabelPaint,
@@ -474,8 +527,12 @@ fun GpsMapCanvas(
                     val qz = truckZ - cache3D.lastZ
                     qx * qx + qz * qz
                 }
-                if (distFromLast3D > 225f || cache3D.edges.isEmpty()) {
+                if (cache3D.cachedGraph !== graph || cache3D.cachedRoute !== activeRoute ||
+                    distFromLast3D > 225f || cache3D.edges.isEmpty()
+                ) {
                     val nearby = graph.getEdgesNear(truckX, truckZ, 1400f)
+                    cache3D.cachedGraph = graph
+                    cache3D.cachedRoute = activeRoute
                     cache3D.edges = nearby
                     cache3D.lastX = truckX
                     cache3D.lastZ = truckZ
@@ -508,12 +565,11 @@ fun GpsMapCanvas(
                     routePool = routeSegPool,
                     reusablePaths = reusablePaths,
                     truckX = truckX,
-                    truckY = truckY,
                     truckZ = truckZ,
                     headingDeg = headingDeg,
-                    activeRoute = activeRoute,
                     routePoints = smoothRoutePoints,
                     zoomScale = dynamicZoom,
+                    mapTheme = mapTheme,
                     poiIconPaint = poiIconPaint,
                     poiLabelPaint = poiLabelPaint,
                     poiBgPaint = poiBgPaint
@@ -573,39 +629,6 @@ private fun subdivideLongSegments(points: List<Point3D>, maxSegLenMeters: Float)
             for (s in 1 until steps) {
                 val t = s.toFloat() / steps.toFloat()
                 out.add(Point3D(p0.x + dx * t, p0.y + dy * t, p0.z + dz * t))
-            }
-        }
-        out.add(p1)
-    }
-    return out
-}
-
-private fun subdivideForegroundSegments(
-    points: List<Point3D>,
-    truckX: Float,
-    truckZ: Float,
-    radiusSq: Float = 122500f,
-    maxSegLenMeters: Float = 8f
-): List<Point3D> {
-    if (points.size < 2) return points
-    val out = ArrayList<Point3D>(points.size)
-    out.add(points[0])
-    for (i in 0 until points.size - 1) {
-        val p0 = points[i]
-        val p1 = points[i + 1]
-        val d0Sq = (p0.x - truckX) * (p0.x - truckX) + (p0.z - truckZ) * (p0.z - truckZ)
-        val d1Sq = (p1.x - truckX) * (p1.x - truckX) + (p1.z - truckZ) * (p1.z - truckZ)
-        if (d0Sq <= radiusSq || d1Sq <= radiusSq) {
-            val dx = p1.x - p0.x
-            val dy = p1.y - p0.y
-            val dz = p1.z - p0.z
-            val len = sqrt(dx * dx + dz * dz)
-            if (len > maxSegLenMeters) {
-                val steps = ceil(len / maxSegLenMeters).toInt().coerceAtMost(48)
-                for (s in 1 until steps) {
-                    val t = s.toFloat() / steps.toFloat()
-                    out.add(Point3D(p0.x + dx * t, p0.y + dy * t, p0.z + dz * t))
-                }
             }
         }
         out.add(p1)
@@ -895,10 +918,10 @@ private fun DrawScope.drawMap2D(
     cy: Float,
     baseScale: Float,
     headingDeg: Float,
-    activeRoute: RouteResult?,
     routePoints: List<Point3D>,
     zoomScale: Float,
     isFollowingTruck: Boolean,
+    mapTheme: MapThemeStyle,
     cityPaint: android.graphics.Paint,
     poiIconPaint: android.graphics.Paint,
     poiLabelPaint: android.graphics.Paint,
@@ -917,7 +940,11 @@ private fun DrawScope.drawMap2D(
     val hiddenW = (localW * 0.95f).coerceAtLeast(4.0f)
 
     // GLOBAL PASS 1: Todos los bordes exteriores
-    val borderColor = Color(0xFF0B1017)
+    val borderColor = when (mapTheme) {
+        MapThemeStyle.DARK_PREMIUM -> Color(0xFF0B1017)
+        MapThemeStyle.HIGH_CONTRAST -> Color(0xFF000000)
+        MapThemeStyle.CYBER_NEON -> Color(0xFF06121E)
+    }
     if (hasRamp) drawPath(reusablePaths.rampPath, borderColor, style = Stroke(rampW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     if (hasLocal) drawPath(reusablePaths.localPath, borderColor, style = Stroke(localW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     if (hasMain) drawPath(reusablePaths.mainPath, borderColor, style = Stroke(mainW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
@@ -925,8 +952,16 @@ private fun DrawScope.drawMap2D(
     if (hasHidden) drawPath(reusablePaths.hiddenPath, Color(0xFF0C0A09), style = Stroke(hiddenW + 4f, cap = StrokeCap.Round, join = StrokeJoin.Round))
 
     // GLOBAL PASS 2: Todos los rellenos de asfalto unificados encima
-    val streetFill = Color(0xFF2B3846)
-    val hwyFill = Color(0xFF334354)
+    val streetFill = when (mapTheme) {
+        MapThemeStyle.DARK_PREMIUM -> Color(0xFF2B3846)
+        MapThemeStyle.HIGH_CONTRAST -> Color(0xFF475569)
+        MapThemeStyle.CYBER_NEON -> Color(0xFF1E293B)
+    }
+    val hwyFill = when (mapTheme) {
+        MapThemeStyle.DARK_PREMIUM -> Color(0xFF334354)
+        MapThemeStyle.HIGH_CONTRAST -> Color(0xFF64748B)
+        MapThemeStyle.CYBER_NEON -> Color(0xFF1D4ED8).copy(alpha = 0.65f)
+    }
     val hiddenBaseFill = Color(0xFF292524)
     if (hasRamp) drawPath(reusablePaths.rampPath, streetFill, style = Stroke(rampW, cap = StrokeCap.Round, join = StrokeJoin.Round))
     if (hasLocal) drawPath(reusablePaths.localPath, streetFill, style = Stroke(localW, cap = StrokeCap.Round, join = StrokeJoin.Round))
@@ -1078,7 +1113,6 @@ private fun DrawScope.drawPoiMarker2D(
 
     drawIntoCanvas { canvas ->
         iconPaint.color = android.graphics.Color.WHITE
-        iconPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         iconPaint.textSize = radius * 0.72f
         canvas.nativeCanvas.drawText(iconText, sx, sy + radius * 0.25f, iconPaint)
 
@@ -1107,12 +1141,11 @@ private fun DrawScope.drawMap3D(
     routePool: RouteSegPool3D,
     reusablePaths: ReusableCanvasPaths,
     truckX: Float,
-    truckY: Float,
     truckZ: Float,
     headingDeg: Float,
-    activeRoute: RouteResult?,
     routePoints: List<Point3D>,
     zoomScale: Float,
+    mapTheme: MapThemeStyle,
     poiIconPaint: android.graphics.Paint,
     poiLabelPaint: android.graphics.Paint,
     poiBgPaint: android.graphics.Paint
@@ -1126,15 +1159,30 @@ private fun DrawScope.drawMap3D(
     val focal3D = 440f * zoomScale.coerceIn(0.6f, 2.0f)
     val camHeight3D = (targetTruckY - horizonY) / (focal3D / camDist3D)
 
-    // 1. Cielo crepuscular
+    // 1. Cielo crepuscular según estilo de mapa
+    val skyColors = when (mapTheme) {
+        MapThemeStyle.DARK_PREMIUM -> listOf(
+            Color(0xFF030508),
+            Color(0xFF080F1D),
+            Color(0xFF112238),
+            Color(0xFF1A3350)
+        )
+        MapThemeStyle.HIGH_CONTRAST -> listOf(
+            Color(0xFF000000),
+            Color(0xFF05070B),
+            Color(0xFF0F172A),
+            Color(0xFF1E293B)
+        )
+        MapThemeStyle.CYBER_NEON -> listOf(
+            Color(0xFF04010A),
+            Color(0xFF0F0726),
+            Color(0xFF1E1042),
+            Color(0xFF0B2948)
+        )
+    }
     drawRect(
         brush = Brush.verticalGradient(
-            colors = listOf(
-                Color(0xFF030508),
-                Color(0xFF080F1D),
-                Color(0xFF112238),
-                Color(0xFF1A3350)
-            ),
+            colors = skyColors,
             startY = 0f,
             endY = horizonY
         ),
@@ -1143,9 +1191,10 @@ private fun DrawScope.drawMap3D(
     )
 
     // Resplandor en el horizonte
+    val horizonGlow = if (mapTheme == MapThemeStyle.CYBER_NEON) Color(0xFFC7F36B) else Color(0xFF00E5FF)
     drawRect(
         brush = Brush.verticalGradient(
-            listOf(Color(0xFF00E5FF).copy(alpha = 0.35f), Color.Transparent),
+            listOf(horizonGlow.copy(alpha = 0.35f), Color.Transparent),
             startY = horizonY - 4f,
             endY = horizonY + 28f
         ),
@@ -1153,15 +1202,30 @@ private fun DrawScope.drawMap3D(
         size = Size(w, 32f)
     )
 
-    // 2. Terreno oscuro
+    // 2. Terreno oscuro según estilo de mapa
+    val groundColors = when (mapTheme) {
+        MapThemeStyle.DARK_PREMIUM -> listOf(
+            Color(0xFF080D14),
+            Color(0xFF0C1013),
+            Color(0xFF10151A),
+            Color(0xFF151C21)
+        )
+        MapThemeStyle.HIGH_CONTRAST -> listOf(
+            Color(0xFF000000),
+            Color(0xFF030508),
+            Color(0xFF070A0E),
+            Color(0xFF0B0F14)
+        )
+        MapThemeStyle.CYBER_NEON -> listOf(
+            Color(0xFF050711),
+            Color(0xFF070B18),
+            Color(0xFF0A1022),
+            Color(0xFF0D152C)
+        )
+    }
     drawRect(
         brush = Brush.verticalGradient(
-            colors = listOf(
-                Color(0xFF080D14),
-                Color(0xFF0C1013),
-                Color(0xFF10151A),
-                Color(0xFF151C21)
-            ),
+            colors = groundColors,
             startY = horizonY,
             endY = h
         ),
@@ -1402,7 +1466,6 @@ private fun DrawScope.drawPoiMarker3D(
 
     drawIntoCanvas { canvas ->
         iconPaint.color = android.graphics.Color.WHITE
-        iconPaint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         iconPaint.textSize = radius * 0.72f
         canvas.nativeCanvas.drawText(iconText, sx, sy + radius * 0.25f, iconPaint)
 
@@ -1530,14 +1593,9 @@ private fun DrawScope.drawTruckCursor(cx: Float, cy: Float, rotationDeg: Float, 
     }
 }
 
-private fun DrawScope.drawEmptyState() {
+private fun DrawScope.drawEmptyState(paint: android.graphics.Paint) {
     drawIntoCanvas { canvas ->
-        val paint = android.graphics.Paint().apply {
-            color = android.graphics.Color.WHITE
-            textSize = 15f * density
-            textAlign = android.graphics.Paint.Align.CENTER
-            isAntiAlias = true
-        }
+        paint.textSize = 15f * density
         canvas.nativeCanvas.drawText("Descargando mapa vial desde la PC...", size.width / 2f, size.height / 2f, paint)
     }
 }

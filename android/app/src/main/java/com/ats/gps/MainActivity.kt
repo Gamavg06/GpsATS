@@ -7,8 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -21,8 +19,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.lifecycle.lifecycleScope
 import com.ats.gps.data.map.AStarRouter
 import com.ats.gps.data.map.RouteResult
 import com.ats.gps.data.model.MapGraph
@@ -35,12 +31,17 @@ import com.ats.gps.ui.junction.JunctionView
 import com.ats.gps.ui.map.GpsMapCanvas
 import com.ats.gps.ui.map.MapViewMode
 import com.ats.gps.ui.map.MapThemeStyle
+import com.ats.gps.ui.navigation.ManeuverType
+import com.ats.gps.ui.navigation.NavigationInstructionCache
 import com.ats.gps.ui.navigation.TurnByTurnCard
+import com.ats.gps.ui.navigation.calculateNavigationInstruction
 import com.ats.gps.ui.tts.NavigationVoiceAssistant
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 import androidx.compose.ui.platform.LocalContext
 import com.ats.gps.data.triplog.TripLogManager
@@ -53,6 +54,22 @@ enum class AppTab {
     BITACORA,
     ACERCA_DE
 }
+
+private data class RouteTrackingInput(
+    val posX: Double,
+    val posZ: Double,
+    val headingDegrees: Double,
+    val speedKmh: Float,
+    val gear: Int,
+    val navDistanceMeters: Float,
+    val destinationCity: String,
+    val destinationCityId: String,
+    val destinationCompany: String,
+    val destinationCompanyId: String,
+    val telemetryTargetNode: Int?,
+    val manualTargetNode: Int?,
+    val manualDestName: String?
+)
 
 class MainActivity : ComponentActivity() {
 
@@ -73,7 +90,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        networkClient.disconnectWebSocket()
+        networkClient.shutdown()
         voiceAssistant.shutdown()
     }
 }
@@ -97,8 +114,12 @@ fun AtsNavMainApp(
     var selectedTab by remember { mutableStateOf(AppTab.MAPA) }
     var viewMode by remember { mutableStateOf(MapViewMode.MODE_3D_PERSPECTIVE) }
     var mapTheme by remember { mutableStateOf(MapThemeStyle.DARK_PREMIUM) }
-    var showDestSelector by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
+
+    // Destinos manuales / desvíos independientes de los frames WebSocket (30 Hz)
+    var manualTargetNodeIndex by remember { mutableStateOf<Int?>(null) }
+    var manualDestinationName by remember { mutableStateOf<String?>(null) }
+    val effectiveDestinationName = manualDestinationName ?: telemetry.destinationCity
 
     // Control táctil de Zoom y Desplazamiento (Pan)
     var zoomScale by remember { mutableStateOf(1.0f) }
@@ -115,23 +136,31 @@ fun AtsNavMainApp(
     var lastRestWarningTime by remember { mutableLongStateOf(0L) }
     var lastArrivalAnnouncedCity by remember { mutableStateOf("") }
 
-    // Rastreo de trabajo para Bitácora automática
+    // Rastreo de trabajo para Bitácora automática (solo con conexión activa y trabajo real)
     var jobOriginSnapshot by remember { mutableStateOf("") }
     var jobDestSnapshot by remember { mutableStateOf("") }
     var jobCargoSnapshot by remember { mutableStateOf("") }
     var jobMassSnapshot by remember { mutableFloatStateOf(0f) }
     var jobIncomeSnapshot by remember { mutableLongStateOf(0L) }
     var jobInitialDistSnapshot by remember { mutableFloatStateOf(0f) }
+    var jobDrivenMeters by remember { mutableFloatStateOf(0f) }
+    var jobLastNavDistMeters by remember { mutableFloatStateOf(Float.MAX_VALUE) }
+    var jobStartTimeMs by remember { mutableLongStateOf(0L) }
+    var lastJobPosX by remember { mutableDoubleStateOf(Double.NaN) }
+    var lastJobPosZ by remember { mutableDoubleStateOf(Double.NaN) }
     var wasOnJob by remember { mutableStateOf(false) }
 
+    val navInstructionCache = remember { NavigationInstructionCache() }
+
     // 1. Asistente de Giro a Giro por Voz continuo
-    val currentInstruction = remember(telemetry.posX, telemetry.posZ, activeRoute) {
+    val currentInstruction = remember(telemetry.posX, telemetry.posZ, activeRoute, effectiveDestinationName) {
         if (activeRoute != null && (telemetry.posX != 0.0 || telemetry.posZ != 0.0)) {
-            com.ats.gps.ui.navigation.calculateNavigationInstruction(
+            calculateNavigationInstruction(
                 truckX = telemetry.posX.toFloat(),
                 truckZ = telemetry.posZ.toFloat(),
                 route = activeRoute!!,
-                destinationCity = telemetry.destinationCity
+                destinationCity = effectiveDestinationName,
+                cache = navInstructionCache
             )
         } else null
     }
@@ -143,7 +172,7 @@ fun AtsNavMainApp(
     }
 
     // 2. Anuncio de Llegada a Destino
-    LaunchedEffect(telemetry.navDistanceMeters, activeRoute) {
+    LaunchedEffect(telemetry.navDistanceMeters, activeRoute, telemetry.destinationCity) {
         if (activeRoute != null && telemetry.destinationCity.isNotEmpty() &&
             telemetry.navDistanceMeters in 1f..45f &&
             lastArrivalAnnouncedCity != telemetry.destinationCity
@@ -189,46 +218,106 @@ fun AtsNavMainApp(
         }
     }
 
-    // 6. Registro Automático en Bitácora de Conducción al Entregar Carga
-    LaunchedEffect(telemetry.onJob, telemetry.destinationCity, telemetry.jobIncome) {
-        if (telemetry.onJob || telemetry.destinationCity.isNotEmpty()) {
-            wasOnJob = true
+    // 6. Registro Automático en Bitácora de Conducción al Entregar Carga real
+    LaunchedEffect(
+        isConnected,
+        telemetry.connected,
+        telemetry.onJob,
+        telemetry.posX,
+        telemetry.posZ,
+        telemetry.destinationCity,
+        telemetry.jobIncome,
+        telemetry.navDistanceMeters
+    ) {
+        if (!isConnected || !telemetry.connected) {
+            // Desconexión de red o simulador: no emitir registros falsos; reiniciar seguimiento temporal si cae red
+            if (!isConnected) {
+                wasOnJob = false
+                lastJobPosX = Double.NaN
+                lastJobPosZ = Double.NaN
+            }
+            return@LaunchedEffect
+        }
+
+        if (telemetry.onJob) {
+            if (!wasOnJob) {
+                // Nuevo trabajo iniciado en el simulador: limpiar desvío manual previo y reiniciar acumuladores
+                wasOnJob = true
+                manualTargetNodeIndex = null
+                manualDestinationName = null
+                jobDrivenMeters = 0f
+                jobStartTimeMs = System.currentTimeMillis()
+                jobInitialDistSnapshot = telemetry.navDistanceMeters
+                jobLastNavDistMeters = if (telemetry.navDistanceMeters > 0f) telemetry.navDistanceMeters else Float.MAX_VALUE
+                lastJobPosX = telemetry.posX
+                lastJobPosZ = telemetry.posZ
+            } else if (!lastJobPosX.isNaN() && !lastJobPosZ.isNaN()) {
+                val dx = telemetry.posX - lastJobPosX
+                val dz = telemetry.posZ - lastJobPosZ
+                val stepMeters = sqrt(dx * dx + dz * dz).toFloat()
+                if (stepMeters in 0.05f..250f) {
+                    jobDrivenMeters += stepMeters
+                }
+                lastJobPosX = telemetry.posX
+                lastJobPosZ = telemetry.posZ
+            }
+
             if (telemetry.sourceCity.isNotEmpty()) jobOriginSnapshot = telemetry.sourceCity
             if (telemetry.destinationCity.isNotEmpty()) jobDestSnapshot = telemetry.destinationCity
             if (telemetry.cargoName.isNotEmpty()) jobCargoSnapshot = telemetry.cargoName
             if (telemetry.cargoMassKg > 0f) jobMassSnapshot = telemetry.cargoMassKg
             if (telemetry.jobIncome > 0L) jobIncomeSnapshot = telemetry.jobIncome
             if (telemetry.navDistanceMeters > jobInitialDistSnapshot) jobInitialDistSnapshot = telemetry.navDistanceMeters
-        } else if (wasOnJob && jobDestSnapshot.isNotEmpty()) {
+            if (telemetry.navDistanceMeters > 0f) jobLastNavDistMeters = telemetry.navDistanceMeters
+        } else if (wasOnJob) {
             wasOnJob = false
-            val drivenKm = if (jobInitialDistSnapshot > 0f) jobInitialDistSnapshot / 1000f else 15f
-            tripLogManager.addTrip(
-                TripRecord(
-                    originCity = jobOriginSnapshot.ifEmpty { "Origen" },
-                    destinationCity = jobDestSnapshot,
-                    cargoName = jobCargoSnapshot.ifEmpty { "Carga general" },
-                    cargoMassKg = jobMassSnapshot,
-                    incomeEarned = jobIncomeSnapshot,
-                    distanceKm = drivenKm,
-                    avgSpeedKmh = telemetry.speedKmh.coerceAtLeast(60f),
-                    damagePercent = telemetry.cargoDamage * 100f
+            val completedRealDelivery = jobDestSnapshot.isNotEmpty() &&
+                (jobLastNavDistMeters <= 350f || jobDrivenMeters >= 500f)
+
+            if (completedRealDelivery) {
+                val drivenKm = when {
+                    jobDrivenMeters >= 200f -> jobDrivenMeters / 1000f
+                    jobInitialDistSnapshot > 0f -> jobInitialDistSnapshot / 1000f
+                    else -> 0f
+                }
+                val elapsedHours = ((System.currentTimeMillis() - jobStartTimeMs).coerceAtLeast(1000L)) / 3_600_000f
+                val avgSpeed = if (drivenKm > 0.2f && elapsedHours > 0.005f) {
+                    (drivenKm / elapsedHours).coerceIn(10f, 160f)
+                } else {
+                    telemetry.speedKmh.coerceAtLeast(0f)
+                }
+
+                tripLogManager.addTrip(
+                    TripRecord(
+                        originCity = jobOriginSnapshot.ifEmpty { "Origen" },
+                        destinationCity = jobDestSnapshot,
+                        cargoName = jobCargoSnapshot.ifEmpty { "Carga general" },
+                        cargoMassKg = jobMassSnapshot,
+                        incomeEarned = jobIncomeSnapshot,
+                        distanceKm = drivenKm,
+                        avgSpeedKmh = avgSpeed,
+                        damagePercent = telemetry.cargoDamage * 100f
+                    )
                 )
-            )
-            voiceAssistant.speak("Felicidades, trabajo de entrega completado con éxito")
+                voiceAssistant.speak("Felicidades, trabajo de entrega completado con éxito")
+            }
+
             jobOriginSnapshot = ""
             jobDestSnapshot = ""
             jobCargoSnapshot = ""
             jobMassSnapshot = 0f
             jobIncomeSnapshot = 0L
             jobInitialDistSnapshot = 0f
+            jobDrivenMeters = 0f
+            jobLastNavDistMeters = Float.MAX_VALUE
+            lastJobPosX = Double.NaN
+            lastJobPosZ = Double.NaN
         }
     }
 
-    // Control de cálculo de ruta: se activa cuando hay destino y origen válido
-    val hasValidPos = telemetry.posX != 0.0 || telemetry.posZ != 0.0
+    // Control de cálculo de ruta: snapshotFlow + conflate() evita cancelaciones a 30 Hz
     var lastRoutedDestCity by remember { mutableStateOf("") }
     var lastRoutedDestComp by remember { mutableStateOf("") }
-    var lastOriginNodeIndex by remember { mutableIntStateOf(-1) }
     var lastRouteCalcTime by remember { mutableLongStateOf(0L) }
     var isWrongWay by remember { mutableStateOf(false) }
     var lastTargetNodeIndex by remember { mutableIntStateOf(-1) }
@@ -239,144 +328,193 @@ fun AtsNavMainApp(
     var lastTrackingX by remember { mutableFloatStateOf(0f) }
     var lastTrackingZ by remember { mutableFloatStateOf(0f) }
 
-    LaunchedEffect(
-        telemetry.posX,
-        telemetry.posZ,
-        telemetry.destinationCity,
-        telemetry.destinationCompany,
-        telemetry.targetNodeIndex,
-        hasValidPos,
-        mapGraph
-    ) {
+    LaunchedEffect(mapGraph) {
         val graph = mapGraph ?: return@LaunchedEffect
-        if (graph.nodes.isEmpty() || !hasValidPos) return@LaunchedEffect
+        if (graph.nodes.isEmpty()) return@LaunchedEffect
 
-        val curX = telemetry.posX.toFloat()
-        val curZ = telemetry.posZ.toFloat()
-        val curHeading = telemetry.headingDegrees.toFloat()
-        val curSpeed = telemetry.speedKmh
-        val curGear = telemetry.gear
-        val now = System.currentTimeMillis()
-
-        val movedDistSq = (curX - lastTrackingX) * (curX - lastTrackingX) + (curZ - lastTrackingZ) * (curZ - lastTrackingZ)
-        val shouldEvaluateTracking = (now - lastTrackingCheckTime > 200L) || (movedDistSq > 4.0f)
-
-        val tracking = if (shouldEvaluateTracking) {
-            val t = withContext(Dispatchers.Default) {
-                graph.evaluateRouteTracking(curX, curZ, curHeading, curSpeed, curGear, activeRoute)
-            }
-            lastTrackingCheckTime = now
-            lastTrackingX = curX
-            lastTrackingZ = curZ
-            t
-        } else null
-
-        if (tracking != null) {
-            isWrongWay = tracking.isWrongWay
-            if (tracking.isWrongWay && now - lastWrongWayVoiceTime > 9000L) {
-                lastWrongWayVoiceTime = now
-                voiceAssistant.speak("Precaución, sentido contrario")
-            }
-            if (tracking.isOffRoute) offRouteCounter++ else offRouteCounter = 0
+        snapshotFlow {
+            RouteTrackingInput(
+                posX = telemetry.posX,
+                posZ = telemetry.posZ,
+                headingDegrees = telemetry.headingDegrees,
+                speedKmh = telemetry.speedKmh,
+                gear = telemetry.gear,
+                navDistanceMeters = telemetry.navDistanceMeters,
+                destinationCity = telemetry.destinationCity,
+                destinationCityId = telemetry.destinationCityId,
+                destinationCompany = telemetry.destinationCompany,
+                destinationCompanyId = telemetry.destinationCompanyId,
+                telemetryTargetNode = telemetry.targetNodeIndex?.toInt(),
+                manualTargetNode = manualTargetNodeIndex,
+                manualDestName = manualDestinationName
+            )
         }
+            .conflate()
+            .collect { input ->
+                val hasValidPos = input.posX != 0.0 || input.posZ != 0.0
+                if (!hasValidPos) return@collect
 
-        // Autodetección: 1) Destino manual explícito, 2) Destino del trabajo en curso de ATS
-        val targetNode: Int? = if (telemetry.targetNodeIndex != null) {
-            telemetry.targetNodeIndex!!.toInt()
-        } else if (telemetry.destinationCity.isNotEmpty() || telemetry.destinationCityId.isNotEmpty()) {
-            val destCity = telemetry.destinationCity.trim()
-            val destCityId = telemetry.destinationCityId.trim()
-            val destCompany = telemetry.destinationCompany.trim()
-            val destCompanyId = telemetry.destinationCompanyId.trim()
+                val curX = input.posX.toFloat()
+                val curZ = input.posZ.toFloat()
+                val curHeading = input.headingDegrees.toFloat()
+                val now = System.currentTimeMillis()
 
-            fun norm(s: String): String = s.lowercase().replace("_", "").replace(" ", "").replace("-", "")
-
-            val normCity = norm(destCity)
-            val normCityId = norm(destCityId)
-            val normComp = norm(destCompany)
-            val normCompId = norm(destCompanyId)
-
-            // 1. Coincidencia por empresa y ciudad
-            val compMatch = graph.companies.firstOrNull { c ->
-                val cCityNorm = norm(c.cityName)
-                val cityMatches = (normCity.isNotEmpty() && (cCityNorm.contains(normCity) || normCity.contains(cCityNorm))) ||
-                                  (normCityId.isNotEmpty() && (cCityNorm.contains(normCityId) || normCityId.contains(cCityNorm)))
-                val cNameNorm = norm(c.name)
-                val compMatches = normComp.isEmpty() || cNameNorm.contains(normComp) || normComp.contains(cNameNorm) ||
-                                  (normCompId.isNotEmpty() && (cNameNorm.contains(normCompId) || normCompId.contains(cNameNorm)))
-                cityMatches && compMatches
-            }
-
-            // 2. Coincidencia por ciudad
-            compMatch?.nearestNodeIndex ?: graph.cities.firstOrNull { c ->
-                val cNorm = norm(c.name)
-                (normCity.isNotEmpty() && (cNorm == normCity || cNorm.contains(normCity) || normCity.contains(cNorm))) ||
-                (normCityId.isNotEmpty() && (cNorm == normCityId || cNorm.contains(normCityId) || normCityId.contains(cNorm)))
-            }?.nearestNodeIndex
-        } else {
-            null
-        }
-
-        if (targetNode != null) {
-            val isNewDestination = telemetry.destinationCity != lastRoutedDestCity ||
-                telemetry.destinationCompany != lastRoutedDestComp ||
-                targetNode != lastTargetNodeIndex
-            val isConfirmedOffRoute = tracking != null && (tracking.distanceToRouteMeters > 48f || offRouteCounter >= 4) &&
-                (now - lastRouteCalcTime > 1500L)
-            val shouldCompute = activeRoute == null || isNewDestination || isConfirmedOffRoute
-
-            if (shouldCompute) {
-                if (isNewDestination) {
-                    routeJob?.cancel()
-                }
-                if (isNewDestination || routeJob == null || !routeJob!!.isActive) {
-                    val snap = tracking?.currentSnap ?: withContext(Dispatchers.Default) {
-                        graph.snapToRoad(curX, curZ, curHeading, null, 45f)
+                // Verificar llegada (< 80m) a destino manual / desvío
+                var effectiveManualNode = input.manualTargetNode
+                if (effectiveManualNode != null && effectiveManualNode in graph.nodes.indices) {
+                    val mNode = graph.nodes[effectiveManualNode]
+                    val dxM = curX - mNode.x
+                    val dzM = curZ - mNode.z
+                    if (dxM * dxM + dzM * dzM < 6400f) {
+                        val arrivedName = input.manualDestName ?: "tu destino"
+                        manualTargetNodeIndex = null
+                        manualDestinationName = null
+                        effectiveManualNode = null
+                        voiceAssistant.announceArrival(arrivedName)
                     }
-                    val startNode = snap?.edge?.fromNodeIndex?.takeIf { graph.adjacency.containsKey(it) }
-                        ?: withContext(Dispatchers.Default) {
-                            graph.findBestRouteStartNode(curX, curZ, curHeading)
-                        }
-                    lastRoutedDestCity = telemetry.destinationCity
-                    lastRoutedDestComp = telemetry.destinationCompany
-                    lastTargetNodeIndex = targetNode
+                }
 
-                    if (targetNode != startNode) {
-                        val headingSnapshot = telemetry.headingDegrees.toFloat()
-                        val navDistSnapshot = telemetry.navDistanceMeters
-                        val destCitySnapshot = telemetry.destinationCity
-                        routeJob = coroutineScope.launch {
-                            val route = withContext(Dispatchers.Default) {
-                                AStarRouter.findRoute(
-                                    graph = graph,
-                                    startNode = startNode,
-                                    targetNode = targetNode,
-                                    headingDeg = headingSnapshot,
-                                    initialEdge = snap?.edge
-                                )
+                val movedDistSq = (curX - lastTrackingX) * (curX - lastTrackingX) + (curZ - lastTrackingZ) * (curZ - lastTrackingZ)
+                val shouldEvaluateTracking = (now - lastTrackingCheckTime > 200L) || (movedDistSq > 4.0f)
+
+                val tracking = if (shouldEvaluateTracking) {
+                    val t = withContext(Dispatchers.Default) {
+                        graph.evaluateRouteTracking(curX, curZ, curHeading, input.speedKmh, input.gear, activeRoute)
+                    }
+                    lastTrackingCheckTime = now
+                    lastTrackingX = curX
+                    lastTrackingZ = curZ
+                    t
+                } else null
+
+                if (tracking != null) {
+                    isWrongWay = tracking.isWrongWay
+                    if (tracking.isWrongWay && now - lastWrongWayVoiceTime > 9000L) {
+                        lastWrongWayVoiceTime = now
+                        voiceAssistant.speak("Precaución, sentido contrario")
+                    }
+                    if (tracking.isOffRoute) offRouteCounter++ else offRouteCounter = 0
+                }
+
+                // Autodetección: 1) Destino manual independiente, 2) Nodo enviado por servidor, 3) Ciudad/empresa de trabajo
+                val targetNode: Int? = if (effectiveManualNode != null) {
+                    effectiveManualNode
+                } else if (input.telemetryTargetNode != null) {
+                    input.telemetryTargetNode
+                } else if (input.destinationCity.isNotEmpty() || input.destinationCityId.isNotEmpty()) {
+                    val destCity = input.destinationCity.trim()
+                    val destCityId = input.destinationCityId.trim()
+                    val destCompany = input.destinationCompany.trim()
+                    val destCompanyId = input.destinationCompanyId.trim()
+
+                    fun norm(s: String): String = s.lowercase().replace("_", "").replace(" ", "").replace("-", "")
+
+                    val normCity = norm(destCity)
+                    val normCityId = norm(destCityId)
+                    val normComp = norm(destCompany)
+                    val normCompId = norm(destCompanyId)
+
+                    // 1. Coincidencia por empresa y ciudad (priorizar exacta sobre parcial)
+                    val exactCompMatch = graph.companies.firstOrNull { c ->
+                        val cCityNorm = norm(c.cityName)
+                        val cNameNorm = norm(c.name)
+                        val cityExact = (normCity.isNotEmpty() && cCityNorm == normCity) ||
+                            (normCityId.isNotEmpty() && cCityNorm == normCityId)
+                        val compExact = normComp.isEmpty() ||
+                            cNameNorm == normComp ||
+                            (normCompId.isNotEmpty() && cNameNorm == normCompId)
+                        cityExact && compExact
+                    }
+                    val partialCompMatch = exactCompMatch ?: graph.companies.firstOrNull { c ->
+                        val cCityNorm = norm(c.cityName)
+                        val cNameNorm = norm(c.name)
+                        val cityMatches = (normCity.isNotEmpty() && (cCityNorm == normCity || cCityNorm.contains(normCity) || normCity.contains(cCityNorm))) ||
+                            (normCityId.isNotEmpty() && (cCityNorm == normCityId || cCityNorm.contains(normCityId) || normCityId.contains(cCityNorm)))
+                        val compMatches = normComp.isEmpty() ||
+                            cNameNorm == normComp || cNameNorm.contains(normComp) || normComp.contains(cNameNorm) ||
+                            (normCompId.isNotEmpty() && (cNameNorm == normCompId || cNameNorm.contains(normCompId) || normCompId.contains(cNameNorm)))
+                        cityMatches && compMatches
+                    }
+
+                    // 2. Coincidencia por ciudad (priorizar exacta sobre parcial)
+                    partialCompMatch?.nearestNodeIndex
+                        ?: graph.cities.firstOrNull { c ->
+                            val cNorm = norm(c.name)
+                            (normCity.isNotEmpty() && cNorm == normCity) ||
+                                (normCityId.isNotEmpty() && cNorm == normCityId)
+                        }?.nearestNodeIndex
+                        ?: graph.cities.firstOrNull { c ->
+                            val cNorm = norm(c.name)
+                            (normCity.isNotEmpty() && (cNorm.contains(normCity) || normCity.contains(cNorm))) ||
+                                (normCityId.isNotEmpty() && (cNorm.contains(normCityId) || normCityId.contains(cNorm)))
+                        }?.nearestNodeIndex
+                } else {
+                    null
+                }
+
+                if (targetNode != null) {
+                    val effectiveDestLabel = input.manualDestName ?: input.destinationCity
+                    val isNewDestination = effectiveDestLabel != lastRoutedDestCity ||
+                        input.destinationCompany != lastRoutedDestComp ||
+                        targetNode != lastTargetNodeIndex
+                    val isConfirmedOffRoute = tracking != null && (tracking.distanceToRouteMeters > 48f || offRouteCounter >= 4) &&
+                        (now - lastRouteCalcTime > 1500L)
+                    val shouldCompute = activeRoute == null || isNewDestination || isConfirmedOffRoute
+
+                    if (shouldCompute) {
+                        if (isNewDestination) {
+                            routeJob?.cancel()
+                        }
+                        if (isNewDestination || routeJob == null || !routeJob!!.isActive) {
+                            val snap = tracking?.currentSnap ?: withContext(Dispatchers.Default) {
+                                graph.snapToRoad(curX, curZ, curHeading, null, 45f)
                             }
-                            if (route != null) {
-                                activeRoute = route
-                                lastOriginNodeIndex = startNode
+                            val startNode = snap?.edge?.fromNodeIndex?.takeIf { graph.adjacency.containsKey(it) }
+                                ?: withContext(Dispatchers.Default) {
+                                    graph.findBestRouteStartNode(curX, curZ, curHeading)
+                                }
+                            lastRoutedDestCity = effectiveDestLabel
+                            lastRoutedDestComp = input.destinationCompany
+                            lastTargetNodeIndex = targetNode
+
+                            if (targetNode == startNode) {
+                                activeRoute = RouteResult(listOf(startNode), emptyList(), 0f)
                                 lastRouteCalcTime = System.currentTimeMillis()
                                 offRouteCounter = 0
-                                if (navDistSnapshot > 0f) {
-                                    val destText = if (destCitySnapshot.isNotEmpty()) destCitySnapshot else "tu destino"
-                                    voiceAssistant.updateNavigation(navDistSnapshot, "hacia $destText")
+                            } else {
+                                val navDistSnapshot = input.navDistanceMeters
+                                routeJob = coroutineScope.launch {
+                                    val route = withContext(Dispatchers.Default) {
+                                        AStarRouter.findRoute(
+                                            graph = graph,
+                                            startNode = startNode,
+                                            targetNode = targetNode,
+                                            headingDeg = curHeading,
+                                            initialEdge = snap?.edge
+                                        )
+                                    }
+                                    lastRouteCalcTime = System.currentTimeMillis()
+                                    offRouteCounter = 0
+                                    if (route != null) {
+                                        activeRoute = route
+                                        if (navDistSnapshot > 0f) {
+                                            val destText = if (effectiveDestLabel.isNotEmpty()) effectiveDestLabel else "tu destino"
+                                            voiceAssistant.updateNavigation(navDistSnapshot, "hacia $destText")
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                } else {
+                    routeJob?.cancel()
+                    activeRoute = null
+                    lastRoutedDestCity = ""
+                    lastRoutedDestComp = ""
+                    lastTargetNodeIndex = -1
+                    offRouteCounter = 0
                 }
             }
-        } else {
-            routeJob?.cancel()
-            activeRoute = null
-            lastRoutedDestCity = ""
-            lastRoutedDestComp = ""
-            lastTargetNodeIndex = -1
-            offRouteCounter = 0
-        }
     }
 
     MaterialTheme(
@@ -403,22 +541,22 @@ fun AtsNavMainApp(
                     onPinChange = { serverPin = it },
                     isLoading = isPairing,
                     errorMessage = pairError,
-                    onConnect = {
+                    onConnect = { targetHost ->
                         isPairing = true
                         pairError = null
                         coroutineScope.launch {
                             val portNum = serverPort.toIntOrNull() ?: 35500
-                            val effectivePin = if (serverIp == "127.0.0.1" || serverPin.isEmpty()) "USB_DIRECT" else serverPin
-                            val pairResult = networkClient.pairWithServer(serverIp, portNum, effectivePin)
+                            val effectivePin = if (targetHost == "127.0.0.1" && serverPin.isEmpty()) "USB_DIRECT" else serverPin.ifEmpty { "USB_DIRECT" }
+                            val pairResult = networkClient.pairWithServer(targetHost, portNum, effectivePin)
                             if (pairResult.isSuccess) {
                                 val token = pairResult.getOrThrow()
                                 // Descargar mapa binario en streaming
-                                val mapResult = networkClient.downloadMap(serverIp, portNum)
+                                val mapResult = networkClient.downloadMap(targetHost, portNum)
                                 if (mapResult.isSuccess) {
                                     mapGraph = mapResult.getOrThrow()
                                     // Conectar WebSocket de telemetría a 30 Hz
                                     networkClient.connectTelemetryWebSocket(
-                                        host = serverIp,
+                                        host = targetHost,
                                         port = portNum,
                                         token = token,
                                         onTelemetry = { telemetry = it },
@@ -458,7 +596,7 @@ fun AtsNavMainApp(
                                 },
                                 onMapTapped = { tapX, tapZ ->
                                     val graph = mapGraph
-                                    if (graph != null) {
+                                    if (graph != null && graph.nodes.isNotEmpty()) {
                                         // Buscar si tocó un POI (gasolinera, descanso, taller) cercano a 120m
                                         val nearestPoi = graph.pois.minByOrNull { poi ->
                                             val dx = poi.x - tapX
@@ -478,17 +616,15 @@ fun AtsNavMainApp(
                                             graph.findNearestNode(tapX, tapZ, mustHaveEdges = true)
                                         }
 
-                                        if (targetNode != null) {
+                                        if (targetNode in graph.nodes.indices) {
                                             val destLabel = if (poiDistSq < 14400f && nearestPoi != null) {
                                                 nearestPoi.name.ifEmpty { "Punto de Interés" }
                                             } else {
                                                 val c = graph.findNearestCity(tapX, tapZ)
                                                 c?.name ?: "Destino Seleccionado"
                                             }
-                                            telemetry = telemetry.copy(
-                                                targetNodeIndex = targetNode.toLong(),
-                                                destinationCity = destLabel
-                                            )
+                                            manualTargetNodeIndex = targetNode
+                                            manualDestinationName = destLabel
                                         }
                                     }
                                 },
@@ -498,109 +634,160 @@ fun AtsNavMainApp(
 
                             // 1.5. Tarjeta de Navegación Giro a Giro con Guía de Carriles táctica (Turn-By-Turn)
                             if (activeRoute != null && isFollowingTruck) {
-                                TurnByTurnCard(
-                                    truckX = telemetry.posX.toFloat(),
-                                    truckZ = telemetry.posZ.toFloat(),
-                                    activeRoute = activeRoute,
-                                    destinationCity = telemetry.destinationCity,
-                                    instructionOverride = currentInstruction,
+                                Column(
                                     modifier = Modifier
                                         .align(Alignment.TopStart)
-                                        .padding(top = 80.dp, start = 14.dp)
-                                )
-                            }
-
-                            // 1.6. Floating Delivery Summary Card (Figma Screen 1: Top-Right)
-                            val hasJob = telemetry.destinationCity.isNotEmpty() || telemetry.isCargoLoaded || telemetry.jobIncome > 0
-                            if (hasJob) {
-                                Card(
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(top = 80.dp, end = 74.dp)
-                                        .widthIn(max = 280.dp),
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xF2151C21)),
-                                    shape = RoundedCornerShape(14.dp),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222D35))
+                                        .padding(top = 80.dp, start = 14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Column(modifier = Modifier.padding(12.dp)) {
+                                    TurnByTurnCard(
+                                        truckX = telemetry.posX.toFloat(),
+                                        truckZ = telemetry.posZ.toFloat(),
+                                        activeRoute = activeRoute,
+                                        destinationCity = effectiveDestinationName,
+                                        instructionOverride = currentInstruction
+                                    )
+                                    if (manualTargetNodeIndex != null) {
                                         Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                "ENTREGA EN CURSO",
-                                                color = Color(0xFFC7F36B),
-                                                fontWeight = FontWeight.Black,
-                                                fontSize = 10.sp,
-                                                letterSpacing = 0.5.sp
-                                            )
-                                            if (telemetry.speedLimitKmh > 5f) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(24.dp)
-                                                        .clip(CircleShape)
-                                                        .background(Color.White)
-                                                        .border(2.dp, Color(0xFFDC2626), CircleShape),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Text(
-                                                        "${telemetry.speedLimitKmh.roundToInt()}",
-                                                        color = Color.Black,
-                                                        fontWeight = FontWeight.Black,
-                                                        fontSize = 10.sp
-                                                    )
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(Color(0xEE1E293B))
+                                                .border(1.dp, Color(0xFF38BDF8), RoundedCornerShape(10.dp))
+                                                .clickable {
+                                                    manualTargetNodeIndex = null
+                                                    manualDestinationName = null
                                                 }
-                                            }
-                                        }
-
-                                        Spacer(modifier = Modifier.height(4.dp))
-
-                                        val dest = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "Destino"
-                                        val comp = if (telemetry.destinationCompany.isNotEmpty()) " (${telemetry.destinationCompany})" else ""
-                                        Text(
-                                            "$dest$comp",
-                                            color = Color(0xFFF3F6F7),
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 13.sp,
-                                            maxLines = 1
-                                        )
-
-                                        val cargo = if (telemetry.cargoName.isNotEmpty()) telemetry.cargoName else "Carga general"
-                                        val tons = if (telemetry.cargoMassKg > 0f) String.format(" • %.1f t", telemetry.cargoMassKg / 1000f) else ""
-                                        Text(
-                                            "$cargo$tons",
-                                            color = Color(0xFF94A3B8),
-                                            fontSize = 11.sp,
-                                            maxLines = 1
-                                        )
-
-                                        Spacer(modifier = Modifier.height(4.dp))
-
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween
+                                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
-                                            val km = telemetry.navDistanceMeters / 1000f
-                                            val min = telemetry.navTimeSeconds / 60f
                                             Text(
-                                                String.format("%.1f km", km),
-                                                color = Color(0xFFC7F36B),
-                                                fontWeight = FontWeight.Black,
-                                                fontSize = 12.sp
+                                                text = "Ruta manual: ${manualDestinationName ?: "Destino"}",
+                                                color = Color.White,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold
                                             )
                                             Text(
-                                                String.format("ETA: %.0f min", min),
-                                                color = Color(0xFF94A3B8),
-                                                fontWeight = FontWeight.SemiBold,
-                                                fontSize = 11.sp
+                                                text = "Cancelar",
+                                                color = Color(0xFF38BDF8),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
                                             )
                                         }
                                     }
                                 }
                             }
 
-                            // 2. Alerta de Parada de Descanso Obligatorio (Automática en mapa cuando queda poco tiempo)
+                            // 1.6. Columna Superior Derecha: Entrega en Curso + JunctionView (apilados sin solaparse)
+                            val hasJob = telemetry.destinationCity.isNotEmpty() || telemetry.isCargoLoaded || telemetry.jobIncome > 0
+                            val junctionInstr = currentInstruction?.takeIf {
+                                it.maneuver != ManeuverType.STRAIGHT && it.distanceMeters in 50f..800f
+                            }
+                            if (hasJob || junctionInstr != null) {
+                                Column(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(top = 80.dp, end = 74.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    horizontalAlignment = Alignment.End
+                                ) {
+                                    if (hasJob) {
+                                        Card(
+                                            modifier = Modifier.widthIn(max = 280.dp),
+                                            colors = CardDefaults.cardColors(containerColor = Color(0xF2151C21)),
+                                            shape = RoundedCornerShape(14.dp),
+                                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222D35))
+                                        ) {
+                                            Column(modifier = Modifier.padding(12.dp)) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        "ENTREGA EN CURSO",
+                                                        color = Color(0xFFC7F36B),
+                                                        fontWeight = FontWeight.Black,
+                                                        fontSize = 10.sp,
+                                                        letterSpacing = 0.5.sp
+                                                    )
+                                                    if (telemetry.speedLimitKmh > 5f) {
+                                                        Box(
+                                                            modifier = Modifier
+                                                                .size(24.dp)
+                                                                .clip(CircleShape)
+                                                                .background(Color.White)
+                                                                .border(2.dp, Color(0xFFDC2626), CircleShape),
+                                                            contentAlignment = Alignment.Center
+                                                        ) {
+                                                            Text(
+                                                                "${telemetry.speedLimitKmh.roundToInt()}",
+                                                                color = Color.Black,
+                                                                fontWeight = FontWeight.Black,
+                                                                fontSize = 10.sp
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                Spacer(modifier = Modifier.height(4.dp))
+
+                                                val dest = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "Destino"
+                                                val comp = if (telemetry.destinationCompany.isNotEmpty()) " (${telemetry.destinationCompany})" else ""
+                                                Text(
+                                                    "$dest$comp",
+                                                    color = Color(0xFFF3F6F7),
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 13.sp,
+                                                    maxLines = 1
+                                                )
+
+                                                val cargo = if (telemetry.cargoName.isNotEmpty()) telemetry.cargoName else "Carga general"
+                                                val tons = if (telemetry.cargoMassKg > 0f) String.format(" • %.1f t", telemetry.cargoMassKg / 1000f) else ""
+                                                Text(
+                                                    "$cargo$tons",
+                                                    color = Color(0xFF94A3B8),
+                                                    fontSize = 11.sp,
+                                                    maxLines = 1
+                                                )
+
+                                                Spacer(modifier = Modifier.height(4.dp))
+
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween
+                                                ) {
+                                                    val km = telemetry.navDistanceMeters / 1000f
+                                                    val min = telemetry.navTimeSeconds / 60f
+                                                    Text(
+                                                        String.format("%.1f km", km),
+                                                        color = Color(0xFFC7F36B),
+                                                        fontWeight = FontWeight.Black,
+                                                        fontSize = 12.sp
+                                                    )
+                                                    Text(
+                                                        String.format("ETA: %.0f min", min),
+                                                        color = Color(0xFF94A3B8),
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        fontSize = 11.sp
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if (junctionInstr != null) {
+                                        JunctionView(
+                                            exitName = junctionInstr.title,
+                                            destinationName = effectiveDestinationName.ifEmpty { "DESTINO" },
+                                            distanceMeters = junctionInstr.distanceMeters,
+                                            speedLimitKmh = telemetry.speedLimitKmh
+                                        )
+                                    }
+                                }
+                            }
+
+                            // 2. Alertas Superior Central (Sentido Contrario + Parada de Descanso apiladas sin colisión)
                             val isRestStopRelevant = telemetry.restStopMinutes in 1..45
                             val currentMapGraph = mapGraph
                             val mapRestStop = remember(telemetry.posX, telemetry.posZ, currentMapGraph, isRestStopRelevant) {
@@ -608,87 +795,77 @@ fun AtsNavMainApp(
                                     currentMapGraph.findNearestRestStop(telemetry.posX.toFloat(), telemetry.posZ.toFloat())
                                 } else null
                             }
-                            if (telemetry.restStopMinutes in 1..45 && mapRestStop != null) {
-                                Box(
+                            if (isWrongWay || (isRestStopRelevant && mapRestStop != null)) {
+                                Column(
                                     modifier = Modifier
                                         .align(Alignment.TopCenter)
-                                        .padding(top = 84.dp, start = 16.dp, end = 16.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(Color(0xF0111827))
-                                        .border(1.5.dp, Color(0xFFF59E0B), RoundedCornerShape(10.dp))
-                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                        .padding(top = 80.dp, start = 16.dp, end = 16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
+                                    if (isWrongWay) {
                                         Box(
                                             modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .background(Color(0x33F59E0B))
-                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(Color(0xEEB91C1C))
+                                                .border(2.dp, Color(0xFFFCA5A5), RoundedCornerShape(14.dp))
+                                                .padding(horizontal = 18.dp, vertical = 10.dp)
                                         ) {
-                                            Text("DESCANSO", color = Color(0xFFF59E0B), fontSize = 9.sp, fontWeight = FontWeight.Black)
-                                        }
-                                        Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = "Descanso en ${telemetry.restStopMinutes}m • ${mapRestStop.first.name.ifEmpty { "Área de Servicio" }} (~${mapRestStop.second.roundToInt()} km)",
-                                                color = Color(0xFFFDE68A),
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold
+                                                text = "ALERTA: SENTIDO CONTRARIO - RECALCULANDO RUTA",
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 14.sp
                                             )
                                         }
-                                        Button(
-                                            onClick = {
-                                                val node = mapGraph?.findNearestNode(mapRestStop.first.x, mapRestStop.first.z)
-                                                if (node != null) {
-                                                    telemetry = telemetry.copy(targetNodeIndex = node.toLong())
-                                                }
-                                            },
-                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF59E0B)),
-                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                                            shape = RoundedCornerShape(6.dp),
-                                            modifier = Modifier.height(28.dp)
+                                    }
+
+                                    if (isRestStopRelevant && mapRestStop != null) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(Color(0xF0111827))
+                                                .border(1.5.dp, Color(0xFFF59E0B), RoundedCornerShape(10.dp))
+                                                .padding(horizontal = 12.dp, vertical = 6.dp)
                                         ) {
-                                            Text("Desviar", color = Color(0xFF1E1B4B), fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .clip(RoundedCornerShape(4.dp))
+                                                        .background(Color(0x33F59E0B))
+                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                ) {
+                                                    Text("DESCANSO", color = Color(0xFFF59E0B), fontSize = 9.sp, fontWeight = FontWeight.Black)
+                                                }
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = "Descanso en ${telemetry.restStopMinutes}m • ${mapRestStop.first.name.ifEmpty { "Área de Servicio" }} (~${mapRestStop.second.roundToInt()} km)",
+                                                        color = Color(0xFFFDE68A),
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                                Button(
+                                                    onClick = {
+                                                        val node = mapGraph?.findNearestNode(mapRestStop.first.x, mapRestStop.first.z)
+                                                        if (node != null && mapGraph?.nodes?.indices?.contains(node) == true) {
+                                                            manualTargetNodeIndex = node
+                                                            manualDestinationName = mapRestStop.first.name.ifEmpty { "Área de Descanso" }
+                                                        }
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF59E0B)),
+                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    modifier = Modifier.height(28.dp)
+                                                ) {
+                                                    Text("Desviar", color = Color(0xFF1E1B4B), fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                                }
+                                            }
                                         }
                                     }
-                                }
-                            }
-
-                            // 3. Junction View (Aparece en esquina superior derecha)
-                            if (telemetry.navDistanceMeters in 50f..1200f) {
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.TopEnd)
-                                        .padding(top = 90.dp, end = 16.dp)
-                                ) {
-                                    JunctionView(
-                                        exitName = "Exit 45B",
-                                        destinationName = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "DESTINO",
-                                        distanceMeters = telemetry.navDistanceMeters,
-                                        speedLimitKmh = telemetry.speedLimitKmh
-                                    )
-                                }
-                            }
-
-                            // 3.5. Alerta Visual de Sentido Contrario (Wrong-Way)
-                            if (isWrongWay) {
-                                Box(
-                                    modifier = Modifier
-                                        .align(Alignment.TopCenter)
-                                        .padding(top = 76.dp, start = 20.dp, end = 20.dp)
-                                        .clip(RoundedCornerShape(14.dp))
-                                        .background(Color(0xEEB91C1C))
-                                        .border(2.dp, Color(0xFFFCA5A5), RoundedCornerShape(14.dp))
-                                        .padding(horizontal = 18.dp, vertical = 10.dp)
-                                ) {
-                                    Text(
-                                        text = "ALERTA: SENTIDO CONTRARIO - RECALCULANDO RUTA",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Black,
-                                        fontSize = 14.sp
-                                    )
                                 }
                             }
 
@@ -854,12 +1031,12 @@ fun AtsNavMainApp(
                     AppTab.TELEMETRIA -> {
                         DashboardScreen(
                             telemetry = telemetry,
-                            onOpenDiagnostics = { showDiagnostics = true },
                             nearestRestStop = mapGraph?.findNearestRestStop(telemetry.posX.toFloat(), telemetry.posZ.toFloat()),
                             onRouteToRestStop = { poi ->
                                 val nearestNode = mapGraph?.findNearestNode(poi.x, poi.z)
-                                if (nearestNode != null) {
-                                    telemetry = telemetry.copy(targetNodeIndex = nearestNode.toLong())
+                                if (nearestNode != null && mapGraph?.nodes?.indices?.contains(nearestNode) == true) {
+                                    manualTargetNodeIndex = nearestNode
+                                    manualDestinationName = poi.name.ifEmpty { "Área de Descanso" }
                                     selectedTab = AppTab.MAPA
                                 }
                             }
@@ -880,7 +1057,6 @@ fun AtsNavMainApp(
                     selectedTab = selectedTab,
                     onTabSelected = { selectedTab = it },
                     telemetry = telemetry,
-                    graph = mapGraph,
                     onOpenDiagnostics = { showDiagnostics = true }
                 )
 
@@ -889,18 +1065,6 @@ fun AtsNavMainApp(
                     telemetry = telemetry,
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
-
-                // Diálogo Selector de Destino Manual
-                if (showDestSelector && mapGraph != null) {
-                    DestinationSelectorDialog(
-                        graph = mapGraph!!,
-                        onDismiss = { showDestSelector = false },
-                        onDestinationSelected = { destNode ->
-                            telemetry = telemetry.copy(targetNodeIndex = destNode.toLong())
-                            showDestSelector = false
-                        }
-                    )
-                }
 
                 // Pantalla de Diagnóstico G1
                 if (showDiagnostics) {
@@ -915,7 +1079,7 @@ fun AtsNavMainApp(
 }
 
 // =====================================================================
-// COMPONENTES UI: NAVEGACIÓN, PESTAÑAS Y DIÁLOGOS (FIGMA DESIGN SYSTEM)
+// COMPONENTES UI: NAVEGACIÓN, PESTAÑAS Y DIÁLOGOS (SISTEMA VISUAL DARK)
 // =====================================================================
 
 @Composable
@@ -923,7 +1087,6 @@ fun TopNavigationBar(
     selectedTab: AppTab,
     onTabSelected: (AppTab) -> Unit,
     telemetry: TelemetryData,
-    graph: MapGraph?,
     onOpenDiagnostics: () -> Unit
 ) {
     Row(
@@ -1004,10 +1167,10 @@ fun TopNavigationBar(
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            FigmaTabButton("Mapa", selectedTab == AppTab.MAPA) { onTabSelected(AppTab.MAPA) }
-            FigmaTabButton("Telemetría", selectedTab == AppTab.TELEMETRIA) { onTabSelected(AppTab.TELEMETRIA) }
-            FigmaTabButton("Bitácora", selectedTab == AppTab.BITACORA) { onTabSelected(AppTab.BITACORA) }
-            FigmaTabButton("Acerca de", selectedTab == AppTab.ACERCA_DE) { onTabSelected(AppTab.ACERCA_DE) }
+            NavigationTabButton("Mapa", selectedTab == AppTab.MAPA) { onTabSelected(AppTab.MAPA) }
+            NavigationTabButton("Telemetría", selectedTab == AppTab.TELEMETRIA) { onTabSelected(AppTab.TELEMETRIA) }
+            NavigationTabButton("Bitácora", selectedTab == AppTab.BITACORA) { onTabSelected(AppTab.BITACORA) }
+            NavigationTabButton("Acerca de", selectedTab == AppTab.ACERCA_DE) { onTabSelected(AppTab.ACERCA_DE) }
         }
 
         // Settings / Diagnostics button
@@ -1026,7 +1189,7 @@ fun TopNavigationBar(
 }
 
 @Composable
-fun FigmaTabButton(text: String, isSelected: Boolean, onClick: () -> Unit) {
+fun NavigationTabButton(text: String, isSelected: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(7.dp))
@@ -1171,7 +1334,7 @@ fun PairingScreen(
     onPinChange: (String) -> Unit,
     isLoading: Boolean,
     errorMessage: String?,
-    onConnect: () -> Unit
+    onConnect: (String) -> Unit
 ) {
     // Autodetección silenciosa: si el cable USB está conectado (127.0.0.1 o tethering), entrar directo al mapa
     var autoProbing by remember { mutableStateOf(true) }
@@ -1185,7 +1348,7 @@ fun PairingScreen(
                 if (isReady) {
                     onIpChange(host)
                     autoProbing = false
-                    onConnect()
+                    onConnect(host)
                     return@LaunchedEffect
                 }
             }
@@ -1264,7 +1427,7 @@ fun PairingScreen(
             }
 
             Button(
-                onClick = onConnect,
+                onClick = { onConnect(ip) },
                 enabled = !isLoading && (pin.length >= 6 || ip == "127.0.0.1"),
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(8.dp),
@@ -1274,72 +1437,6 @@ fun PairingScreen(
                     CircularProgressIndicator(color = Color.White, modifier = Modifier.size(22.dp))
                 } else {
                     Text("Conectar", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun DestinationSelectorDialog(
-    graph: MapGraph,
-    onDismiss: () -> Unit,
-    onDestinationSelected: (Int) -> Unit
-) {
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.8f),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B))
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    text = "SELECCIONAR DESTINO",
-                    fontWeight = FontWeight.Black,
-                    fontSize = 18.sp,
-                    color = Color.White
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(graph.cities.sortedBy { it.name }) { city ->
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onDestinationSelected(city.nearestNodeIndex.toInt()) },
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF334155))
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = city.name,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White,
-                                    fontSize = 15.sp
-                                )
-                                Text("Navegar ->", color = Color(0xFF38BDF8), fontSize = 13.sp)
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-                Button(
-                    onClick = onDismiss,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569))
-                ) {
-                    Text("Cancelar", color = Color.White)
                 }
             }
         }

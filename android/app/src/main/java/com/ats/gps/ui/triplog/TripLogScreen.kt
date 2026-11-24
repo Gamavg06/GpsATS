@@ -27,8 +27,8 @@ fun TripLogScreen(
     modifier: Modifier = Modifier
 ) {
     var history by remember { mutableStateOf(tripLogManager.getTripHistory()) }
-    val totalIncome = remember(history) { tripLogManager.getTotalIncome() }
-    val totalDistance = remember(history) { tripLogManager.getTotalDistanceKm() }
+    val totalIncome = remember(history) { history.sumOf { it.incomeEarned } }
+    val totalDistance = remember(history) { history.sumOf { it.distanceKm.toDouble() }.toFloat() }
     val totalTrips = history.size
 
     val bgDark = Color(0xFF0C1013)
@@ -178,7 +178,7 @@ fun TripLogScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = Modifier.weight(1f)
             ) {
-                items(history) { trip ->
+                items(history, key = { it.id }) { trip ->
                     TripRecordCard(trip, cardDark, borderDark, textWhite, textGray, limeAccent, cyanAccent)
                 }
             }

@@ -3,19 +3,27 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Net.Sockets;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace AtsGpsLauncher;
 
 public partial class MainWindow : Window
 {
+    private static readonly HttpClient StatusHttpClient = new() { Timeout = TimeSpan.FromMilliseconds(1500) };
     private Process? _serverProcess;
     private string _rootDir = "";
     private string _adbPath = "";
     private string _serverPin = "----";
+    private bool _pluginInstalled;
+    private DispatcherTimer? _statusTimer;
 
     public MainWindow()
     {
@@ -28,10 +36,11 @@ public partial class MainWindow : Window
     {
         ResolveDirectories();
         DisplayLocalIps();
-        AppendLog("[INFO] Inicializando Panel de Control SGNIA ATS GPS v1.3.8...");
+        AppendLog("[INFO] Inicializando Panel de Control SGNIA ATS GPS v1.4.2...");
 
         // 1. Iniciar Servidor en segundo plano (sin ventana negra cmd)
         StartServer();
+        StartStatusPolling();
 
         // 2. Comprobar y configurar USB ADB Reverse
         await CheckAndConfigureAdbAsync();
@@ -55,7 +64,7 @@ public partial class MainWindow : Window
 
         if (string.IsNullOrEmpty(_rootDir))
         {
-            _rootDir = @"C:\Telemetriagps";
+            _rootDir = current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
 
         // Resolver ADB
@@ -120,16 +129,16 @@ public partial class MainWindow : Window
             _serverProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             _serverProcess.OutputDataReceived += (s, ev) =>
             {
-                if (!string.IsNullOrEmpty(ev.Data))
+                if (!string.IsNullOrEmpty(ev.Data) && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
                 {
-                    Dispatcher.Invoke(() => HandleServerLog(ev.Data));
+                    _ = Dispatcher.InvokeAsync(() => HandleServerLog(ev.Data));
                 }
             };
             _serverProcess.ErrorDataReceived += (s, ev) =>
             {
-                if (!string.IsNullOrEmpty(ev.Data))
+                if (!string.IsNullOrEmpty(ev.Data) && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
                 {
-                    Dispatcher.Invoke(() => AppendLog($"[STDERR] {ev.Data}"));
+                    _ = Dispatcher.InvokeAsync(() => AppendLog($"[STDERR] {ev.Data}"));
                 }
             };
 
@@ -165,7 +174,10 @@ public partial class MainWindow : Window
             // Asegurar que no queden procesos huérfanos de AtsGpsServer
             foreach (var p in Process.GetProcessesByName("AtsGpsServer"))
             {
-                try { p.Kill(); } catch { }
+                using (p)
+                {
+                    try { p.Kill(); } catch { }
+                }
             }
         }
         catch { }
@@ -178,7 +190,7 @@ public partial class MainWindow : Window
         // Detectar PIN en el log si el servidor lo imprime
         if (line.Contains("PIN", StringComparison.OrdinalIgnoreCase))
         {
-            var match = System.Text.RegularExpressions.Regex.Match(line, @"\b\d{4,6}\b");
+            var match = Regex.Match(line, @"\b\d{4,6}\b");
             if (match.Success)
             {
                 _serverPin = match.Value;
@@ -186,11 +198,59 @@ public partial class MainWindow : Window
             }
         }
 
-        if (line.Contains("SDK", StringComparison.OrdinalIgnoreCase) || line.Contains("telemetry", StringComparison.OrdinalIgnoreCase))
+        if (line.Contains("[OK] Plugin scs-telemetry.dll", StringComparison.OrdinalIgnoreCase))
         {
-            AtsStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
-            AtsStatusText.Text = "SDK SCS ACTIVO";
+            _pluginInstalled = true;
+            AtsStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#38BDF8"));
+            AtsStatusText.Text = "PLUGIN SDK LISTO";
             AtsStatusText.Foreground = AtsStatusLed.Fill;
+        }
+        else if (line.Contains("No se detectó scs-telemetry.dll", StringComparison.OrdinalIgnoreCase))
+        {
+            _pluginInstalled = false;
+            AtsStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F7C948"));
+            AtsStatusText.Text = "PLUGIN NO DETECTADO";
+            AtsStatusText.Foreground = AtsStatusLed.Fill;
+        }
+    }
+
+    private void StartStatusPolling()
+    {
+        _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _statusTimer.Tick += async (_, _) => await RefreshAtsStatusAsync();
+        _statusTimer.Start();
+    }
+
+    private async Task RefreshAtsStatusAsync()
+    {
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+        try
+        {
+            using var response = await StatusHttpClient.GetAsync("http://127.0.0.1:35500/api/status");
+            if (!response.IsSuccessStatusCode) return;
+
+            string json = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("atsConnected", out var connectedProp))
+            {
+                bool atsConnected = connectedProp.GetBoolean();
+                if (atsConnected)
+                {
+                    AtsStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
+                    AtsStatusText.Text = "SDK SCS ACTIVO";
+                    AtsStatusText.Foreground = AtsStatusLed.Fill;
+                }
+                else if (_pluginInstalled)
+                {
+                    AtsStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#38BDF8"));
+                    AtsStatusText.Text = "ESPERANDO JUEGO ATS";
+                    AtsStatusText.Foreground = AtsStatusLed.Fill;
+                }
+            }
+        }
+        catch
+        {
+            // Ignorar si el servidor aún está iniciando o fue detenido
         }
     }
 
@@ -203,7 +263,8 @@ public partial class MainWindow : Window
             AppendLog(devicesOutput.Trim());
 
             bool hasDevice = devicesOutput.Split('\n')
-                .Any(l => l.Contains("device") && !l.StartsWith("List of devices"));
+                .Select(l => l.Trim())
+                .Any(l => Regex.IsMatch(l, @"^\S+\s+device\b"));
 
             if (hasDevice)
             {
@@ -310,35 +371,46 @@ public partial class MainWindow : Window
         }
     }
 
-    private Task<string> RunCommandAsync(string fileName, string args)
+    private async Task<string> RunCommandAsync(string fileName, string args)
     {
-        return Task.Run(() =>
+        try
         {
+            var psi = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = args,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = Process.Start(psi);
+            if (p == null) return "No se pudo iniciar el proceso.";
+
+            var stdoutTask = p.StandardOutput.ReadToEndAsync();
+            var stderrTask = p.StandardError.ReadToEndAsync();
+
+            using var cts = new CancellationTokenSource(10000);
             try
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = fileName,
-                    Arguments = args,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    StandardOutputEncoding = System.Text.Encoding.UTF8,
-                    StandardErrorEncoding = System.Text.Encoding.UTF8,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using var p = Process.Start(psi);
-                if (p == null) return "No se pudo iniciar el proceso.";
-                string output = p.StandardOutput.ReadToEnd();
-                string error = p.StandardError.ReadToEnd();
-                p.WaitForExit(10000);
-                return output + (string.IsNullOrEmpty(error) ? "" : "\n" + error);
+                await p.WaitForExitAsync(cts.Token);
             }
-            catch (Exception ex)
+            catch (OperationCanceledException)
             {
-                return "Error: " + ex.Message;
+                try { p.Kill(true); } catch { }
+                return "Tiempo de espera agotado ejecutando el comando.";
             }
-        });
+
+            string output = await stdoutTask;
+            string error = await stderrTask;
+            return output + (string.IsNullOrEmpty(error) ? "" : "\n" + error);
+        }
+        catch (Exception ex)
+        {
+            return "Error: " + ex.Message;
+        }
     }
 
     private void AppendLog(string message)
@@ -350,6 +422,7 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        _statusTimer?.Stop();
         StopServer();
     }
 }

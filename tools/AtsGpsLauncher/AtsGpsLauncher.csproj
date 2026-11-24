@@ -8,6 +8,16 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>Iniciar_Servidor</AssemblyName>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <Version>1.4.2</Version>
+    <AssemblyVersion>1.4.2.0</AssemblyVersion>
+    <FileVersion>1.4.2.0</FileVersion>
+    <Product>SGNIA - ATS Telemetry &amp; GPS Launcher</Product>
+    <Authors>Gamaliel Velazquez Galicia (SGNIA)</Authors>
+    <Company>SGNIA</Company>
+    <Copyright>Copyright (c) 2026 Gamaliel Velazquez Galicia (SGNIA)</Copyright>
+    <Description>Panel de control grafico WPF (.NET 10) para el servidor de telemetria, enlace USB ADB y cliente Android de SGNIA - ATS Telemetry &amp; GPS.</Description>
+    <RepositoryUrl>https://github.com/Gamavg06/GpsATS</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>

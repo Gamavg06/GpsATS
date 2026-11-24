@@ -25,41 +25,49 @@ namespace AtsGpsServer.Tests
         {
             string atsDir = @"C:\Program Files (x86)\Steam\steamapps\common\American Truck Simulator";
             var extractor = new MapExtractor(atsDir);
-            var dlcReaders = extractor.GetMapScsFiles().Select(HashFsReader.Open).ToList();
-            string defScsPath = Path.Combine(atsDir, "def.scs");
             var readers = new List<IHashFsReader>();
-            if (File.Exists(defScsPath)) readers.Add(HashFsReader.Open(defScsPath));
-            readers.AddRange(dlcReaders);
-
-            int totalDefinitions = 0;
-            var descMap = new Dictionary<string, string>();
-            var regex = new System.Text.RegularExpressions.Regex(
-                @"prefab_model\s*:\s*prefab\.([a-zA-Z0-9_]+)\s*\{[^}]*prefab_desc\s*:\s*""([^""]+)""",
-                System.Text.RegularExpressions.RegexOptions.Singleline);
-
-            foreach (var r in readers)
+            try
             {
-                if (r.DirectoryExists("/def/world"))
+                readers.AddRange(extractor.GetMapScsFiles().Select(HashFsReader.Open));
+                string defScsPath = Path.Combine(atsDir, "def.scs");
+                if (File.Exists(defScsPath)) readers.Add(HashFsReader.Open(defScsPath));
+
+                var descMap = new Dictionary<string, string>();
+                var regex = new System.Text.RegularExpressions.Regex(
+                    @"prefab_model\s*:\s*prefab\.([a-zA-Z0-9_]+)\s*\{[^}]*prefab_desc\s*:\s*""([^""]+)""",
+                    System.Text.RegularExpressions.RegexOptions.Singleline);
+
+                foreach (var r in readers)
                 {
-                    var files = r.GetFiles("/def/world");
-                    foreach (var f in files)
+                    if (r.DirectoryExists("/def/world"))
                     {
-                        var fname = Path.GetFileName(f);
-                        if (fname.StartsWith("prefab", StringComparison.OrdinalIgnoreCase) && fname.EndsWith(".sii", StringComparison.OrdinalIgnoreCase))
+                        var files = r.GetFiles("/def/world");
+                        foreach (var f in files)
                         {
-                            var bytes = r.Extract(f)[0];
-                            string content = System.Text.Encoding.UTF8.GetString(bytes);
-                            int countBefore = descMap.Count;
-                            foreach (System.Text.RegularExpressions.Match m in regex.Matches(content))
+                            var fname = Path.GetFileName(f);
+                            if (fname.StartsWith("prefab", StringComparison.OrdinalIgnoreCase) && fname.EndsWith(".sii", StringComparison.OrdinalIgnoreCase))
                             {
-                                descMap[m.Groups[1].Value] = m.Groups[2].Value;
+                                var bytes = r.Extract(f)[0];
+                                string content = System.Text.Encoding.UTF8.GetString(bytes);
+                                int countBefore = descMap.Count;
+                                foreach (System.Text.RegularExpressions.Match m in regex.Matches(content))
+                                {
+                                    descMap[m.Groups[1].Value] = m.Groups[2].Value;
+                                }
+                                _output.WriteLine($"Archivo {f}: +{descMap.Count - countBefore} modelos (total acumulado={descMap.Count})");
                             }
-                            _output.WriteLine($"Archivo {f}: +{descMap.Count - countBefore} modelos (total acumulado={descMap.Count})");
                         }
                     }
                 }
+                _output.WriteLine($"TOTAL MODELOS PREFAB CARGADOS: {descMap.Count}");
             }
-            _output.WriteLine($"TOTAL MODELOS PREFAB CARGADOS: {descMap.Count}");
+            finally
+            {
+                foreach (var r in readers)
+                {
+                    r.Dispose();
+                }
+            }
         }
     }
 }

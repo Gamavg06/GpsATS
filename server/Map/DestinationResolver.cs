@@ -29,38 +29,71 @@ namespace AtsGpsServer.Map
             static string Norm(string s) => s.ToLowerInvariant().Replace("_", "").Replace(" ", "").Replace("-", "");
 
             string normCity = Norm(cleanCity);
+            if (string.IsNullOrEmpty(normCity))
+            {
+                return null;
+            }
             string normComp = cleanComp != null ? Norm(cleanComp) : string.Empty;
 
-            // 1. Si hay empresa especificada, buscar coincidencia por empresa Y ciudad
+            // 1. Si hay empresa especificada, buscar coincidencia por empresa Y ciudad priorizando coincidencia exacta
             if (!string.IsNullOrEmpty(normComp))
             {
-                var matchBoth = graph.Companies.FirstOrDefault(c =>
-                {
-                    string cCity = Norm(c.CityName);
-                    string cName = Norm(c.Name);
-                    bool cityMatches = cCity.Contains(normCity) || normCity.Contains(cCity);
-                    bool compMatches = cName.Contains(normComp) || normComp.Contains(cName) ||
-                                      c.CompanyToken.ToString().Equals(cleanComp, StringComparison.OrdinalIgnoreCase);
-                    return cityMatches && compMatches;
-                });
+                MapCompany? bestMatch = null;
+                int bestScore = 0;
 
-                if (matchBoth != null)
+                foreach (var c in graph.Companies)
                 {
-                    return (matchBoth.NearestNodeIndex, matchBoth.X, matchBoth.Z);
+                    string cCity = Norm(c.CityName ?? string.Empty);
+                    string cName = Norm(c.Name ?? string.Empty);
+
+                    bool cityExact = !string.IsNullOrEmpty(cCity) && cCity == normCity;
+                    bool cityPartial = !cityExact && !string.IsNullOrEmpty(cCity) &&
+                                       (cCity.Contains(normCity) || normCity.Contains(cCity));
+                    if (!cityExact && !cityPartial) continue;
+
+                    bool compTokenExact = c.CompanyToken.ToString().Equals(cleanComp, StringComparison.OrdinalIgnoreCase);
+                    bool compExact = compTokenExact || (!string.IsNullOrEmpty(cName) && cName == normComp);
+                    bool compPartial = !compExact && !string.IsNullOrEmpty(cName) &&
+                                         (cName.Contains(normComp) || normComp.Contains(cName));
+                    if (!compExact && !compPartial) continue;
+
+                    int score = (cityExact ? 2 : 1) * 10 + (compExact ? 2 : 1);
+                    if (score > bestScore)
+                    {
+                        bestScore = score;
+                        bestMatch = c;
+                        if (score == 22) break; // Coincidencia exacta en ambos
+                    }
+                }
+
+                if (bestMatch != null)
+                {
+                    return (bestMatch.NearestNodeIndex, bestMatch.X, bestMatch.Z);
                 }
             }
 
-            // 2. Coincidencia por Ciudad destino
-            var matchCity = graph.Cities.FirstOrDefault(c =>
+            // 2. Coincidencia por Ciudad destino (priorizando coincidencia exacta sobre parcial)
+            MapCity? partialCityMatch = null;
+            foreach (var c in graph.Cities)
             {
-                string cNorm = Norm(c.Name);
-                return cNorm == normCity || cNorm.Contains(normCity) || normCity.Contains(cNorm) ||
-                       c.CityToken.ToString().Equals(cleanCity, StringComparison.OrdinalIgnoreCase);
-            });
+                string cNorm = Norm(c.Name ?? string.Empty);
+                bool isExact = (!string.IsNullOrEmpty(cNorm) && cNorm == normCity) ||
+                               c.CityToken.ToString().Equals(cleanCity, StringComparison.OrdinalIgnoreCase);
+                if (isExact)
+                {
+                    return (c.NearestNodeIndex, c.X, c.Z);
+                }
 
-            if (matchCity != null)
+                if (partialCityMatch == null && !string.IsNullOrEmpty(cNorm) &&
+                    (cNorm.Contains(normCity) || normCity.Contains(cNorm)))
+                {
+                    partialCityMatch = c;
+                }
+            }
+
+            if (partialCityMatch != null)
             {
-                return (matchCity.NearestNodeIndex, matchCity.X, matchCity.Z);
+                return (partialCityMatch.NearestNodeIndex, partialCityMatch.X, partialCityMatch.Z);
             }
 
             return null;

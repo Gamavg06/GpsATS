@@ -11,13 +11,25 @@ using AtsGpsServer.Security;
 
 namespace AtsGpsServer.Hubs
 {
-    public class TelemetryBroadcaster
+    public class TelemetryBroadcaster : IDisposable
     {
+        private sealed class ClientConnection
+        {
+            public WebSocket Socket { get; }
+            public SemaphoreSlim SendLock { get; } = new(1, 1);
+
+            public ClientConnection(WebSocket socket)
+            {
+                Socket = socket;
+            }
+        }
+
         private readonly ScsTelemetryReader _reader;
         private readonly AuthManager _auth;
         private readonly AtsGpsServer.Map.DestinationResolver _resolver;
-        private readonly ConcurrentDictionary<Guid, WebSocket> _sockets = new();
+        private readonly ConcurrentDictionary<Guid, ClientConnection> _sockets = new();
         private readonly CancellationTokenSource _cts = new();
+        private int _stopped;
 
         public int ConnectedClientsCount => _sockets.Count;
 
@@ -38,7 +50,8 @@ namespace AtsGpsServer.Hubs
             }
 
             var id = Guid.NewGuid();
-            _sockets[id] = socket;
+            var connection = new ClientConnection(socket);
+            _sockets[id] = connection;
 
             var buffer = new byte[1024];
             try
@@ -61,19 +74,24 @@ namespace AtsGpsServer.Hubs
                 _sockets.TryRemove(id, out _);
                 if (socket.State == WebSocketState.Open)
                 {
-                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Desconectado", CancellationToken.None);
+                    try
+                    {
+                        await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Desconectado", CancellationToken.None);
+                    }
+                    catch { }
                 }
             }
         }
 
         private async Task BroadcastLoop()
         {
+            var token = _cts.Token;
             var options = new JsonSerializerOptions
             {
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             };
 
-            while (!_cts.Token.IsCancellationRequested)
+            while (!token.IsCancellationRequested)
             {
                 try
                 {
@@ -97,30 +115,70 @@ namespace AtsGpsServer.Hubs
                         foreach (var kvp in _sockets)
                         {
                             var client = kvp.Value;
-                            if (client.State == WebSocketState.Open)
+                            if (client.Socket.State == WebSocketState.Open)
                             {
-                                _ = client.SendAsync(segment, WebSocketMessageType.Text, true, CancellationToken.None);
+                                _ = SendSafeAsync(client, segment, token);
                             }
                         }
                     }
 
                     // 30 Hz = 33 milisegundos
-                    await Task.Delay(33, _cts.Token);
+                    await Task.Delay(33, token);
                 }
-                catch (TaskCanceledException)
+                catch (OperationCanceledException)
                 {
                     break;
                 }
                 catch (Exception)
                 {
-                    await Task.Delay(100, _cts.Token);
+                    try
+                    {
+                        await Task.Delay(100, token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        break;
+                    }
                 }
+            }
+        }
+
+        private static async Task SendSafeAsync(ClientConnection client, ArraySegment<byte> segment, CancellationToken token)
+        {
+            if (!client.SendLock.Wait(0))
+            {
+                return;
+            }
+
+            try
+            {
+                if (client.Socket.State == WebSocketState.Open && !token.IsCancellationRequested)
+                {
+                    await client.Socket.SendAsync(segment, WebSocketMessageType.Text, true, token);
+                }
+            }
+            catch
+            {
+                // Ignorar error si el cliente cerró el socket durante el envío
+            }
+            finally
+            {
+                client.SendLock.Release();
             }
         }
 
         public void Stop()
         {
-            _cts.Cancel();
+            if (Interlocked.Exchange(ref _stopped, 1) == 0)
+            {
+                _cts.Cancel();
+            }
+        }
+
+        public void Dispose()
+        {
+            Stop();
+            _cts.Dispose();
         }
     }
 }

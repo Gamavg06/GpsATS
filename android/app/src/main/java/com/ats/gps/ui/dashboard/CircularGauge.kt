@@ -14,6 +14,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -34,8 +35,10 @@ fun CircularGauge(
     warningThreshold: Float = maxValue * 0.85f,
     modifier: Modifier = Modifier
 ) {
-    val clampedValue = value.coerceIn(0f, maxValue)
-    val fraction = clampedValue / maxValue
+    val safeMax = maxValue.coerceAtLeast(1f)
+    val clampedValue = value.coerceIn(0f, safeMax)
+    val fraction = clampedValue / safeMax
+    val effectiveWarningThreshold = if (maxValue > 0f) warningThreshold else safeMax * 0.85f
 
     // Arco de 240 grados: inicia en 150° y termina en 390° (30°)
     val startAngle = 150f
@@ -63,23 +66,27 @@ fun CircularGauge(
                 style = Stroke(width = strokeW, cap = StrokeCap.Round)
             )
 
-            // 2. Arco activo con gradiente de color según rango
-            val activeColor = if (clampedValue >= warningThreshold) warningColor else primaryColor
-            drawArc(
-                brush = Brush.sweepGradient(
-                    0.0f to primaryColor,
-                    0.7f to primaryColor,
-                    0.9f to warningColor,
-                    1.0f to warningColor,
-                    center = center
-                ),
-                startAngle = startAngle,
-                sweepAngle = currentSweep,
-                useCenter = false,
-                topLeft = Offset(center.x - radius, center.y - radius),
-                size = Size(radius * 2f, radius * 2f),
-                style = Stroke(width = strokeW, cap = StrokeCap.Round)
-            )
+            // 2. Arco activo con gradiente de color alineado con el arco 150°..390°
+            val activeColor = if (clampedValue >= effectiveWarningThreshold) warningColor else primaryColor
+            rotate(degrees = startAngle, pivot = center) {
+                drawArc(
+                    brush = Brush.sweepGradient(
+                        0.0f to primaryColor,
+                        0.46f to primaryColor,
+                        0.60f to warningColor,
+                        0.80f to warningColor,
+                        0.92f to primaryColor,
+                        1.0f to primaryColor,
+                        center = center
+                    ),
+                    startAngle = 0f,
+                    sweepAngle = currentSweep,
+                    useCenter = false,
+                    topLeft = Offset(center.x - radius, center.y - radius),
+                    size = Size(radius * 2f, radius * 2f),
+                    style = Stroke(width = strokeW, cap = StrokeCap.Round)
+                )
+            }
 
             // 3. Marcas de graduación radiales (Ticks calibrados cada 10%)
             val numTicks = 11

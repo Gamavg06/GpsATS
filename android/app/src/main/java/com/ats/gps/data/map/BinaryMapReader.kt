@@ -105,10 +105,16 @@ object BinaryMapReader {
         var count = 0
         var shift = 0
         while (shift != 35) {
+            if (!buffer.hasRemaining()) {
+                throw IllegalArgumentException("Fin inesperado del bufer leyendo longitud de cadena")
+            }
             val b = buffer.get().toInt()
             count = count or ((b and 0x7F) shl shift)
             shift += 7
             if ((b and 0x80) == 0) break
+        }
+        if (count < 0 || count > buffer.remaining()) {
+            throw IllegalArgumentException("Longitud de cadena invalida en mapa: $count")
         }
         val strBytes = ByteArray(count)
         buffer.get(strBytes)

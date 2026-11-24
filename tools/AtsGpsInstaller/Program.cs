@@ -10,6 +10,14 @@ using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
+[assembly: AssemblyTitle("Instalador SGNIA - ATS Telemetria GPS")]
+[assembly: AssemblyProduct("ATS Telemetria GPS")]
+[assembly: AssemblyCompany("SGNIA")]
+[assembly: AssemblyCopyright("Copyright (c) 2026 Gamaliel Velazquez Galicia (SGNIA)")]
+[assembly: AssemblyDescription("Instalador oficial autogestionado para SGNIA - ATS Telemetry & GPS")]
+[assembly: AssemblyVersion("1.4.2.0")]
+[assembly: AssemblyFileVersion("1.4.2.0")]
+
 namespace AtsGpsInstaller
 {
     static class Program
@@ -404,11 +412,19 @@ namespace AtsGpsInstaller
             worker.WorkerReportsProgress = true;
             worker.DoWork += delegate(object s, DoWorkEventArgs args)
             {
+                List<string> warnings = new List<string>();
+
                 // 1. Extraer payload.zip
                 worker.ReportProgress(10, "Extrayendo archivos de telemetria...");
                 if (!Directory.Exists(targetDir))
                 {
                     Directory.CreateDirectory(targetDir);
+                }
+
+                string fullTargetDir = Path.GetFullPath(targetDir);
+                if (!fullTargetDir.EndsWith(Path.DirectorySeparatorChar.ToString()))
+                {
+                    fullTargetDir += Path.DirectorySeparatorChar;
                 }
 
                 using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("payload.zip"))
@@ -420,13 +436,17 @@ namespace AtsGpsInstaller
 
                     using (ZipArchive archive = new ZipArchive(stream, ZipArchiveMode.Read))
                     {
-                        int total = archive.Entries.Count;
+                        int total = Math.Max(1, archive.Entries.Count);
                         int count = 0;
                         foreach (ZipArchiveEntry entry in archive.Entries)
                         {
                             count++;
                             int percent = 10 + (count * 60 / total);
-                            string destPath = Path.Combine(targetDir, entry.FullName.Replace('/', '\\'));
+                            string destPath = Path.GetFullPath(Path.Combine(fullTargetDir, entry.FullName.Replace('/', '\\')));
+                            if (!destPath.StartsWith(fullTargetDir, StringComparison.OrdinalIgnoreCase))
+                            {
+                                throw new InvalidDataException("Entrada ZIP invalida fuera del directorio de destino: " + entry.FullName);
+                            }
 
                             if (string.IsNullOrEmpty(entry.Name))
                             {
@@ -458,7 +478,14 @@ namespace AtsGpsInstaller
                             File.Copy(srcPlugin, dstPlugin, true);
                         }
                     }
-                    catch { }
+                    catch (UnauthorizedAccessException)
+                    {
+                        warnings.Add("No se pudo copiar scs-telemetry.dll en la carpeta del juego porque requiere permisos de Administrador.");
+                    }
+                    catch (Exception ex)
+                    {
+                        warnings.Add("No se pudo copiar scs-telemetry.dll en la carpeta del juego (puede requerir permisos de Administrador): " + ex.Message);
+                    }
                 }
 
                 // 3. Crear Acceso Directo Escritorio
@@ -495,19 +522,56 @@ namespace AtsGpsInstaller
                     worker.ReportProgress(95, "Configurando regla en Firewall de Windows...");
                     try
                     {
-                        ProcessStartInfo psi = new ProcessStartInfo("netsh", "advfirewall firewall add rule name=\"ATS GPS Server\" dir=in action=allow protocol=TCP localport=35500 profile=private")
+                        bool ruleExists = false;
+                        ProcessStartInfo showPsi = new ProcessStartInfo("netsh", "advfirewall firewall show rule name=\"ATS GPS Server\"")
                         {
                             CreateNoWindow = true,
-                            UseShellExecute = false
+                            UseShellExecute = false,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true
                         };
-                        using (Process p = Process.Start(psi))
+                        using (Process showProc = Process.Start(showPsi))
                         {
-                            p.WaitForExit(3000);
+                            if (showProc != null)
+                            {
+                                showProc.WaitForExit(3000);
+                                ruleExists = (showProc.ExitCode == 0);
+                            }
+                        }
+
+                        if (!ruleExists)
+                        {
+                            ProcessStartInfo psi = new ProcessStartInfo("netsh", "advfirewall firewall add rule name=\"ATS GPS Server\" dir=in action=allow protocol=TCP localport=35500 profile=private remoteip=LocalSubnet")
+                            {
+                                CreateNoWindow = true,
+                                UseShellExecute = false,
+                                RedirectStandardOutput = true,
+                                RedirectStandardError = true
+                            };
+                            using (Process p = Process.Start(psi))
+                            {
+                                if (p != null)
+                                {
+                                    p.WaitForExit(3000);
+                                    if (p.ExitCode != 0)
+                                    {
+                                        warnings.Add("No se pudo crear la regla de Firewall (TCP 35500); ejecuta el instalador como Administrador o habilitala manualmente.");
+                                    }
+                                }
+                                else
+                                {
+                                    warnings.Add("No se pudo iniciar netsh para configurar el Firewall de Windows.");
+                                }
+                            }
                         }
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        warnings.Add("Error configurando regla de Firewall (puede requerir permisos de Administrador): " + ex.Message);
+                    }
                 }
 
+                args.Result = warnings;
                 worker.ReportProgress(100, "Instalacion finalizada.");
             };
 
@@ -532,6 +596,16 @@ namespace AtsGpsInstaller
                 {
                     panelProgress.Visible = false;
                     panelDone.Visible = true;
+
+                    List<string> warnings = args.Result as List<string>;
+                    if (warnings != null && warnings.Count > 0)
+                    {
+                        MessageBox.Show(
+                            "La instalacion finalizo con los siguientes avisos:\n\n- " + string.Join("\n- ", warnings),
+                            "Avisos de configuracion",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                    }
                 }
             };
 

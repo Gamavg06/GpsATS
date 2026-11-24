@@ -135,8 +135,8 @@ fun JunctionView(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("⬆ Mantén carril", color = Color(0xFF94A3B8), fontSize = 11.sp)
-            Text("Salida recomendada ↗", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 11.sp)
+            Text("Mantén carril", color = Color(0xFF94A3B8), fontSize = 11.sp)
+            Text("Salida recomendada", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold, fontSize = 11.sp)
         }
     }
 }

@@ -23,7 +23,7 @@ namespace AtsGpsServer.Map
 
         public MapExtractor(string baseMapScsPath, string baseScsPath)
         {
-            _atsDir = Path.GetDirectoryName(baseMapScsPath) ?? @"C:\Program Files (x86)\Steam\steamapps\common\American Truck Simulator";
+            _atsDir = Path.GetDirectoryName(baseMapScsPath) ?? AtsPathDetector.DetectAtsDirectory();
         }
 
         public List<string> GetMapScsFiles()
@@ -56,10 +56,16 @@ namespace AtsGpsServer.Map
             if (_prefabDescMap.Count > 0) return;
 
             string defScsPath = Path.Combine(_atsDir, "def.scs");
+            IHashFsReader? localDefReader = null;
             var readers = new List<IHashFsReader>();
             if (File.Exists(defScsPath))
             {
-                try { readers.Add(HashFsReader.Open(defScsPath)); } catch { }
+                try
+                {
+                    localDefReader = HashFsReader.Open(defScsPath);
+                    readers.Add(localDefReader);
+                }
+                catch { }
             }
             readers.AddRange(dlcReaders);
 
@@ -67,38 +73,45 @@ namespace AtsGpsServer.Map
                 @"prefab_model\s*:\s*prefab\.([a-zA-Z0-9_]+)\s*\{[^}]*prefab_desc\s*:\s*""([^""]+)""",
                 System.Text.RegularExpressions.RegexOptions.Singleline);
 
-            foreach (var reader in readers)
+            try
             {
-                try
+                foreach (var reader in readers)
                 {
-                    if (reader.DirectoryExists("/def/world"))
+                    try
                     {
-                        var files = reader.GetFiles("/def/world");
-                        foreach (var f in files)
+                        if (reader.DirectoryExists("/def/world"))
                         {
-                            var fname = Path.GetFileName(f);
-                            if (fname.StartsWith("prefab", StringComparison.OrdinalIgnoreCase) && fname.EndsWith(".sii", StringComparison.OrdinalIgnoreCase))
+                            var files = reader.GetFiles("/def/world");
+                            foreach (var f in files)
                             {
-                                var bytes = reader.Extract(f)[0];
-                                string content = System.Text.Encoding.UTF8.GetString(bytes);
-                                foreach (System.Text.RegularExpressions.Match m in regex.Matches(content))
+                                var fname = Path.GetFileName(f);
+                                if (fname.StartsWith("prefab", StringComparison.OrdinalIgnoreCase) && fname.EndsWith(".sii", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    _prefabDescMap[m.Groups[1].Value] = m.Groups[2].Value;
+                                    var bytes = reader.Extract(f)[0];
+                                    string content = System.Text.Encoding.UTF8.GetString(bytes);
+                                    foreach (System.Text.RegularExpressions.Match m in regex.Matches(content))
+                                    {
+                                        _prefabDescMap[m.Groups[1].Value] = m.Groups[2].Value;
+                                    }
                                 }
                             }
                         }
-                    }
-                    else if (reader.EntryExists("/def/world/prefab.sii") != EntryType.NotFound)
-                    {
-                        var bytes = reader.Extract("/def/world/prefab.sii")[0];
-                        string content = System.Text.Encoding.UTF8.GetString(bytes);
-                        foreach (System.Text.RegularExpressions.Match m in regex.Matches(content))
+                        else if (reader.EntryExists("/def/world/prefab.sii") != EntryType.NotFound)
                         {
-                            _prefabDescMap[m.Groups[1].Value] = m.Groups[2].Value;
+                            var bytes = reader.Extract("/def/world/prefab.sii")[0];
+                            string content = System.Text.Encoding.UTF8.GetString(bytes);
+                            foreach (System.Text.RegularExpressions.Match m in regex.Matches(content))
+                            {
+                                _prefabDescMap[m.Groups[1].Value] = m.Groups[2].Value;
+                            }
                         }
                     }
+                    catch { }
                 }
-                catch { }
+            }
+            finally
+            {
+                localDefReader?.Dispose();
             }
         }
 
@@ -285,10 +298,10 @@ namespace AtsGpsServer.Map
                         if (!ppdPath.EndsWith(".ppd")) ppdPath += ".ppd";
 
                         var desc = GetOrLoadPpd(ppdPath, compositePpdFs);
-                        if (desc == null || desc.NavCurves.Count == 0) continue;
+                        if (desc == null || desc.NavCurves.Count == 0 || desc.Nodes.Count == 0) continue;
 
                         int origIdx = (int)prefab.Origin;
-                        if (origIdx >= desc.Nodes.Count || origIdx >= prefab.Nodes.Count) origIdx = 0;
+                        if (origIdx < 0 || origIdx >= desc.Nodes.Count || origIdx >= prefab.Nodes.Count) origIdx = 0;
                         var ppdOriginPos = desc.Nodes[origIdx].Position;
                         var worldOrigNode = prefab.Nodes[origIdx];
                         if (worldOrigNode == null) continue;
@@ -398,6 +411,7 @@ namespace AtsGpsServer.Map
                     {
                         if (city.Node == null) continue;
                         string cityName = city.Name.ToString();
+                        if (string.IsNullOrEmpty(cityName)) continue;
                         float cx = city.Node.Position.X;
                         float cz = city.Node.Position.Z;
 
@@ -420,6 +434,9 @@ namespace AtsGpsServer.Map
                         if (comp.Node == null) continue;
                         string compName = ResolveCompanyName(comp.CompanyName.ToString());
                         string cityName = comp.CityName.ToString();
+                        string formattedCityName = string.IsNullOrEmpty(cityName)
+                            ? string.Empty
+                            : char.ToUpper(cityName[0]) + cityName[1..];
                         float cx = comp.Node.Position.X;
                         float cz = comp.Node.Position.Z;
 
@@ -428,7 +445,7 @@ namespace AtsGpsServer.Map
                             CompanyToken = comp.CompanyName.Value,
                             CityToken = comp.CityName.Value,
                             Name = compName,
-                            CityName = char.ToUpper(cityName[0]) + cityName[1..],
+                            CityName = formattedCityName,
                             X = cx,
                             Z = cz,
                             NearestNodeIndex = 0
@@ -615,7 +632,7 @@ namespace AtsGpsServer.Map
             double bestDistSq = double.MaxValue;
             double maxDistSq = (double)maxSearchRadiusMeters * maxSearchRadiusMeters;
 
-            uint bestSccNode = 0;
+            uint? bestSccNode = null;
             double bestSccDistSq = double.MaxValue;
 
             for (int i = 0; i < graph.Nodes.Count; i++)
@@ -641,9 +658,9 @@ namespace AtsGpsServer.Map
                 }
             }
 
-            if (bestSccNode != 0)
+            if (bestSccNode.HasValue)
             {
-                return bestSccNode;
+                return bestSccNode.Value;
             }
 
             return bestNode;

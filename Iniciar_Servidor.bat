@@ -6,26 +6,10 @@ echo           ATS GPS - SERVIDOR COMPANION (.NET 10)
 echo ================================================================================
 echo.
 
-REM Establecer directorio de trabajo
+REM Establecer directorio de trabajo relativo al script
 cd /d "%~dp0"
-if not exist "server\AtsGpsServer.csproj" (
-    if exist "C:\Telemetriagps\server\AtsGpsServer.csproj" (
-        cd /d "C:\Telemetriagps"
-    )
-)
 
-REM 1. Verificacion de presencia de .NET SDK / Runtime
-where dotnet >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] No se encontro el comando 'dotnet' en el PATH del sistema.
-    echo         Por favor, instala .NET 10 Runtime o SDK desde:
-    echo         https://dotnet.microsoft.com/download/dotnet/10.0
-    echo.
-    pause
-    exit /b 1
-)
-
-REM 2. Deteccion de la instalacion de ATS
+REM 1. Deteccion de la instalacion de ATS
 set "ATS_DIR="
 if exist "server\detect-ats.ps1" (
     for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -File "server\detect-ats.ps1"`) do (
@@ -40,7 +24,7 @@ echo [DETECCION] Carpeta del juego ATS:
 echo             "%ATS_DIR%"
 echo.
 
-REM 3. Verificacion del plugin SCS Telemetry
+REM 2. Verificacion del plugin SCS Telemetry
 set "ATS_PLUGIN=%ATS_DIR%\bin\win_x64\plugins\scs-telemetry.dll"
 if not exist "%ATS_PLUGIN%" (
     echo [AVISO] No se encontro 'scs-telemetry.dll' en la carpeta de ATS:
@@ -52,18 +36,43 @@ if not exist "%ATS_PLUGIN%" (
     echo [OK] Plugin scs-telemetry.dll detectado en la carpeta de 64 bits de ATS.
 )
 
-REM 4. Compilacion y publicacion del servidor
-echo [COMPILACION] Verificando compilacion del servidor...
-dotnet publish -c Release -o "server\publish" "server\AtsGpsServer.csproj"
-if errorlevel 1 (
-    echo [ERROR] No se pudo compilar el servidor.
-    pause
-    exit /b 1
-)
-echo [OK] Servidor actualizado en server\publish.
-echo.
+REM 3. Preparacion del binario del servidor (priorizar AtsGpsServer.exe compilado)
+set "SERVER_EXE=server\publish\AtsGpsServer.exe"
+set "USE_DOTNET_RUN=0"
 
-REM 5. Configuracion automatica de cable USB (ADB reverse)
+if exist "%SERVER_EXE%" (
+    echo [OK] Binario precompilado detectado: "%SERVER_EXE%"
+    echo.
+) else (
+    echo [INFO] No se encontro "%SERVER_EXE%". Verificando .NET SDK/CLI para compilar...
+    where dotnet >nul 2>&1
+    if %ERRORLEVEL% NEQ 0 (
+        echo [ERROR] No se encontro "%SERVER_EXE%" ni el comando 'dotnet' en el PATH del sistema.
+        echo         Instala .NET 10 Runtime/SDK o ejecuta desde un paquete compilado:
+        echo         https://dotnet.microsoft.com/download/dotnet/10.0
+        echo.
+        pause
+        exit /b 1
+    )
+
+    if not exist "server\AtsGpsServer.csproj" (
+        echo [ERROR] No se encontro 'server\AtsGpsServer.csproj' ni '%SERVER_EXE%'.
+        pause
+        exit /b 1
+    )
+
+    echo [COMPILACION] Publicando servidor en server\publish...
+    dotnet publish -c Release -o "server\publish" "server\AtsGpsServer.csproj"
+    if errorlevel 1 (
+        echo [AVISO] Fallo 'dotnet publish'. Se intentara ejecutar con 'dotnet run'.
+        set "USE_DOTNET_RUN=1"
+    ) else (
+        echo [OK] Servidor compilado en server\publish.
+    )
+    echo.
+)
+
+REM 4. Configuracion automatica de cable USB (ADB reverse)
 set "ADB_EXE=%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe"
 if not exist "%ADB_EXE%" (
     where adb >nul 2>&1
@@ -93,7 +102,11 @@ if not exist "server\data\map_ats.bin" (
     echo [AVISO] No se encontro 'server\data\map_ats.bin'.
     echo         Iniciando extraccion local on-demand...
     echo.
-    dotnet "server\publish\AtsGpsServer.dll" --build-map
+    if "%USE_DOTNET_RUN%"=="0" if exist "%SERVER_EXE%" (
+        "%SERVER_EXE%" --build-map
+    ) else (
+        dotnet run --project "server\AtsGpsServer.csproj" -- --build-map
+    )
     if errorlevel 1 (
         echo.
         echo [ERROR] No se pudo generar el mapa.
@@ -126,7 +139,11 @@ REM 7. Ejecucion del Servidor
 echo [INICIO] Ejecutando servidor companion en puerto 35500...
 echo Presiona Ctrl+C en esta ventana para detener el servidor.
 echo.
-dotnet "server\publish\AtsGpsServer.dll"
+if "%USE_DOTNET_RUN%"=="0" if exist "%SERVER_EXE%" (
+    "%SERVER_EXE%"
+) else (
+    dotnet run --project "server\AtsGpsServer.csproj"
+)
 
 echo.
 echo ================================================================================

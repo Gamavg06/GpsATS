@@ -1,23 +1,42 @@
-# Registro de Licencias y Fuentes Externas (LICENSES.md)
+# Autoria y Registro de Licencias (LICENSES.md)
 
-Este proyecto es software libre y de código abierto desarrollado bajo principios clean-room. Para garantizar la conformidad legal y la transparencia, todas las dependencias, herramientas y bibliotecas externas se detallan a continuación con su fuente, versión y licencia aplicable.
+**Copyright (c) 2026 Gamaliel Velazquez Galicia (SGNIA).**
 
----
-
-## 1. Esquema de Licenciamiento del Proyecto
-
-* **Servidor PC (`server/`):** Licenciado bajo **GNU General Public License v2.0 (GPL-2.0)** debido a que referencia y enlaza dinámicamente las bibliotecas de `TruckLib` (GPL-2.0) para la lectura de paquetes HashFS y mapas `.scs`. (Ver archivo [`LICENSE`](LICENSE)).
-* **Aplicación Móvil (`android/`):** Licenciada bajo **MIT License**. Es un cliente visual independiente que no contiene código ni binarios de TruckLib. (Ver archivo [`android/LICENSE`](android/LICENSE)).
+Todo el codigo fuente original desarrollado para la plataforma **SGNIA - ATS Telemetry & GPS** (`server/`, `android/`, `tools/`, `tests/`, scripts de automatizacion y documentacion) es obra intelectual original disenada bajo arquitectura clean-room por **Gamaliel Velazquez Galicia (SGNIA)** y publicada bajo el modelo dual de codigo abierto descrito a continuacion. Los avisos de copyright y licencias de todas las bibliotecas y SDKs de terceros se preservan integramente en este registro.
 
 ---
 
-## 2. SDK Oficial de SCS Software (SCS Telemetry SDK)
+## 1. Matriz Resumen de Licenciamiento
 
-* **Ubicación en el repositorio:** `third_party/scs_sdk/`
-* **Fuente oficial:** https://modding.scssoft.com/wiki/Documentation/Engine/SDK/Telemetry
-* **Archivos incluidos:** `scs-telemetry-common.hpp`, `scs_sdk_readme.txt`, `scs_sdk_license.txt`
-* **Licencia:** MIT License
-* **Texto de la licencia:**
+| Componente / Dependencia | Origen / Autor | Version | Licencia Aplicable | Alcance en el Proyecto |
+| :--- | :--- | :--- | :--- | :--- |
+| **SGNIA - ATS Telemetry & GPS Server** (`server/`, `tests/`) | Gamaliel Velazquez Galicia (SGNIA) | `1.4.2` | **GNU GPL-2.0** | Enlaza `TruckLib` (GPL-2.0) en PC ([LICENSE](LICENSE)) |
+| **SGNIA - ATS Telemetry & GPS Android App** (`android/`) | Gamaliel Velazquez Galicia (SGNIA) | `1.4.2 (Build 17)` | **MIT License** | Cliente movil independiente sin `TruckLib` ([android/LICENSE](android/LICENSE)) |
+| **SGNIA - ATS Telemetry & GPS Launcher** (`tools/AtsGpsLauncher/`) | Gamaliel Velazquez Galicia (SGNIA) | `1.4.2` | **MIT License** | Lanzador grafico WPF en PC |
+| **SGNIA - ATS Telemetry & GPS Installer** (`tools/AtsGpsInstaller/`) | Gamaliel Velazquez Galicia (SGNIA) | `1.4.2` | **GNU GPL-2.0 / MIT** | Empaqueta y despliega servidor (GPL-2.0) y cliente Android (MIT) |
+| **SCS Telemetry SDK** (`third_party/scs_sdk/`) | SCS Software | `1.14+` | **MIT License** | Headers de referencia de memoria compartida |
+| **scs-sdk-plugin** (`scs-telemetry.dll`) | RenCloud | `1.12.1` | **MIT License** | Plugin nativo para lectura MMF en el simulador |
+| **TruckLib / HashFS / Models** | sk-zk | `0.5.2` / `0.2.7` / `0.4.3` | **GNU GPL-2.0** | Lectura de archivos `.scs` y extraccion cartografica (solo PC) |
+| **OkHttp & Okio** | Square, Inc. | `4.12.0` / `3.6.0+` | **Apache License 2.0** | Transporte HTTP y WebSocket en Android |
+| **Kotlin & Coroutines** | JetBrains s.r.o. | `2.1.0` / `1.8.0+` | **Apache License 2.0** | Lenguaje y concurrencia en Android |
+| **AndroidX & Jetpack Compose** | The Android Open Source Project (AOSP) | Compose BOM | **Apache License 2.0** | Interfaz declarativa y renderizado Canvas en Android |
+
+---
+
+## 2. Esquema Dual de Licencias del Codigo Propio
+
+- **Servidor PC y Suite de Pruebas (`server/`, `tests/`):** Licenciados bajo **GNU General Public License v2.0 (GPL-2.0)** debido a que referencian las bibliotecas `TruckLib` (`GPL-2.0`) para la lectura de paquetes HashFS y mapas `.scs`. Ver archivo [`LICENSE`](LICENSE).
+- **Aplicacion Movil Android y Lanzador WPF (`android/`, `tools/AtsGpsLauncher/`):** Licenciados bajo **MIT License**. Son componentes independientes que se comunican mediante HTTP/WebSocket y no contienen ni enlazan codigo ni binarios de `TruckLib`. Ver archivo [`android/LICENSE`](android/LICENSE).
+
+---
+
+## 3. SDK Oficial de SCS Software (SCS Telemetry SDK)
+
+- **Ubicacion en el repositorio:** `third_party/scs_sdk/`
+- **Fuente oficial:** https://modding.scssoft.com/wiki/Documentation/Engine/SDK/Telemetry
+- **Archivos incluidos:** `NOTICE.txt`, `scs-telemetry-common.hpp`, `scs_sdk_readme.txt`, `scs_sdk_license.txt`
+- **Licencia:** MIT License
+- **Texto de la licencia:**
 ```text
 SCS SDK
 Copyright (C) 2016 SCS Software
@@ -43,49 +62,49 @@ SOFTWARE.
 
 ---
 
-## 3. Plugin de Memoria Compartida para SCS Telemetry (scs-sdk-plugin)
+## 4. Plugin de Memoria Compartida para SCS Telemetry (`scs-sdk-plugin`)
 
-* **Repositorio oficial:** https://github.com/RenCloud/scs-sdk-plugin
-* **Versión:** 1.12.1
-* **Licencia:** MIT License
-* **Uso:** Genera la DLL `scs-telemetry.dll` que se instala en el directorio de plugins de American Truck Simulator (`bin/win_x64/plugins/`) para escribir en la memoria compartida `Local\SCSTelemetry`.
+- **Repositorio oficial:** https://github.com/RenCloud/scs-sdk-plugin
+- **Version:** 1.12.1
+- **Licencia:** MIT License
+- **Uso:** Provee la DLL `scs-telemetry.dll` instalada en el directorio de plugins de American Truck Simulator (`bin/win_x64/plugins/`) para publicar los datos del simulador en la memoria compartida `Local\SCSTelemetry`.
 
 ---
 
-## 4. Biblioteca de Lectura de Formato SCS y Mapas (TruckLib)
+## 5. Biblioteca de Lectura de Formato SCS y Mapas (`TruckLib`)
 
-* **Repositorio oficial:** https://github.com/sk-zk/TruckLib
-* **Paquetes NuGet y versiones utilizadas en el servidor:**
+- **Repositorio oficial:** https://github.com/sk-zk/TruckLib
+- **Paquetes NuGet utilizados en `server/`:**
   - `TruckLib` v0.5.2
   - `TruckLib.HashFs` v0.2.7
   - `TruckLib.Models` v0.4.3
-* **Licencia:** GNU General Public License v2.0 (GPL-2.0)
-* **Impacto legal en el proyecto:** Al estar `TruckLib` bajo la licencia GPL-2.0, el ensamblado del servidor `AtsGpsServer` que lo referencia se distribuye en su totalidad bajo los términos de la **GNU GPL v2.0**. No se incluye ni se distribuye dentro del cliente Android.
+- **Licencia:** GNU General Public License v2.0 (GPL-2.0)
+- **Impacto legal:** Al estar `TruckLib` licenciada bajo GPL-2.0, el ensamblado del servidor `AtsGpsServer` que la referencia se distribuye bajo **GNU GPL-2.0**. No se incluye ni se distribuye dentro del cliente Android ni en `AtsGpsLauncher`.
 
 ---
 
-## 5. Bibliotecas del Cliente Android
+## 6. Bibliotecas del Cliente Android
 
-### 5.1 OkHttp
-* **Repositorio oficial:** https://github.com/square/okhttp
-* **Versión:** 4.12.0
-* **Licencia:** Apache License 2.0
-* **Atribución:** Copyright 2019 Square, Inc.
+### 6.1 OkHttp
+- **Repositorio oficial:** https://github.com/square/okhttp
+- **Version:** 4.12.0
+- **Licencia:** Apache License 2.0
+- **Atribucion:** Copyright 2019 Square, Inc.
 
-### 5.2 Okio
-* **Repositorio oficial:** https://github.com/square/okio
-* **Versión:** 3.6.0+ (dependencia transitiva de OkHttp)
-* **Licencia:** Apache License 2.0
-* **Atribución:** Copyright 2013 Square, Inc.
+### 6.2 Okio
+- **Repositorio oficial:** https://github.com/square/okio
+- **Version:** 3.6.0+ (dependencia transitiva de OkHttp)
+- **Licencia:** Apache License 2.0
+- **Atribucion:** Copyright 2013 Square, Inc.
 
-### 5.3 Kotlin Standard Library & Coroutines
-* **Repositorio oficial:** https://github.com/JetBrains/kotlin y https://github.com/Kotlin/kotlinx.coroutines
-* **Versión:** Kotlin 2.1.0 / Coroutines 1.8.0+
-* **Licencia:** Apache License 2.0
-* **Atribución:** Copyright 2010-2024 JetBrains s.r.o.
+### 6.3 Kotlin Standard Library & Coroutines
+- **Repositorio oficial:** https://github.com/JetBrains/kotlin y https://github.com/Kotlin/kotlinx.coroutines
+- **Version:** Kotlin 2.1.0 / Coroutines 1.8.0+
+- **Licencia:** Apache License 2.0
+- **Atribucion:** Copyright 2010-2024 JetBrains s.r.o.
 
-### 5.4 AndroidX & Google Jetpack Compose
-* **Fuente oficial:** Android Open Source Project (AOSP)
-* **Componentes:** `androidx.core`, `androidx.lifecycle`, `androidx.activity`, `androidx.compose.ui`, `androidx.compose.material3`
-* **Licencia:** Apache License 2.0
-* **Atribución:** Copyright (C) The Android Open Source Project.
+### 6.4 AndroidX & Google Jetpack Compose
+- **Fuente oficial:** Android Open Source Project (AOSP)
+- **Componentes:** `androidx.core`, `androidx.lifecycle`, `androidx.activity`, `androidx.compose.ui`, `androidx.compose.material3`
+- **Licencia:** Apache License 2.0
+- **Atribucion:** Copyright (C) The Android Open Source Project.

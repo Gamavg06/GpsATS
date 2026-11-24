@@ -1,32 +1,46 @@
 package com.ats.gps.data.network
 
+import android.os.Handler
+import android.os.Looper
 import com.ats.gps.data.map.BinaryMapReader
 import com.ats.gps.data.model.MapGraph
 import com.ats.gps.data.model.TelemetryData
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 class AtsNetworkClient {
 
     companion object {
         fun isAllowedPrivateAddress(host: String): Boolean {
-            val trimmed = host.trim()
+            val trimmed = host.trim().removePrefix("[").removeSuffix("]")
+            if (trimmed.isEmpty()) return false
             if (trimmed.equals("localhost", ignoreCase = true)) return true
 
             return try {
                 val addr = java.net.InetAddress.getByName(trimmed)
                 addr.isLoopbackAddress || addr.isSiteLocalAddress || addr.isLinkLocalAddress
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 false
             }
+        }
+
+        private fun formatHostForUrl(host: String): String {
+            val trimmed = host.trim().removePrefix("[").removeSuffix("]")
+            return if (trimmed.contains(':')) "[$trimmed]" else trimmed
         }
     }
 
@@ -35,15 +49,32 @@ class AtsNetworkClient {
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val wsLock = Any()
+
+    @Volatile
     private var activeWebSocket: WebSocket? = null
-    private var reconnectJob: kotlinx.coroutines.Job? = null
-    private val clientScope = kotlinx.coroutines.CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
-    private var isUserDisconnected = false
-    private var retryAttempt = 0
+
+    @Volatile
+    private var reconnectJob: Job? = null
+
+    private val clientScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val isUserDisconnected = AtomicBoolean(false)
+    private val retryAttempt = AtomicInteger(0)
+
+    private fun postToMain(block: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            block()
+        } else {
+            mainHandler.post(block)
+        }
+    }
 
     suspend fun checkServerStatus(host: String, port: Int): Boolean = withContext(Dispatchers.IO) {
+        if (!isAllowedPrivateAddress(host)) return@withContext false
         try {
-            val url = "http://$host:$port/api/status"
+            val formattedHost = formatHostForUrl(host)
+            val url = "http://$formattedHost:$port/api/status"
             val request = Request.Builder().url(url).get().build()
             val probeClient = client.newBuilder()
                 .connectTimeout(java.time.Duration.ofMillis(700))
@@ -64,7 +95,8 @@ class AtsNetworkClient {
             )
         }
         try {
-            val url = "http://$host:$port/api/pair"
+            val formattedHost = formatHostForUrl(host)
+            val url = "http://$formattedHost:$port/api/pair"
             val json = JSONObject().put("pin", pin).toString()
             val requestBody = json.toRequestBody("application/json".toMediaType())
 
@@ -73,16 +105,17 @@ class AtsNetworkClient {
                 .post(requestBody)
                 .build()
 
-            val response = client.newCall(request).execute()
-            val responseBody = response.body?.string() ?: ""
+            client.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string() ?: ""
 
-            if (response.isSuccessful) {
-                val jsonResp = JSONObject(responseBody)
-                val token = jsonResp.getString("token")
-                Result.success(token)
-            } else {
-                val err = if (responseBody.isNotEmpty()) JSONObject(responseBody).optString("error", "Error de autenticación") else "HTTP ${response.code}"
-                Result.failure(IOException(err))
+                if (response.isSuccessful) {
+                    val jsonResp = JSONObject(responseBody)
+                    val token = jsonResp.getString("token")
+                    Result.success(token)
+                } else {
+                    val err = if (responseBody.isNotEmpty()) JSONObject(responseBody).optString("error", "Error de autenticación") else "HTTP ${response.code}"
+                    Result.failure(IOException(err))
+                }
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -94,7 +127,8 @@ class AtsNetworkClient {
             return@withContext Result.failure(SecurityException("Dirección de servidor no permitida"))
         }
         try {
-            val url = "http://$host:$port/api/control/key"
+            val formattedHost = formatHostForUrl(host)
+            val url = "http://$formattedHost:$port/api/control/key"
             val json = JSONObject().put("action", action).toString()
             val requestBody = json.toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
@@ -121,16 +155,17 @@ class AtsNetworkClient {
             )
         }
         try {
-            val url = "http://$host:$port/api/map/download"
+            val formattedHost = formatHostForUrl(host)
+            val url = "http://$formattedHost:$port/api/map/download"
             val request = Request.Builder().url(url).build()
-            val response = client.newCall(request).execute()
-
-            if (response.isSuccessful) {
-                val stream = response.body?.byteStream() ?: throw IOException("Cuerpo de respuesta vacío.")
-                val graph = BinaryMapReader.read(stream)
-                Result.success(graph)
-            } else {
-                Result.failure(IOException("No se pudo descargar el mapa. Código: ${response.code}"))
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val stream = response.body?.byteStream() ?: throw IOException("Cuerpo de respuesta vacío.")
+                    val graph = BinaryMapReader.read(stream)
+                    Result.success(graph)
+                } else {
+                    Result.failure(IOException("No se pudo descargar el mapa. Código: ${response.code}"))
+                }
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -144,44 +179,52 @@ class AtsNetworkClient {
         onTelemetry: (TelemetryData) -> Unit,
         onStatusChanged: (Boolean) -> Unit
     ) {
-        isUserDisconnected = false
+        isUserDisconnected.set(false)
         reconnectJob?.cancel()
-        disconnectWebSocketInternal()
 
         if (!isAllowedPrivateAddress(host)) {
-            onStatusChanged(false)
+            disconnectWebSocketInternal()
+            postToMain { onStatusChanged(false) }
             return
         }
 
-        val url = "ws://$host:$port/ws/telemetry?token=$token"
+        val formattedHost = formatHostForUrl(host)
+        val url = "ws://$formattedHost:$port/ws/telemetry?token=$token"
         val request = Request.Builder().url(url).build()
 
-        activeWebSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                retryAttempt = 0
-                onStatusChanged(true)
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                try {
-                    val json = JSONObject(text)
-                    val telemetry = parseTelemetry(json)
-                    onTelemetry(telemetry)
-                } catch (e: Exception) {
-                    // Ignorar frames con formato erróneo
+        synchronized(wsLock) {
+            disconnectWebSocketInternal()
+            activeWebSocket = client.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    if (webSocket !== activeWebSocket) return
+                    retryAttempt.set(0)
+                    postToMain { onStatusChanged(true) }
                 }
-            }
 
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                onStatusChanged(false)
-                scheduleReconnect(host, port, token, onTelemetry, onStatusChanged)
-            }
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (webSocket !== activeWebSocket) return
+                    try {
+                        val json = JSONObject(text)
+                        val telemetry = parseTelemetry(json)
+                        postToMain { onTelemetry(telemetry) }
+                    } catch (_: Exception) {
+                        // Ignorar frames con formato erróneo
+                    }
+                }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                onStatusChanged(false)
-                scheduleReconnect(host, port, token, onTelemetry, onStatusChanged)
-            }
-        })
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    if (webSocket !== activeWebSocket) return
+                    postToMain { onStatusChanged(false) }
+                    scheduleReconnect(host, port, token, onTelemetry, onStatusChanged)
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    if (webSocket !== activeWebSocket) return
+                    postToMain { onStatusChanged(false) }
+                    scheduleReconnect(host, port, token, onTelemetry, onStatusChanged)
+                }
+            })
+        }
     }
 
     private fun scheduleReconnect(
@@ -191,30 +234,39 @@ class AtsNetworkClient {
         onTelemetry: (TelemetryData) -> Unit,
         onStatusChanged: (Boolean) -> Unit
     ) {
-        if (isUserDisconnected) return
+        if (isUserDisconnected.get()) return
 
         reconnectJob?.cancel()
         reconnectJob = clientScope.launch {
-            retryAttempt++
+            val attempt = retryAttempt.incrementAndGet()
             // Backoff exponencial: 1s, 2s, 4s, 8s, hasta máx 15s
-            val delayMs = (1000L * (1L shl kotlin.math.min(retryAttempt, 4))).coerceAtMost(15000L)
+            val delayMs = (1000L * (1L shl kotlin.math.min(attempt, 4))).coerceAtMost(15000L)
             delay(delayMs)
 
-            if (!isUserDisconnected) {
+            if (!isUserDisconnected.get()) {
                 connectTelemetryWebSocket(host, port, token, onTelemetry, onStatusChanged)
             }
         }
     }
 
     fun disconnectWebSocket() {
-        isUserDisconnected = true
+        isUserDisconnected.set(true)
         reconnectJob?.cancel()
-        disconnectWebSocketInternal()
+        synchronized(wsLock) {
+            disconnectWebSocketInternal()
+        }
+    }
+
+    fun shutdown() {
+        disconnectWebSocket()
+        clientScope.cancel()
+        mainHandler.removeCallbacksAndMessages(null)
     }
 
     private fun disconnectWebSocketInternal() {
-        activeWebSocket?.close(1000, "Cierre voluntario de la app")
+        val old = activeWebSocket
         activeWebSocket = null
+        old?.close(1000, "Cierre voluntario de la app")
     }
 
     private fun parseTelemetry(json: JSONObject): TelemetryData {

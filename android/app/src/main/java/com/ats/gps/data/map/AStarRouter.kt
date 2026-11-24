@@ -45,6 +45,14 @@ object AStarRouter {
         // Búsqueda de respaldo: aristas de autopista o carretera principal cercanas a startNode (< 350m)
         val startPt = graph.nodes[startNode]
         val nearbyStartEdges = graph.getEdgesNear(startPt.x, startPt.z, 350f)
+            .sortedBy { edge ->
+                val node = graph.nodes.getOrNull(edge.fromNodeIndex)
+                if (node != null) {
+                    val dx = node.x - startPt.x
+                    val dz = node.z - startPt.z
+                    dx * dx + dz * dz
+                } else Float.MAX_VALUE
+            }
         for (edge in nearbyStartEdges.take(6)) {
             val cand = edge.fromNodeIndex
             if (cand in 0 until nodeCount && cand != startNode && cand != targetNode) {
@@ -56,6 +64,14 @@ object AStarRouter {
         // Búsqueda de respaldo: aristas cercanas a targetNode (< 350m)
         val targetPt = graph.nodes[targetNode]
         val nearbyTargetEdges = graph.getEdgesNear(targetPt.x, targetPt.z, 350f)
+            .sortedBy { edge ->
+                val node = graph.nodes.getOrNull(edge.toNodeIndex)
+                if (node != null) {
+                    val dx = node.x - targetPt.x
+                    val dz = node.z - targetPt.z
+                    dx * dx + dz * dz
+                } else Float.MAX_VALUE
+            }
         for (edge in nearbyTargetEdges.take(6)) {
             val candTarget = edge.toNodeIndex
             if (candTarget in 0 until nodeCount && candTarget != targetNode && candTarget != startNode) {

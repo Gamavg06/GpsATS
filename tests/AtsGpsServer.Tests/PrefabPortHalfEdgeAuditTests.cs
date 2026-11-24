@@ -96,16 +96,16 @@ namespace AtsGpsServer.Tests
                 _output.WriteLine("\nTransiciones Dirigidas entre Puertos:");
                 foreach (var t in validTransitions.Distinct())
                 {
-                    _output.WriteLine($"  Puerto {t.startNode} ➔ Puerto {t.endNode} : PERMITIDO (Curva de carril física)");
+                    _output.WriteLine($"  Puerto {t.startNode} -> Puerto {t.endNode} : PERMITIDO (Curva de carril física)");
                 }
 
-                _output.WriteLine("\nDemostración de Rechazo de Maniobra C ➔ B ➔ A (U-Turn Prohibido):");
+                _output.WriteLine("\nDemostración de Rechazo de Maniobra C -> B -> A (U-Turn Prohibido):");
                 _output.WriteLine("  1. El vehículo ingresa por el Puerto C (ej. Puerto 2) en su media-arista de entrada (HalfEdge_In).");
                 _output.WriteLine("  2. La curva interna de navegación conduce al vehículo hacia la media-arista de salida (HalfEdge_Out) del Puerto B (ej. Puerto 1).");
                 _output.WriteLine("  3. Para enlazar inmediatamente con la curva hacia el Puerto A (Puerto 0) SIN transitar la carretera adyacente,");
-                _output.WriteLine("     el grafo requeriría una transición directa HalfEdge_Out(B) ➔ HalfEdge_In(B).");
+                _output.WriteLine("     el grafo requeriría una transición directa HalfEdge_Out(B) -> HalfEdge_In(B).");
                 _output.WriteLine("  4. Sin embargo, los puertos de intersección separan formalmente entrada y salida en nodos dirigidos.");
-                _output.WriteLine("  5. Conclusión: La secuencia C ➔ B ➔ A es topológicamente IMPOSIBLE en el grafo dirigido sin antes recorrer la arista de carretera exterior que retorna hacia el carril opuesto de entrada.");
+                _output.WriteLine("  5. Conclusión: La secuencia C -> B -> A es topológicamente IMPOSIBLE en el grafo dirigido sin antes recorrer la arista de carretera exterior que retorna hacia el carril opuesto de entrada.");
             }
 
             foreach (var r in readers) r.Dispose();

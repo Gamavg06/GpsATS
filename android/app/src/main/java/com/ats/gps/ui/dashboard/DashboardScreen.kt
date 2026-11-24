@@ -5,6 +5,7 @@ import android.media.ToneGenerator
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -24,23 +25,44 @@ import com.ats.gps.data.model.MapPoi
 import com.ats.gps.data.model.TelemetryData
 import kotlin.math.roundToInt
 
+private const val DEFAULT_FALLBACK_KM_PER_LITER = 2.4f
+
+private fun estimateRangeKm(telemetry: TelemetryData): Int {
+    return if (telemetry.fuelRangeKm > 0f) {
+        telemetry.fuelRangeKm.roundToInt()
+    } else {
+        (telemetry.fuel * DEFAULT_FALLBACK_KM_PER_LITER).roundToInt()
+    }
+}
+
 @Composable
 fun DashboardScreen(
     telemetry: TelemetryData,
-    onOpenDiagnostics: () -> Unit = {},
     nearestRestStop: Pair<MapPoi, Float>? = null,
     onRouteToRestStop: (MapPoi) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    // Alerta sonora configurable de exceso de velocidad
+    // Alerta sonora configurable de exceso de velocidad con una unica instancia liberada al salir
     var isAudioAlertEnabled by remember { mutableStateOf(true) }
+    val toneGenerator = remember {
+        try {
+            ToneGenerator(AudioManager.STREAM_NOTIFICATION, 65)
+        } catch (_: Exception) {
+            null
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            toneGenerator?.release()
+        }
+    }
+
     val isSpeeding = telemetry.speedLimitKmh > 5f && telemetry.speedKmh > (telemetry.speedLimitKmh + 1.5f)
 
-    LaunchedEffect(isSpeeding, isAudioAlertEnabled) {
+    LaunchedEffect(isSpeeding, isAudioAlertEnabled, telemetry.gamePaused) {
         if (isSpeeding && isAudioAlertEnabled && !telemetry.gamePaused) {
             try {
-                val toneGen = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 65)
-                toneGen.startTone(ToneGenerator.TONE_PROP_BEEP2, 180)
+                toneGenerator?.startTone(ToneGenerator.TONE_PROP_BEEP2, 180)
             } catch (_: Exception) {
             }
         }
@@ -52,7 +74,7 @@ fun DashboardScreen(
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .background(Color(0xFF0C1013)) // Fondo ultra oscuro Figma
+            .background(Color(0xFF0C1013)) // Fondo ultra oscuro HUD
             .padding(top = 88.dp, bottom = 48.dp, start = 16.dp, end = 16.dp)
             .alpha(contentAlpha)
     ) {
@@ -64,7 +86,7 @@ fun DashboardScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 1. Tarjeta Resumen de Entrega y Trabajo (Delivery summary de Figma)
+            // 1. Tarjeta Resumen de Entrega y Trabajo (Delivery summary)
             DeliverySummaryCard(telemetry = telemetry)
 
             if (isLandscape) {
@@ -76,6 +98,8 @@ fun DashboardScreen(
                     // Columna 1: Instrumentación digital y Relojes
                     InstrumentGaugesCard(
                         telemetry = telemetry,
+                        isAudioAlertEnabled = isAudioAlertEnabled,
+                        onToggleAudioAlert = { isAudioAlertEnabled = !isAudioAlertEnabled },
                         modifier = Modifier.weight(1f)
                     )
 
@@ -94,7 +118,11 @@ fun DashboardScreen(
                 }
             } else {
                 // Disposición vertical para pantallas compactas
-                InstrumentGaugesCard(telemetry = telemetry)
+                InstrumentGaugesCard(
+                    telemetry = telemetry,
+                    isAudioAlertEnabled = isAudioAlertEnabled,
+                    onToggleAudioAlert = { isAudioAlertEnabled = !isAudioAlertEnabled }
+                )
                 VehicleWearCard(telemetry = telemetry)
                 FuelAndRangeCard(
                     telemetry = telemetry,
@@ -130,7 +158,7 @@ private fun DeliverySummaryCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Badge superior verde neón de Figma
+            // Badge superior verde neón
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
@@ -225,6 +253,8 @@ private fun DeliverySummaryCard(
 @Composable
 private fun InstrumentGaugesCard(
     telemetry: TelemetryData,
+    isAudioAlertEnabled: Boolean,
+    onToggleAudioAlert: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -235,17 +265,41 @@ private fun InstrumentGaugesCard(
             .padding(18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text(
-            text = "INSTRUMENTACIÓN DIGITAL",
-            color = Color(0xFF94A3B8),
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 1.sp
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "INSTRUMENTACIÓN DIGITAL",
+                color = Color(0xFF94A3B8),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp
+            )
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(if (isAudioAlertEnabled) Color(0x2238BDF8) else Color(0xFF0C1013))
+                    .border(
+                        1.dp,
+                        if (isAudioAlertEnabled) Color(0x5538BDF8) else Color(0xFF222D35),
+                        RoundedCornerShape(6.dp)
+                    )
+                    .clickable(onClick = onToggleAudioAlert)
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    text = if (isAudioAlertEnabled) "ALERTA VEL: ON" else "ALERTA VEL: OFF",
+                    color = if (isAudioAlertEnabled) Color(0xFF38BDF8) else Color(0xFF64748B),
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
 
         val speed = telemetry.speedKmh.coerceAtLeast(0f)
         val rpm = telemetry.engineRpm.coerceAtLeast(0f)
-        val fuel = telemetry.fuel.coerceAtLeast(0f)
 
         // Interpoladores animados continuos para 60-120Hz sin saltos
         val animatedSpeed by animateFloatAsState(
@@ -257,11 +311,6 @@ private fun InstrumentGaugesCard(
             targetValue = rpm,
             animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
             label = "rpmAnim"
-        )
-        val animatedFuel by animateFloatAsState(
-            targetValue = fuel,
-            animationSpec = tween(durationMillis = 350, easing = LinearOutSlowInEasing),
-            label = "fuelAnim"
         )
 
         Row(
@@ -360,7 +409,7 @@ private fun InstrumentGaugesCard(
             val fuelPct = if (telemetry.fuelCapacity > 0f) {
                 ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt()
             } else 0
-            val range = if (telemetry.fuelRangeKm > 0f) telemetry.fuelRangeKm.roundToInt() else (telemetry.fuel * 2.2f).roundToInt()
+            val range = estimateRangeKm(telemetry)
 
             MetricPill("Nivel Combustible", "$fuelPct %")
             MetricPill("Autonomía Est.", "~$range km")
@@ -383,7 +432,7 @@ private fun MetricPill(label: String, value: String) {
 }
 
 // =====================================================================
-// 3. DESGASTE MECÁNICO POR COMPONENTE (Vehicle wear de Figma)
+// 3. DESGASTE MECÁNICO POR COMPONENTE (Vehicle wear)
 // =====================================================================
 @Composable
 private fun VehicleWearCard(
@@ -421,7 +470,7 @@ private fun VehicleWearCard(
                 letterSpacing = 1.sp
             )
 
-            // Health Badge idéntico a Figma
+            // Health Badge
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
@@ -450,7 +499,7 @@ private fun VehicleWearCard(
 private fun WearRow(label: String, wearFraction: Float) {
     val pct = (wearFraction * 100f).roundToInt().coerceIn(0, 100)
     val barColor = when {
-        pct < 6 -> Color(0xFFC7F36B) // Verde Neón Figma
+        pct < 6 -> Color(0xFFC7F36B) // Verde Neón
         pct < 15 -> Color(0xFFF7C948) // Amarillo Ámbar
         else -> Color(0xFFEF4444)     // Rojo Alerta
     }
@@ -496,7 +545,7 @@ private fun WearRow(label: String, wearFraction: Float) {
 }
 
 // =====================================================================
-// 4. COMBUSTIBLE Y AUTONOMÍA (Fuel level de Figma)
+// 4. COMBUSTIBLE Y AUTONOMÍA (Fuel level)
 // =====================================================================
 @Composable
 private fun FuelAndRangeCard(
@@ -509,12 +558,9 @@ private fun FuelAndRangeCard(
         ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt()
     } else 0
 
-    val avgL100 = telemetry.fuelAvgConsumption
-    val rangeKm = if (telemetry.fuelRangeKm > 0f) {
-        telemetry.fuelRangeKm.roundToInt()
-    } else {
-        (telemetry.fuel * 2.4f).roundToInt()
-    }
+    // SCS SDK reporta fuelAvgConsumption en L/km; L/100km = fuelAvgConsumption * 100
+    val avgL100 = telemetry.fuelAvgConsumption * 100f
+    val rangeKm = estimateRangeKm(telemetry)
 
     Column(
         modifier = modifier
@@ -562,9 +608,9 @@ private fun FuelAndRangeCard(
             }
         }
 
-        // Barra de combustible visual animada con estilo Figma
+        // Barra de combustible visual animada
         val animatedFuelPct by animateFloatAsState(
-            targetValue = fuelPct.toFloat(),
+            targetValue = fuelPct.toFloat().coerceIn(0f, 100f),
             animationSpec = tween(durationMillis = 400, easing = LinearOutSlowInEasing),
             label = "fuelPctAnim"
         )
@@ -582,7 +628,7 @@ private fun FuelAndRangeCard(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = if (avgL100 > 0.05f) "Consumo medio: ${String.format("%.1f", avgL100)} L/100km" else "Consumo estimado normal",
+                    text = if (avgL100 > 0.1f) "Consumo medio: ${String.format("%.1f", avgL100)} L/100km" else "Consumo estimado normal",
                     color = Color(0xFF94A3B8),
                     fontSize = 12.sp
                 )
@@ -601,6 +647,27 @@ private fun FuelAndRangeCard(
                     fontSize = 12.sp
                 )
             }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(8.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color(0xFF1E262C))
+        ) {
+            val barColor = when {
+                fuelPct < 15 -> Color(0xFFEF4444)
+                fuelPct < 30 -> Color(0xFFF7C948)
+                else -> Color(0xFFC7F36B)
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction = (animatedFuelPct / 100f).coerceIn(0.01f, 1f))
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(barColor)
+            )
         }
 
         // Temporizador de Descanso y Desvío Rápido

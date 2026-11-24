@@ -87,7 +87,7 @@ app.MapGet("/api/status", (ScsTelemetryReader reader, TelemetryBroadcaster broad
 {
     return Results.Ok(new
     {
-        server = "ATS GPS Server v1.0 (.NET 10)",
+        server = "ATS GPS Server v1.4.2 (.NET 10)",
         atsConnected = reader.IsGameConnected,
         connectedClients = broadcaster.ConnectedClientsCount,
         serverTime = DateTimeOffset.UtcNow
@@ -101,7 +101,7 @@ app.MapPost("/api/pair", async (HttpContext context, AuthManager auth) =>
     {
         using var reader = new StreamReader(context.Request.Body);
         var body = await reader.ReadToEndAsync();
-        var doc = JsonDocument.Parse(body);
+        using var doc = JsonDocument.Parse(body);
         
         string? pin = null;
         if (doc.RootElement.TryGetProperty("pin", out var pinProp))
@@ -162,8 +162,7 @@ app.MapPost("/api/pair", async (HttpContext context, AuthManager auth) =>
     }
 });
 
-// 3. Snapshot puntual de telemetría (REST)
-app.MapGet("/api/telemetry/snapshot", (HttpContext context, ScsTelemetryReader reader, AuthManager auth) =>
+static string? ExtractToken(HttpContext context)
 {
     string? token = context.Request.Query["token"].FirstOrDefault();
     if (string.IsNullOrEmpty(token))
@@ -174,8 +173,13 @@ app.MapGet("/api/telemetry/snapshot", (HttpContext context, ScsTelemetryReader r
             token = authHeader.Substring(7).Trim();
         }
     }
+    return token;
+}
 
-    if (!auth.ValidateToken(token))
+// 3. Snapshot puntual de telemetría (REST)
+app.MapGet("/api/telemetry/snapshot", (HttpContext context, ScsTelemetryReader reader, AuthManager auth) =>
+{
+    if (!auth.ValidateToken(ExtractToken(context)))
     {
         return Results.Json(new { error = "No autorizado. Proporcione un token válido tras emparejar con el PIN." }, statusCode: 401);
     }
@@ -205,8 +209,13 @@ app.MapGet("/api/map/info", (AtsGpsServer.Map.MapManager mapManager) =>
 });
 
 // 6. Generar / Reconstruir Mapa
-app.MapPost("/api/map/build", async (AtsGpsServer.Map.MapManager mapManager) =>
+app.MapPost("/api/map/build", async (HttpContext context, AuthManager auth, AtsGpsServer.Map.MapManager mapManager) =>
 {
+    if (!auth.ValidateToken(ExtractToken(context)))
+    {
+        return Results.Json(new { error = "No autorizado. Proporcione un token válido tras emparejar con el PIN." }, statusCode: 401);
+    }
+
     try
     {
         var graph = await mapManager.BuildMapAsync((step, cur, tot) =>
@@ -248,8 +257,13 @@ app.MapGet("/api/destinations", (AtsGpsServer.Map.DestinationResolver resolver) 
 });
 
 // 9. Control interactivo de cabina desde el celular (Button Box táctil)
-app.MapPost("/api/control/key", (AtsGpsServer.Input.VirtualInputController inputCtrl, ControlKeyRequest req) =>
+app.MapPost("/api/control/key", (HttpContext context, AuthManager auth, AtsGpsServer.Input.VirtualInputController inputCtrl, ControlKeyRequest req) =>
 {
+    if (!auth.ValidateToken(ExtractToken(context)))
+    {
+        return Results.Json(new { error = "No autorizado. Proporcione un token válido tras emparejar con el PIN." }, statusCode: 401);
+    }
+
     if (string.IsNullOrWhiteSpace(req?.Action))
     {
         return Results.BadRequest(new { success = false, error = "Acción no especificada" });
@@ -263,7 +277,8 @@ app.MapPost("/api/control/key", (AtsGpsServer.Input.VirtualInputController input
 // PANTALLA DE INICIO EN CONSOLA
 // =========================================================
 var authManager = app.Services.GetRequiredService<AuthManager>();
-var telemetryReader = app.Services.GetRequiredService<ScsTelemetryReader>();
+_ = app.Services.GetRequiredService<ScsTelemetryReader>();
+app.Lifetime.ApplicationStopping.Register(() => app.Services.GetRequiredService<TelemetryBroadcaster>().Stop());
 
 try { Console.Clear(); } catch { }
 Console.ForegroundColor = ConsoleColor.Cyan;
@@ -303,7 +318,8 @@ Console.WriteLine("\n[CONEXIÓN CABLE USB (BAJA LATENCIA <1 MS)]");
 ConfigureUsbAdbReverse(ServerPort);
 
 Console.WriteLine("\n[PLUGIN SDK] Verificando scs-telemetry.dll...");
-string atsPluginPath = @"C:\Program Files (x86)\Steam\steamapps\common\American Truck Simulator\bin\win_x64\plugins\scs-telemetry.dll";
+string atsDir = AtsGpsServer.Map.AtsPathDetector.DetectAtsDirectory();
+string atsPluginPath = Path.Combine(atsDir, "bin", "win_x64", "plugins", "scs-telemetry.dll");
 if (File.Exists(atsPluginPath))
 {
     Console.ForegroundColor = ConsoleColor.Green;
@@ -377,12 +393,11 @@ static void ConfigureUsbAdbReverse(int port)
                 CreateNoWindow = true
             };
             using var proc = System.Diagnostics.Process.Start(psi);
-            proc?.WaitForExit(2000);
-            if (proc?.ExitCode == 0)
+            if (proc != null && proc.WaitForExit(2000) && proc.ExitCode == 0)
             {
                 Console.ForegroundColor = ConsoleColor.Cyan;
                 Console.WriteLine($"  [OK] Reenvío USB activo (adb reverse tcp:{port} tcp:{port})");
-                Console.WriteLine($"       En la app móvil selecciona 'Cable USB' e ingresa el PIN.");
+                Console.WriteLine("       En la app móvil selecciona 'Cable USB' para conexión directa sin PIN.");
                 Console.ResetColor();
                 return;
             }

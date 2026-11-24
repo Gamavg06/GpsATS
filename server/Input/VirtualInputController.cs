@@ -114,8 +114,25 @@ namespace AtsGpsServer.Input
 
             try
             {
-                var atsProc = Process.GetProcessesByName("amtrucks").FirstOrDefault();
-                IntPtr atsHwnd = atsProc?.MainWindowHandle ?? IntPtr.Zero;
+                var processes = Process.GetProcessesByName("amtrucks");
+                IntPtr atsHwnd = IntPtr.Zero;
+                try
+                {
+                    atsHwnd = processes.Select(p => p.MainWindowHandle).FirstOrDefault(h => h != IntPtr.Zero);
+                }
+                finally
+                {
+                    foreach (var proc in processes)
+                    {
+                        proc.Dispose();
+                    }
+                }
+
+                if (atsHwnd == IntPtr.Zero)
+                {
+                    Console.WriteLine($"[CONTROL REMOTO] ATS no está ejecutándose o no tiene ventana activa; acción '{action}' ignorada.");
+                    return false;
+                }
 
                 // Asegurar foco activo en ATS
                 EnsureGameFocus(atsHwnd);
@@ -132,27 +149,28 @@ namespace AtsGpsServer.Input
                 SendInput(1, down, Marshal.SizeOf(typeof(INPUT)));
 
                 // 2. PostMessage directo a la ventana de ATS como redundancia
-                if (atsHwnd != IntPtr.Zero)
-                {
-                    IntPtr downLParam = (IntPtr)((scan << 16) | 1);
-                    PostMessage(atsHwnd, WM_KEYDOWN, (IntPtr)binding.Vk, downLParam);
-                }
+                IntPtr downLParam = (IntPtr)((scan << 16) | 1);
+                PostMessage(atsHwnd, WM_KEYDOWN, (IntPtr)binding.Vk, downLParam);
 
                 // Mantener pulsado 85 ms (tiempo estándar de frame para captura en simulación de física a 60 fps)
-                Task.Run(async () =>
+                _ = Task.Run(async () =>
                 {
-                    await Task.Delay(85);
-                    INPUT[] up = new INPUT[1];
-                    up[0].type = INPUT_KEYBOARD;
-                    up[0].ki.wVk = 0;
-                    up[0].ki.wScan = scan;
-                    up[0].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-                    SendInput(1, up, Marshal.SizeOf(typeof(INPUT)));
-
-                    if (atsHwnd != IntPtr.Zero)
+                    try
                     {
+                        await Task.Delay(85);
+                        INPUT[] up = new INPUT[1];
+                        up[0].type = INPUT_KEYBOARD;
+                        up[0].ki.wVk = 0;
+                        up[0].ki.wScan = scan;
+                        up[0].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+                        SendInput(1, up, Marshal.SizeOf(typeof(INPUT)));
+
                         IntPtr upLParam = (IntPtr)(0xC0000001L | ((long)scan << 16));
                         PostMessage(atsHwnd, WM_KEYUP, (IntPtr)binding.Vk, upLParam);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[CONTROL REMOTO] Error liberando tecla: {ex.Message}");
                     }
                 });
 

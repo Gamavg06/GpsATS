@@ -102,10 +102,14 @@ namespace AtsGpsServer.Map
             string magicStr = Encoding.ASCII.GetString(magic);
             if (magicStr != "ATSMAP03" && magicStr != "ATSMAP02")
             {
-                throw exciting("Formato de mapa inválido o versión incompatible: " + magicStr);
+                throw CreateFormatException("Formato de mapa inválido o versión incompatible: " + magicStr);
             }
 
             uint version = reader.ReadUInt32();
+            if (version < 1 || version > 3)
+            {
+                throw CreateFormatException($"Versión de formato de mapa no soportada: {version}");
+            }
             uint nodeCount = reader.ReadUInt32();
             uint edgeCount = reader.ReadUInt32();
             uint cityCount = reader.ReadUInt32();
@@ -212,6 +216,6 @@ namespace AtsGpsServer.Map
             return graph;
         }
 
-        private static Exception exciting(string msg) => new InvalidDataException(msg);
+        private static Exception CreateFormatException(string msg) => new InvalidDataException(msg);
     }
 }

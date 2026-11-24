@@ -4,6 +4,22 @@ Todas las modificaciones notables, correcciones de errores y nuevas funcionalida
 
 ---
 
+## [v1.4.2] - 2026-11-23
+### Agregado, Corregido y Auditado
+- **Soporte de Caminos Ocultos / Atajos Secretos SCS (`RoadType = 5` / `HiddenSecretRoad`):**
+  - Deteccion, extraccion binaria y renderizado diferenciado en 2D y 3D para vias secretas / atajos ocultos del mapa SCS, incluyendo indicador dedicado en la tarjeta de maniobras `TurnByTurnCard`.
+- **Resolucion Exacta de Destinos y Ruteo Transcontinental Ampliado:**
+  - Resolucion exacta y normalizada de destinos por ciudad y empresa entre la telemetria en vivo y `map_ats.bin`.
+  - Ampliacion del limite de busqueda de `AStarRouter` a **500,000 pasos** para soportar rutas transcontinentales de larga distancia sin cortes prematuros.
+- **Correccion Geometrica de Prefabs 3D:**
+  - Eliminacion de picos triangulares y artefactos de proyeccion en prefabs dentro del renderizador 3D (`GpsMapCanvas.kt`).
+- **Auditoria Integral y Correcciones de Estabilidad:**
+  - Unificacion de version **v1.4.2 (Build 17)** en servidor, lanzador WPF, instalador Setup, aplicacion Android y documentacion.
+  - Deteccion dinamica de Steam y American Truck Simulator (`detect-ats.ps1` y scripts) eliminando rutas fijas heredadas.
+  - Refuerzo de seguridad en endpoints de control, correccion de concurrencia WebSocket/MMF en servidor, fijacion de destinos manuales, persistencia de bitacora y gestion de memoria de audio (TTS) en Android.
+
+---
+
 ## [v1.4.1] - 2026-11-19
 ### Corregido y Ampliado
 - **Normalizador Inteligente de Destinos en `MainActivity.kt`:**
@@ -39,7 +55,7 @@ Todas las modificaciones notables, correcciones de errores y nuevas funcionalida
   - Alerta acustica y visual por exceso de velocidad cuando la velocidad del vehiculo supera en > 5 km/h el limite legal de la via.
   - Alerta temprana de combustible critico (< 12% del tanque) y alerta preventiva de fatiga (< 35 min restantes para descanso obligatorio).
 - **Selector de Temas Visuales del Mapa (`STY`):**
-  - Boton flotante rapido para alternar entre `DARK_PREMIUM` (modo noche Figma), `HIGH_CONTRAST` (negro OLED) y `CYBER_NEON` (cian tactico).
+  - Boton flotante rapido para alternar entre `DARK_PREMIUM` (tema oscuro OLED), `HIGH_CONTRAST` (negro OLED) y `CYBER_NEON` (cian tactico).
 - **Instalador Autogestionado para PC (.exe / Setup):**
   - `Instalador_AtsGps_v1.4.0_Setup.exe`: Instalador independiente con deteccion automatica del directorio de Steam de American Truck Simulator, copia automatica de `scs-telemetry.dll` a la carpeta de plugins del juego, configuracion del servidor y APK v1.4.0 en un solo archivo ejecutable con icono nativo.
 - **Compilacion y Version:**

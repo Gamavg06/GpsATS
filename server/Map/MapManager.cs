@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace AtsGpsServer.Map
@@ -9,6 +10,7 @@ namespace AtsGpsServer.Map
         private readonly string _mapFilePath;
         private readonly string _atsDir;
         private readonly object _lock = new();
+        private readonly SemaphoreSlim _buildLock = new(1, 1);
         private MapGraph? _cachedGraph;
 
         public bool IsMapReady => File.Exists(_mapFilePath);
@@ -17,24 +19,30 @@ namespace AtsGpsServer.Map
 
         public MapManager()
         {
-            _atsDir = @"C:\Program Files (x86)\Steam\steamapps\common\American Truck Simulator";
-            
-            // Buscar map_ats.bin en múltiples ubicaciones
-            string candidate1 = Path.Combine(AppContext.BaseDirectory, "data", "map_ats.bin");
-            string candidate2 = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "data", "map_ats.bin");
-            string candidate3 = @"C:\Telemetriagps\server\data\map_ats.bin";
+            _atsDir = AtsPathDetector.DetectAtsDirectory();
 
-            if (File.Exists(candidate1))
+            // Buscar map_ats.bin en ubicaciones relativas a AppContext.BaseDirectory
+            string[] candidates =
             {
-                _mapFilePath = Path.GetFullPath(candidate1);
+                Path.Combine(AppContext.BaseDirectory, "data", "map_ats.bin"),
+                Path.Combine(AppContext.BaseDirectory, "..", "data", "map_ats.bin"),
+                Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "data", "map_ats.bin")
+            };
+
+            string? resolved = null;
+            foreach (string candidate in candidates)
+            {
+                string fullPath = Path.GetFullPath(candidate);
+                if (File.Exists(fullPath))
+                {
+                    resolved = fullPath;
+                    break;
+                }
             }
-            else if (File.Exists(candidate2))
+
+            if (resolved != null)
             {
-                _mapFilePath = Path.GetFullPath(candidate2);
-            }
-            else if (File.Exists(candidate3))
-            {
-                _mapFilePath = candidate3;
+                _mapFilePath = resolved;
             }
             else
             {
@@ -67,24 +75,49 @@ namespace AtsGpsServer.Map
             }
         }
 
-        public Task<MapGraph> BuildMapAsync(Action<string, int, int>? progressCallback = null)
+        public async Task<MapGraph> BuildMapAsync(Action<string, int, int>? progressCallback = null)
         {
-            return Task.Run(() =>
+            await _buildLock.WaitAsync();
+            try
             {
-                var extractor = new MapExtractor(_atsDir);
-                var graph = extractor.ExtractGraph(null, progressCallback);
-
-                lock (_lock)
+                return await Task.Run(() =>
                 {
-                    using (var fs = File.Create(_mapFilePath))
-                    {
-                        MapBinarySerializer.Serialize(graph, fs);
-                    }
-                    _cachedGraph = graph;
-                }
+                    var extractor = new MapExtractor(_atsDir);
+                    var graph = extractor.ExtractGraph(null, progressCallback);
 
-                return graph;
-            });
+                    string? dir = Path.GetDirectoryName(_mapFilePath);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+
+                    string tmpPath = _mapFilePath + ".tmp";
+                    try
+                    {
+                        using (var fs = File.Create(tmpPath))
+                        {
+                            MapBinarySerializer.Serialize(graph, fs);
+                        }
+
+                        lock (_lock)
+                        {
+                            File.Move(tmpPath, _mapFilePath, overwrite: true);
+                            _cachedGraph = graph;
+                        }
+                    }
+                    catch
+                    {
+                        try { if (File.Exists(tmpPath)) File.Delete(tmpPath); } catch { }
+                        throw;
+                    }
+
+                    return graph;
+                });
+            }
+            finally
+            {
+                _buildLock.Release();
+            }
         }
 
         public object GetMapInfo()

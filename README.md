@@ -1,64 +1,72 @@
 # SGNIA - ATS Telemetry & GPS Companion System
 
-[![Version: v1.4.1](https://img.shields.io/badge/Version-v1.4.1%20(Build%2016)-00E5FF.svg)](CHANGELOG.md)
-[![Server License: GPL-2.0](https://img.shields.io/badge/Server%20License-GPL--2.0-blue.svg)](LICENSE)
-[![Android App License: MIT](https://img.shields.io/badge/App%20License-MIT-green.svg)](android/LICENSE)
-[![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
-[![Kotlin](https://img.shields.io/badge/Kotlin-2.1.0-7F52FF.svg)](https://kotlinlang.org/)
-[![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack%20Compose%20Canvas-4285F4.svg)](https://developer.android.com/jetpack/compose)
-[![SCS SDK](https://img.shields.io/badge/SCS%20Telemetry%20SDK-v1.14%2B-FF6F00.svg)](https://modding.scssoft.com/wiki/Documentation/Engine/SDK/Telemetry)
+[![Version: v1.4.2 (Build 17)](https://img.shields.io/badge/Version-v1.4.2%20(Build%2017)-00E5FF.svg)](CHANGELOG.md)
+[![.NET 10.0](https://img.shields.io/badge/.NET-10.0-512BD4.svg)](https://dotnet.microsoft.com/)
+[![Kotlin 2.1.0](https://img.shields.io/badge/Kotlin-2.1.0-7F52FF.svg)](https://kotlinlang.org/)
+[![Jetpack Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4.svg)](https://developer.android.com/jetpack/compose)
+[![Tests 76/76 Passing](https://img.shields.io/badge/Tests-76%2F76%20Passing-22C55E.svg)](tests/AtsGpsServer.Tests/AtsGpsServer.Tests.csproj)
+[![Server License: GPL-2.0](https://img.shields.io/badge/Server-GPL--2.0-blue.svg)](LICENSE)
+[![Android License: MIT](https://img.shields.io/badge/Android-MIT-green.svg)](android/LICENSE)
 
-Sistema integral de telemetria en cabina, navegacion por satelite (GPS) en tiempo real y panel de instrumentos complementario para **American Truck Simulator** (y compatible con Euro Truck Simulator 2). Desarrollado desde cero bajo arquitectura clean-room, con renderizado por hardware de 60-120 FPS estables sin lag, asistente de voz interactivo, bitacora de viajes y comunicacion directa a 30 Hz por USB (ADB Reverse) o Wi-Fi local.
+Plataforma integral de telemetria en cabina, navegacion por satelite (GPS) en tiempo real y panel de instrumentos complementario para **American Truck Simulator** (compatible con Euro Truck Simulator 2). Disenada bajo arquitectura clean-room con renderizado por hardware a 60-120 FPS estables, asistente de voz giro a giro, bitacora persistente de entregas y enlace a 30 Hz por cable USB (ADB Reverse) o red Wi-Fi privada.
 
 ---
 
-## Galeria Visual (v1.4.0 - Figma Dark OLED)
+## Autoria y Propiedad del Codigo Fuente
+
+Todo el codigo fuente original de la plataforma **SGNIA - ATS Telemetry & GPS** —incluyendo el servidor de telemetria y extraccion cartografica en `.NET 10` (`server/`), el motor de ruteo `A*` y la aplicacion Android nativa en Jetpack Compose (`android/`), el lanzador grafico de escritorio en WPF (`tools/AtsGpsLauncher/`), el instalador Setup autogestionado (`tools/AtsGpsInstaller/`), la suite de pruebas (`tests/`), scripts y documentacion— ha sido disenado, desarrollado y mantenido integramente por **Gamaliel Velazquez Galicia (SGNIA)**.
+
+Las dependencias y SDKs de terceros utilizados para la lectura de paquetes `.scs`, memoria compartida y utilidades de red/interfaz se mantienen debidamente atribuidos y separados en el registro transparente de [LICENSES.md](LICENSES.md).
+
+---
+
+## Resumen de Componentes
+
+| Componente | Tecnologia | Version | Licencia |
+| :--- | :--- | :--- | :--- |
+| **Servidor de Telemetria y Mapa** (`server/`) | .NET 10.0 / ASP.NET Core Kestrel / WebSocket | `v1.4.2` | GNU GPL-2.0 ([LICENSE](LICENSE)) |
+| **Aplicacion Movil Android** (`android/`) | Kotlin 2.1.0 / Jetpack Compose Canvas / OkHttp | `v1.4.2 (Build 17)` | MIT License ([android/LICENSE](android/LICENSE)) |
+| **Lanzador de Escritorio** (`tools/AtsGpsLauncher/`) | .NET 10.0 / WPF (`Iniciar_Servidor.exe`) | `v1.4.2` | MIT License (SGNIA) |
+| **Instalador Setup PC** (`tools/AtsGpsInstaller/`) | C# / .NET Framework 4 / Windows Forms | `v1.4.2` | Paquete de distribucion SGNIA |
+| **Suite de Pruebas** (`tests/AtsGpsServer.Tests/`) | xUnit / .NET 10.0 (`76/76` pruebas) | `v1.4.2` | GNU GPL-2.0 |
+
+---
+
+## Galeria Visual (v1.4.2 - Tema Oscuro OLED)
 
 | Vista 3D en Autopista | Vista 2D Trazo Continuo (Oakland) | Alerta de Sentido Contrario | Tablero de Telemetria | Informacion y Licencias |
 | :---: | :---: | :---: | :---: | :---: |
 | ![Vista 3D en Autopista](docs/screenshots/vista_3d_autopista.png) | ![Vista 2D en Oakland](docs/screenshots/vista_2d_trazo_continuo.png) | ![Alerta de Sentido Contrario](docs/screenshots/alerta_sentido_contrario.png) | ![Tablero de Telemetria](docs/screenshots/tablero_telemetria.png) | ![Informacion y Licencias](docs/screenshots/informacion_licencias.png) |
-| Proyeccion 3D con pools estaticos sin GC, cinta cian y guia de carriles | Renderizado 2D en 2 pases globales sin costuras internas negras ni micro-conectores | Deteccion en vivo de sentido contrario, alerta visual/TTS y recalculo A* | Velocimetro digital, limite de velocidad, marcha, RPM, desgaste y autonomia | Licencias del proyecto y avisos de componentes de terceros en scroll vertical |
+| Proyeccion 3D con pools estaticos sin GC, cinta cian y guia de carriles | Renderizado 2D en 2 pases globales sin costuras internas ni micro-conectores | Deteccion en vivo de sentido contrario, alerta visual/TTS y recalculo A* | Velocimetro digital, limite de velocidad, marcha, RPM, desgaste y autonomia | Licencias del proyecto y avisos de componentes de terceros |
 
 ---
 
-## Caracteristicas Principales
+## Capacidades Tecnicas
 
 ### Motor Cartografico Vectorial y Map-Matching
-- **Generacion Local On-Demand (`--build-map`):** La base de datos cartografica (`map_ats.bin`, formato `ATSMAP03`) se extrae directamente de los archivos `.scs` instalados en la PC del usuario. No se distribuyen activos propietarios del juego.
-- **Cobertura Completa:** Escaneo dinamico via HashFS de `base_map*.scs` y `dlc_*.scs` (147,268 nodos, 653,410 aristas, 168 ciudades, 971 empresas y 2,103 POIs).
-- **Map-Matching (`snapToRoad`) Inteligente:** Proyeccion ortogonal con alineacion por rumbo (`headingDeg`) que penaliza carriles opuestos (`4.5x` cuando `dot < -0.35`) y throttling adaptativo que evita calculos redundantes a menos de 1.8 metros.
-- **Insignias de POIs Limpias:** Clasificacion tipografica de alto contraste sobre el mapa (`GAS`, `RST`, `SRV`, `DLR`, `LOG`, `WGH`).
+- **Generacion Local On-Demand (`--build-map`):** La base cartografica (`map_ats.bin`, formato binario `ATSMAP03`) se extrae localmente desde los archivos `.scs` instalados en la PC del usuario mediante escritura atomica (`.tmp` + reemplazo seguro). No se redistribuyen activos propietarios del juego.
+- **Cobertura Completa de Mapa:** Escaneo dinamico via HashFS de `base_map*.scs` y `dlc_*.scs` cubriendo **763 sectores**, **278,723 nodos**, **1,275,420 aristas**, **243 ciudades**, **1,708 empresas** y **3,956 POIs**.
+- **Caminos Ocultos y Atajos Secretos (`RoadType = 5`):** Deteccion, codificacion binaria y renderizado dedicado 2D/3D para vias ocultas (`HiddenSecretRoad`), con indicador especifico en la tarjeta de maniobras `TurnByTurnCard`.
+- **Map-Matching (`snapToRoad`) Inteligente:** Proyeccion ortogonal con alineacion por rumbo (`headingDeg`) que penaliza carriles opuestos (`4.5x` cuando `dot < -0.35`) y throttling adaptativo para evitar calculos redundantes en desplazamientos menores a 1.8 m.
+- **Insignias de POIs:** Clasificacion tipografica de alto contraste sobre el mapa (`GAS`, `RST`, `SRV`, `DLR`, `LOG`, `WGH`).
 
-### Ruteo A* Estilo ATS, Recalculo Dinamico y Sentido Contrario
-- **Costo por Tiempo, Jerarquia y Momento Inicial:** El algoritmo `AStarRouter` pondera la velocidad limite (`105 / speed`), jerarquia de via (autopistas, carreteras principales, calles locales y rampas), semaforos, giros en U (`cosTurn < -0.60`), cruces sinteticos de mediana y momento hacia adelante desde el nodo de origen.
-- **Recalculo Automatico Fuera de Ruta:** `evaluateRouteTracking()` en segundo plano (`Dispatchers.Default`). Al confirmar desvio (`> 48 m` o `>= 4` frames fuera de ruta), recalcula la ruta sin bloquear la interfaz.
-- **Deteccion y Alerta de Sentido Contrario:** Cuando el vehiculo avanza (`speedKmh > 8` y `gear > 0`) contra el flujo dirigido de la via (`dot < -0.45`) o en sentido opuesto a la ruta activa (`dot < -0.60`), activa el banner de alerta roja, aviso por voz TTS y recalculo hacia retorno legal.
+### Ruteo A* Transcontinental y Deteccion de Sentido Contrario
+- **Heuristica Ponderada y Busqueda Ampliada:** `AStarRouter` pondera velocidad limite (`105 / speed`), jerarquia vial, semaforos, giros en U (`cosTurn < -0.60`), cruces sinteticos de mediana y momento inicial, con limite ampliado a **500,000 pasos** para rutas transcontinentales.
+- **Resolucion Normalizada de Destinos:** Emparejamiento exacto priorizado y normalizado entre los nombres de telemetria en vivo y los identificadores de ciudades y empresas del grafo binario (`DestinationResolver` y `MainActivity`).
+- **Recalculo Automatico Fuera de Ruta:** Seguimiento continuo mediante flujo conflado en segundo plano (`Dispatchers.Default`); ante desvio confirmado (`> 48 m` o `>= 4` frames fuera de ruta), recalcula sin bloquear el hilo de renderizado.
+- **Alerta de Sentido Contrario (Wrong-Way):** Cuando el camion avanza (`speedKmh > 8` y `gear > 0`) contra el sentido dirigido de la via (`dot < -0.45`) o en direccion opuesta a la ruta activa (`dot < -0.60`), activa banner de alerta roja, aviso de voz TTS y recalculo hacia retorno legal.
 
-### Rendimiento Extremo y Eliminacion de Lag (v1.4.0)
-- **Cero Asignacion Heap en Bucle de Dibujo (Zero GC Churn):** Uso de `RoadSegPool3D` y `RouteSegPool3D` con buffers estaticos pre-alocados y QuickSort in-place sobre indices enteros (`IntArray`).
-- **Caché Topologico de Vías:** `Viewport2DCache` y `Viewport3DCache` pre-procesan el encadenado y suavizado de vias solo al moverse entre cuadrantes (> 25 m), manteniendo 60-120 FPS estables.
-- **Ruta Activa con Ventana Deslizante $O(1)$:** El trazado suavizado se almacena en memoria y el recorte por progreso se realiza localmente en microsegundos.
-- **Temas de Mapa Dinamicos (`STY`):** Selector rapido entre `DARK_PREMIUM`, `HIGH_CONTRAST` (OLED) y `CYBER_NEON`.
+### Renderizador Dual 2D/3D y Rendimiento de Grado Produccion
+- **Cero Asignacion Heap en Bucle de Dibujo:** `RoadSegPool3D` y `RouteSegPool3D` utilizan buffers estaticos pre-asignados y QuickSort in-place sobre indices enteros (`IntArray`), eliminando pausas del Garbage Collector a 60-120 FPS.
+- **Cache Topologico de Vias:** `Viewport2DCache` y `Viewport3DCache` pre-procesan el encadenado sin plegados inversos y el suavizado Chaikin al cambiar de cuadrante, con invalidacion automatica ante cambios de grafo o ruta.
+- **Ventana Deslizante `O(1)` en Ruta Activa:** El trazado suavizado se conserva en memoria y su recorte por progreso se ejecuta localmente en tiempo `O(1)`.
+- **Temas Dinamicos (`STY`):** Alternancia inmediata entre `DARK_PREMIUM`, `HIGH_CONTRAST` (OLED) y `CYBER_NEON`.
 
-### Asistente de Voz y Seguridad en Cabina
-- **Guia Giro a Giro por Audio (TTS):** Avisos de maniobra con anticipacion en hitos metricos (1000m, 500m, 200m, 50m) y anuncio de llegada a la ciudad de destino.
-- **Alerta de Exceso de Velocidad:** Aviso sonoro y visual cuando la velocidad supera en > 5 km/h el limite legal de la carretera.
-- **Alertas Tempranas:** Deteccion de combustible bajo (< 12%) y fatiga de descanso (< 35 min).
-
-### Bitacora de Entregas (Trip Log)
-- **Registro de Viajes:** Pestaña dedicada con resumen de ganancias acumuladas, kilometros totales recorridos y bitacora de cargas entregadas con dano e ingresos guardados de forma persistente.
-
-### Instalador Setup de Escritorio (.exe)
-- **`Instalador_AtsGps_v1.4.0_Setup.exe`:** Asistente autocontenido que detecta la instalacion de Steam de ATS, copia `scs-telemetry.dll` a la carpeta de plugins, configura el servidor y despliega el APK de Android en un solo paso.
-
-### Renderizador Dual 2D / 3D (Canvas Compose)
-- **Vista 3D en Perspectiva:** Cielo crepuscular, resplandor en horizonte (`horizonY = 0.26 * h`), recorte estricto bajo horizonte (`clipRect`), recorte geometrico de segmentos en plano cercano (`projectSegment3D` con `minDepth = 8f`), subdivision de primer plano con suavizado Chaikin, 3 pases globales de carreteras (bordes, asfalto y divisores de carril) y 4 pases globales para la ruta cian iniciando exactamente bajo el cursor del camion.
-- **Vista 2D Tactica:** Filtrado de micro-conectores internos de prefab (`roadType == 3 && length < 18f` fuera de ruta), encadenamiento topologico sin plegado inverso (`chainEdges` con rechazo de aristas opuestas `A->B->A`), suavizado Chaikin y 2 pases globales (todos los bordes primero, todos los rellenos unificados encima).
-- **Controles e Interpolacion 60-120 Hz:** Interpolacion continua entre frames de telemetria, zoom dinamico por velocidad en 3D, selector `3D / 2D`, zoom tactil (`0.10x` a `4.5x`), desplazamiento libre y botones `CTR` / `CFG`.
-
-### Tablero OLED Figma Dark y Lanzador de Escritorio
-- **Tablero de Telemetria (`DashboardScreen`):** Resumen de entrega activa, velocimetro digital, limite de velocidad, marcha (`D1-D18`, `R`, `N`), RPM, 5 canales de desgaste oficial SCS (Neumaticos, Transmision, Motor, Chasis, Cabina), combustible y autonomia con acceso rapido a parada cercana.
-- **Lanzador WPF (`AtsGpsLauncher` / `Iniciar_Servidor.exe`):** Panel de escritorio `.NET 10` sin ventana negra de consola con estado HTTP/WS, PIN de emparejamiento, enlace automatico USB `adb reverse tcp:35500 tcp:35500`, instalador de APK en 1 clic y visor de logs UTF-8 en vivo.
+### Asistente de Voz, Bitacora, Portabilidad y Seguridad
+- **Asistente de Voz TTS y Alertas:** Guia giro a giro por audio en hitos metricos (1000 m, 500 m, 200 m, 50 m), anuncio de llegada y alertas tempranas de exceso de velocidad (`> 5 km/h`), combustible bajo (`< 12%`) y fatiga (`< 35 min`).
+- **Bitacora de Entregas (`TripLogScreen`):** Registro cronologico persistente con metricas acumuladas de ingresos, kilometros recorridos y dano por carga.
+- **Deteccion Portable de Steam/ATS:** `AtsPathDetector` consulta el Registro de Windows (`HKCU` / `HKLM`), `libraryfolders.vdf` y unidades locales sin depender de rutas fijas de desarrollo.
+- **Seguridad Local por PIN y Token:** Emparejamiento mediante PIN de 6 digitos generado con CSPRNG (con bloqueo ante intentos fallidos), tokens criptograficos de 48 horas en WebSocket (`/ws/telemetry`) y endpoints protegidos (`/api/telemetry/snapshot`, `/api/control/key`, `/api/map/build`), restriccion estricta a subredes privadas RFC 1918 / Loopback y soporte de conexion directa por cable USB (ADB Reverse). Ver [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -67,10 +75,10 @@ Sistema integral de telemetria en cabina, navegacion por satelite (GPS) en tiemp
 ```mermaid
 flowchart TD
     subgraph PC["Entorno Windows (PC de Simulacion)"]
-        ATS["American Truck Simulator (64-bit Direct3D)"]
+        ATS["American Truck Simulator (64-bit)"]
         SDK["scs-telemetry.dll (Plugin SCS SDK)"]
         MMF[("Local\\SCSTelemetry (Shared Memory 0 ms)")]
-        Launcher["Iniciar_Servidor.exe (WPF Control Panel)"]
+        Launcher["Iniciar_Servidor.exe (WPF Control Panel v1.4.2)"]
         Server["AtsGpsServer.exe (.NET 10 Host - GPL-2.0)"]
         MapExtractor["Extractor Binario (AtsGpsServer --build-map)"]
 
@@ -83,14 +91,14 @@ flowchart TD
     end
 
     subgraph Transport["Transporte Local (USB ADB Reverse o LAN RFC 1918)"]
-        WS["WebSocket ws:// autenticado con PIN (Puerto 35500 / 30 Hz)"]
+        WS["WebSocket ws:// autenticado con Token (Puerto 35500 / 30 Hz)"]
     end
 
     subgraph Mobile["Dispositivo Android (Kotlin + Jetpack Compose - MIT)"]
-        Client["AtsGpsApp v1.3.8"]
+        Client["AtsGpsApp v1.4.2 (Build 17)"]
         Router["AStarRouter + MapGraph (Snap / Off-Route / Wrong-Way)"]
         Canvas["GpsMapCanvas (2D 2-Pass / 3D 4-Pass)"]
-        HUD["DashboardScreen + TurnByTurnCard + TTS"]
+        HUD["DashboardScreen + TurnByTurnCard + TripLog + TTS"]
 
         Client --> Router
         Router --> Canvas
@@ -103,92 +111,94 @@ flowchart TD
 
 ---
 
-## Guia de Instalacion y Uso
+## Guia de Instalacion, Compilacion y Pruebas
 
 ### 1. Requisitos Previos
-- **PC (Windows 10/11 x64):** [.NET 10.0 Runtime o SDK](https://dotnet.microsoft.com/download/dotnet/10.0), *American Truck Simulator* y el plugin `scs-telemetry.dll` ubicado en `bin\win_x64\plugins\scs-telemetry.dll`.
-- **Android (8.0+):** Dispositivo conectado por cable USB (Depuracion USB activada) o en la misma red Wi-Fi privada (RFC 1918).
+- **PC (Windows 10/11 x64):** [.NET 10.0 Runtime o SDK](https://dotnet.microsoft.com/download/dotnet/10.0), *American Truck Simulator* y `scs-telemetry.dll` ubicado en `bin\win_x64\plugins\scs-telemetry.dll`.
+- **Android (8.0+):** Dispositivo conectado por USB (Depuracion USB activa) o en la misma red Wi-Fi privada (RFC 1918).
 
-### 2. Generacion Local del Mapa (`--build-map`)
+### 2. Generacion Local del Mapa y Ejecucion en PC
 ```powershell
+# Extraer grafo binario map_ats.bin desde los .scs instalados localmente
 dotnet run --project server -- --build-map
 ```
-Genera `server/data/map_ats.bin` directamente desde los archivos `.scs` locales del juego.
+Ejecuta `Iniciar_Servidor.exe` (o `Iniciar_Servidor.bat`) para iniciar el servidor en el puerto `35500`, enlazar automaticamente `adb reverse tcp:35500 tcp:35500` por USB y visualizar el PIN de 6 digitos. En Android, instala el APK generado (`apks/release.apk` o `apks/AtsGpsApp_v1.4.2.apk`).
 
-### 3. Ejecucion del Servidor y Lanzador PC
-Ejecuta `Iniciar_Servidor.exe` (o `Iniciar_Servidor.bat`). El lanzador inicia `AtsGpsServer.exe` en puerto `35500`, configura `adb reverse tcp:35500 tcp:35500` automaticamente al detectar cable USB y muestra el codigo PIN de 6 digitos.
+### 3. Compilacion desde el Codigo Fuente y Suite de Pruebas
+```powershell
+# Compilar servidor y lanzador WPF
+dotnet build server/AtsGpsServer.csproj -c Release
+dotnet build tools/AtsGpsLauncher/AtsGpsLauncher.csproj -c Release
 
-### 4. Instalacion de la App Android
-1. Instala `apks/release.apk` (o usa el boton **Instalar APK en Celular** en `Iniciar_Servidor.exe`).
-2. Por cable USB la app detecta `127.0.0.1:35500` automaticamente; por Wi-Fi introduce la IP LAN de la PC y el PIN de 6 digitos.
+# Ejecutar suite completa de pruebas xUnit (76/76 pruebas)
+dotnet test tests/AtsGpsServer.Tests/AtsGpsServer.Tests.csproj
+
+# Publicar lanzador WPF en ejecutable unico
+dotnet publish tools/AtsGpsLauncher/AtsGpsLauncher.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:DebugType=None -p:DebugSymbols=false -o .
+
+# Compilar aplicacion Android (Release APK)
+cd android
+.\gradlew.bat compileDebugKotlin assembleRelease --console=plain
+```
 
 ---
 
 ## Estructura del Repositorio
 
 ```text
-GpsATS/
-├── Iniciar_Servidor.exe            # Lanzador grafico WPF publicado (.NET 10)
-├── Iniciar_Servidor.bat            # Script de arranque CLI y puente ADB
-├── CHANGELOG.md                    # Historial detallado de versiones
-├── LICENSE                         # Licencia GNU GPL-2.0 (Servidor)
-├── LICENSES.md                     # Registro de licencias y terceros
-├── README.md                       # Documentacion principal
-├── Instalador_AtsGps_v1.4.1_Setup.exe # Instalador de escritorio autogestionado
-├── apks/                           # Distribucion de paquetes APK firmados
-│   ├── release.apk                 # APK Release v1.4.1 (Build 16)
-│   └── AtsGpsApp_v1.4.1.apk        # APK Release versionado
+Telemetriagps/
+├── Iniciar_Servidor.exe               # Lanzador grafico WPF publicado (.NET 10, v1.4.2)
+├── Iniciar_Servidor.bat               # Script de arranque CLI y puente ADB
+├── CHANGELOG.md                       # Historial de versiones
+├── LICENSE                            # Licencia GNU GPL-2.0 (Servidor)
+├── LICENSES.md                        # Autoria y registro legal de dependencias de terceros
+├── README.md                          # Documentacion principal del repositorio
+├── SECURITY.md                        # Politica de seguridad y arquitectura de acceso local
 ├── docs/
-│   └── screenshots/                # Capturas oficiales de v1.4.1 (1080x2200)
+│   └── screenshots/                   # Capturas oficiales v1.4.2 (1080x2200)
+├── third_party/
+│   └── scs_sdk/                       # Headers, README y licencia del SCS Telemetry SDK
 ├── tools/
-│   ├── AtsGpsLauncher/             # Panel de control WPF (.NET 10)
-│   └── AtsGpsInstaller/            # Codigo fuente de Instalador Setup autogestionado C#
-├── server/                         # Servidor .NET 10 (GPL-2.0)
-│   ├── Program.cs                  # Host Kestrel, WebSocket y CLI --build-map
-│   ├── Hubs/                       # TelemetryBroadcaster (30 Hz)
-│   ├── Map/                        # MapExtractor, MapDataModels, MapBinarySerializer
-│   ├── Security/                   # AuthManager (PIN) e IpWhitelistMiddleware (RFC 1918)
-│   └── Telemetry/                  # ScsTelemetryReader (MMF) y TelemetrySnapshot
-├── android/                        # Aplicacion Android nativa (MIT License)
+│   ├── AtsGpsLauncher/                # Panel de control WPF (.NET 10)
+│   └── AtsGpsInstaller/               # Codigo fuente del instalador Setup autogestionado C#
+├── server/                            # Servidor .NET 10 (GNU GPL-2.0)
+│   ├── Program.cs                     # Host Kestrel, endpoints REST/WebSocket y --build-map
+│   ├── detect-ats.ps1                 # Script de deteccion portable de Steam / ATS
+│   ├── Hubs/                          # TelemetryBroadcaster (30 Hz)
+│   ├── Input/                         # VirtualInputController
+│   ├── Map/                           # AtsPathDetector, MapExtractor, DestinationResolver, PathFinder, MapBinarySerializer, MapManager
+│   ├── Security/                      # AuthManager (PIN/Token) e IpWhitelistMiddleware (RFC 1918)
+│   ├── Telemetry/                     # ScsTelemetryReader (MMF) y TelemetrySnapshot
+│   └── plugins/                       # scs-telemetry.dll
+├── android/                           # Aplicacion Android nativa (MIT License)
+│   ├── LICENSE                        # Licencia MIT de la aplicacion Android
 │   └── app/src/main/java/com/ats/gps/
-│       ├── MainActivity.kt         # Loop 30 Hz, recalculo dinamico y alerta wrong-way
+│       ├── MainActivity.kt            # Loop 30 Hz, tracking, recalculo y alerta wrong-way
 │       ├── data/
-│       │   ├── map/                # AStarRouter.kt, BinaryMapReader.kt
-│       │   ├── model/              # MapGraph.kt (snapToRoad, evaluateRouteTracking)
-│       │   ├── network/            # AtsNetworkClient.kt
-│       │   └── triplog/            # TripLogManager.kt (registro y persistencia de entregas)
+│       │   ├── map/                   # AStarRouter.kt, BinaryMapReader.kt
+│       │   ├── model/                 # MapGraph.kt, TelemetryData.kt
+│       │   ├── network/               # AtsNetworkClient.kt
+│       │   └── triplog/               # TripLogManager.kt
 │       └── ui/
-│           ├── map/GpsMapCanvas.kt # Renderizador 2D/3D con pools estaticos cero lag
-│           ├── navigation/         # TurnByTurnCard.kt con cache O(1) de maniobras
-│           ├── dashboard/          # DashboardScreen.kt
-│           ├── diagnostic/         # TelemetryDiagnosticScreen.kt
-│           ├── junction/           # JunctionView.kt
-│           ├── tts/                # NavigationVoiceAssistant.kt
-│           ├── triplog/            # TripLogScreen.kt (vista de bitacora y metricas)
-│           └── about/              # AboutScreen.kt
+│           ├── map/GpsMapCanvas.kt    # Renderizador 2D/3D con pools estaticos sin GC
+│           ├── navigation/            # TurnByTurnCard.kt
+│           ├── dashboard/             # DashboardScreen.kt, CircularGauge.kt
+│           ├── diagnostic/            # TelemetryDiagnosticScreen.kt
+│           ├── junction/              # JunctionView.kt
+│           ├── tts/                   # NavigationVoiceAssistant.kt
+│           ├── triplog/               # TripLogScreen.kt
+│           └── about/                 # AboutScreen.kt
 └── tests/
-    └── AtsGpsServer.Tests/         # Pruebas xUnit (.NET 10)
+    └── AtsGpsServer.Tests/            # Suite de pruebas xUnit (.NET 10 - 76/76 passing)
 ```
+
+> **Nota sobre artefactos de distribucion:** El instalador autogestionado (`Instalador_AtsGps_v1.4.2_Setup.exe`), los paquetes Android compilados (`apks/release.apk`, `apks/AtsGpsApp_v1.4.2.apk`) y el mapa binario generado (`server/data/map_ats.bin`) son artefactos de distribucion/compilacion excluidos del control de versiones mediante `.gitignore` y generados localmente o publicados en los Releases oficiales.
 
 ---
 
-## Compilacion desde el Codigo Fuente
+## Documentacion Adicional y Aspectos Legales
 
-### Servidor y Lanzador (.NET 10)
-```powershell
-dotnet build server/AtsGpsServer.csproj -c Release
-dotnet publish tools/AtsGpsLauncher/AtsGpsLauncher.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o .
-```
-
-### App Android (Gradle)
-```powershell
-cd android
-./gradlew assembleRelease
-```
-
----
-
-## Licencias y Aspectos Legales
-- **Servidor PC (`server/`):** Licenciado bajo **GNU General Public License v2.0 (GPL-2.0)**. Ver [LICENSE](LICENSE).
-- **Aplicacion Android (`android/`):** Licenciada bajo **MIT License**. Ver [android/LICENSE](android/LICENSE).
-- **Aviso de Marcas:** *American Truck Simulator* y *Euro Truck Simulator 2* son marcas registradas de **SCS Software s.r.o.**. Proyecto independiente de codigo abierto sin afiliacion comercial con SCS Software.
+- **Seguridad:** Consulta [SECURITY.md](SECURITY.md) para detalles sobre autenticacion, aislamiento en red local y reporte de vulnerabilidades.
+- **Historial de Cambios:** Consulta [CHANGELOG.md](CHANGELOG.md).
+- **Licencias y Terceros:** Consulta [LICENSES.md](LICENSES.md), [LICENSE](LICENSE) y [android/LICENSE](android/LICENSE).
+- **Aviso de Marcas:** *American Truck Simulator* y *Euro Truck Simulator 2* son marcas registradas de **SCS Software s.r.o.**. Este es un proyecto independiente sin afiliacion comercial con SCS Software.

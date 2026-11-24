@@ -109,7 +109,7 @@ namespace AtsGpsServer.Tests
 
                 if (city1 == null || city2 == null)
                 {
-                    _output.WriteLine($"| {c1} ➔ {c2} | {type} | ERROR: Ciudad no encontrada en .bin |");
+                    _output.WriteLine($"| {c1} -> {c2} | {type} | ERROR: Ciudad no encontrada en .bin |");
                     continue;
                 }
 
@@ -141,7 +141,7 @@ namespace AtsGpsServer.Tests
                 if (ktFound && ktRatio <= 2.50f) ktSuccess++;
 
                 _output.WriteLine(string.Format(CultureInfo.InvariantCulture,
-                    "| {0} ➔ {1} | {2} | {3} | {4:F2} | {5:F2}x | {6} | {7} ms | {8} | {9:F2} | {10:F2}x | {11} ms |",
+                    "| {0} -> {1} | {2} | {3} | {4:F2} | {5:F2}x | {6} | {7} ms | {8} | {9:F2} | {10:F2}x | {11} ms |",
                     c1, c2, type,
                     csFound ? "SÍ" : "NO", csLen, csRatio, csRes?.NodesExpanded ?? 0, swCs.ElapsedMilliseconds,
                     ktFound ? "SÍ" : "NO", ktLen, ktRatio, swKt.ElapsedMilliseconds));
@@ -165,11 +165,15 @@ namespace AtsGpsServer.Tests
             float initialH = Vector3.Distance(new Vector3(startObj.X, startObj.Y, startObj.Z), new Vector3(targetObj.X, targetObj.Y, targetObj.Z));
             openSet.Enqueue((startNode, 0f), initialH);
 
-            while (openSet.Count > 0)
+            int expanded = 0;
+            const int maxExpanded = 500_000;
+
+            while (openSet.Count > 0 && expanded < maxExpanded)
             {
                 var (current, enqueuedG) = openSet.Dequeue();
                 float bestKnownG = gScore.TryGetValue(current, out float bg) ? bg : float.MaxValue;
                 if (enqueuedG > bestKnownG) continue;
+                expanded++;
 
                 if (current == targetNode)
                 {
@@ -292,29 +296,69 @@ namespace AtsGpsServer.Tests
                     }
                 }
 
-                // 3. Encontrar el par de nodos (u* in fwdSet, v* in bwdSet) más cercanos
+                // 3. Encontrar el par de nodos (u* in fwdSet, v* in bwdSet) más cercanos usando ordenamiento espacial en X
                 float minGap = float.MaxValue;
                 int bestU = -1;
                 int bestV = -1;
 
-                // Muestreo espacial acelerado para conjuntos grandes
-                var bwdNodeList = bwdSet.Select(idx => (idx, graph.Nodes[idx])).ToList();
+                var bwdNodeList = bwdSet.Select(idx => (idx, node: graph.Nodes[idx])).OrderBy(t => t.node.X).ToList();
 
-                foreach (int u in fwdSet)
+                if (bwdNodeList.Count > 0)
                 {
-                    var nu = graph.Nodes[u];
-                    foreach (var (v, nv) in bwdNodeList)
+                    // Pasada rápida O(N log M) para acotar minGap usando el vecino más cercano en X
+                    foreach (int u in fwdSet)
                     {
-                        float dx = nu.X - nv.X;
-                        if (MathF.Abs(dx) >= minGap) continue;
-                        float dz = nu.Z - nv.Z;
-                        if (MathF.Abs(dz) >= minGap) continue;
-                        float d = MathF.Sqrt(dx * dx + dz * dz);
-                        if (d < minGap)
+                        var nu = graph.Nodes[u];
+                        int lo = 0, hi = bwdNodeList.Count - 1;
+                        while (lo < hi)
                         {
-                            minGap = d;
-                            bestU = u;
-                            bestV = v;
+                            int mid = lo + (hi - lo) / 2;
+                            if (bwdNodeList[mid].node.X < nu.X) lo = mid + 1;
+                            else hi = mid;
+                        }
+
+                        for (int k = Math.Max(0, lo - 1); k <= Math.Min(bwdNodeList.Count - 1, lo + 1); k++)
+                        {
+                            var (v, nv) = bwdNodeList[k];
+                            float dx = nu.X - nv.X;
+                            float dz = nu.Z - nv.Z;
+                            float d = MathF.Sqrt(dx * dx + dz * dz);
+                            if (d < minGap)
+                            {
+                                minGap = d;
+                                bestU = u;
+                                bestV = v;
+                            }
+                        }
+                    }
+
+                    // Búsqueda exacta dentro de la ventana [nu.X - minGap, nu.X + minGap]
+                    foreach (int u in fwdSet)
+                    {
+                        var nu = graph.Nodes[u];
+                        float targetMinX = nu.X - minGap;
+                        int lo = 0, hi = bwdNodeList.Count;
+                        while (lo < hi)
+                        {
+                            int mid = lo + (hi - lo) / 2;
+                            if (bwdNodeList[mid].node.X < targetMinX) lo = mid + 1;
+                            else hi = mid;
+                        }
+
+                        for (int k = lo; k < bwdNodeList.Count; k++)
+                        {
+                            var (v, nv) = bwdNodeList[k];
+                            float dx = nv.X - nu.X;
+                            if (dx >= minGap) break;
+                            float dz = nu.Z - nv.Z;
+                            if (MathF.Abs(dz) >= minGap) continue;
+                            float d = MathF.Sqrt(dx * dx + dz * dz);
+                            if (d < minGap)
+                            {
+                                minGap = d;
+                                bestU = u;
+                                bestV = v;
+                            }
                         }
                     }
                 }
@@ -325,7 +369,7 @@ namespace AtsGpsServer.Tests
                 uint outEdgeV = fwdAdj[bestV].FirstOrDefault()?.EdgeId ?? uint.MaxValue;
 
                 _output.WriteLine(string.Format(CultureInfo.InvariantCulture,
-                    "| {0} ➔ {1} | {2} | {3} | {4} | ({5:F1}, {6:F1}) | {7} | ({8:F1}, {9:F1}) | **{10:F1} m** | #{11} | #{12} |",
+                    "| {0} -> {1} | {2} | {3} | {4} | ({5:F1}, {6:F1}) | {7} | ({8:F1}, {9:F1}) | **{10:F1} m** | #{11} | #{12} |",
                     c1, c2, fwdSet.Count, bwdSet.Count,
                     bestU, uObj.X, uObj.Z,
                     bestV, vObj.X, vObj.Z,
@@ -352,8 +396,8 @@ namespace AtsGpsServer.Tests
             var rPdxToBend = pf.FindRoute(portland.NearestNodeIndex, bend.NearestNodeIndex);
 
             _output.WriteLine("=== ANÁLISIS DE ASIMETRÍA PORTLAND <-> BEND ===");
-            _output.WriteLine($"Bend ➔ Portland:     Longitud = {rBendToPdx?.TotalLengthMeters / 1000f:F2} km ({rBendToPdx?.EdgePath.Count} aristas)");
-            _output.WriteLine($"Portland ➔ Bend:     Longitud = {rPdxToBend?.TotalLengthMeters / 1000f:F2} km ({rPdxToBend?.EdgePath.Count} aristas)");
+            _output.WriteLine($"Bend -> Portland:     Longitud = {rBendToPdx?.TotalLengthMeters / 1000f:F2} km ({rBendToPdx?.EdgePath.Count} aristas)");
+            _output.WriteLine($"Portland -> Bend:     Longitud = {rPdxToBend?.TotalLengthMeters / 1000f:F2} km ({rPdxToBend?.EdgePath.Count} aristas)");
 
             // Identificar aristas unidireccionales de Bend -> Portland que no tienen reverso
             var fwdEdges = rBendToPdx!.EdgePath;
@@ -367,8 +411,8 @@ namespace AtsGpsServer.Tests
                     missingReverseCount++;
                 }
             }
-            _output.WriteLine($"Aristas de Bend ➔ Portland que NO tienen reverso (One-Way): {missingReverseCount} de {fwdEdges.Count} aristas!");
-            _output.WriteLine($"Esto DEMUESTRA que la ruta inversa Portland ➔ Bend no puede regresar por la misma vía directa debido a {missingReverseCount} aristas unidireccionales.");
+            _output.WriteLine($"Aristas de Bend -> Portland que NO tienen reverso (One-Way): {missingReverseCount} de {fwdEdges.Count} aristas!");
+            _output.WriteLine($"Esto DEMUESTRA que la ruta inversa Portland -> Bend no puede regresar por la misma vía directa debido a {missingReverseCount} aristas unidireccionales.");
 
             // Generar SVGs para Portland->Salem, Oakland->San Jose y Portland->Bend
             string pSalem = Path.Combine(outDir, "Portland_Salem_Detour.svg");
@@ -378,25 +422,29 @@ namespace AtsGpsServer.Tests
             GenerateRouteDetourSvg(graph, pf, "Oakland", "San_jose", oSanJose);
             GenerateRouteDetourSvg(graph, pf, "Portland", "Bend", pBend);
 
-            File.Copy(pSalem, @"C:\Users\gmlve\Downloads\Portland_Salem_Detour.svg", true);
-            File.Copy(oSanJose, @"C:\Users\gmlve\Downloads\Oakland_SanJose_Detour.svg", true);
-            File.Copy(pBend, @"C:\Users\gmlve\Downloads\Portland_Bend_Detour.svg", true);
+            string testOutDir = Path.Combine(Path.GetTempPath(), "AtsGpsTests");
+            Directory.CreateDirectory(testOutDir);
+            File.Copy(pSalem, Path.Combine(testOutDir, "Portland_Salem_Detour.svg"), true);
+            File.Copy(oSanJose, Path.Combine(testOutDir, "Oakland_SanJose_Detour.svg"), true);
+            File.Copy(pBend, Path.Combine(testOutDir, "Portland_Bend_Detour.svg"), true);
         }
 
         [Fact]
         public void Audit_Prefab_Us_23n_Real_Curves_And_Routing()
         {
-            string atsDir = @"C:\Program Files (x86)\Steam\steamapps\common\American Truck Simulator";
+            string atsDir = AtsPathDetector.DetectAtsDirectory();
             string baseScs = Path.Combine(atsDir, "base.scs");
             string defScs = Path.Combine(atsDir, "def.scs");
             var fsList = new List<IFileSystem>();
-            if (File.Exists(baseScs)) fsList.Add(HashFsReader.Open(baseScs));
-            if (File.Exists(defScs)) fsList.Add(HashFsReader.Open(defScs));
-            var loader = new AssetLoader(fsList.ToArray());
+            try
+            {
+                if (File.Exists(baseScs)) fsList.Add(HashFsReader.Open(baseScs));
+                if (File.Exists(defScs)) fsList.Add(HashFsReader.Open(defScs));
+                var loader = new AssetLoader(fsList.ToArray());
 
-            string ppdPath = "/prefab/cross_temp/us_cross_1-1_country_t_1-1_country_tmpl.ppd";
-            var desc = PrefabDescriptor.Open(ppdPath, loader);
-            Assert.NotNull(desc);
+                string ppdPath = "/prefab/cross_temp/us_cross_1-1_country_t_1-1_country_tmpl.ppd";
+                var desc = PrefabDescriptor.Open(ppdPath, loader);
+                Assert.NotNull(desc);
 
             _output.WriteLine("=== AUDITORÍA REAL DE DESCRIPTOR PPD: US_23N (25 NAVCURVES) ===");
             _output.WriteLine($"Total Nodos PPD (Puertos): {desc.Nodes.Count}");
@@ -460,7 +508,7 @@ namespace AtsGpsServer.Tests
             _output.WriteLine($"\nAristas viales generadas por MapExtractor para us_23n: {miniGraph.Edges.Count}");
             foreach (var e in miniGraph.Edges)
             {
-                _output.WriteLine($"  Arista #{e.EdgeId}: Puerto {e.FromNodeIndex} ➔ Puerto {e.ToNodeIndex} (Len={e.Length:F1}m)");
+                _output.WriteLine($"  Arista #{e.EdgeId}: Puerto {e.FromNodeIndex} -> Puerto {e.ToNodeIndex} (Len={e.Length:F1}m)");
             }
 
             // Probar A* real: ¿Se puede transitar C (Nodo 2) -> B (Nodo 1) -> A (Nodo 0)?
@@ -469,9 +517,17 @@ namespace AtsGpsServer.Tests
             var routeToA = miniPf.FindRoute(1, 0);
 
             _output.WriteLine($"\nComportamiento del A* con 1 solo nodo por puerto (sin medias-aristas separadas):");
-            _output.WriteLine($"  Ruta Puerto 2 ➔ Puerto 1: {(routeToB?.Success == true ? "PERMITIDA" : "BLOQUEADA")} ({routeToB?.TotalLengthMeters:F1}m)");
-            _output.WriteLine($"  Ruta Puerto 1 ➔ Puerto 0: {(routeToA?.Success == true ? "PERMITIDA" : "BLOQUEADA")} ({routeToA?.TotalLengthMeters:F1}m)");
-            _output.WriteLine($"  DICTAMEN TÉCNICO: Dado que cada puerto se mapea a un único índice de nodo y _forbiddenTurns no se pobla en MapExtractor, un vehículo que llega al Puerto 1 puede tomar inmediatamente cualquier arista de salida del Puerto 1 hacia el Puerto 0. Para impedirlo físicamente se requiere desacoplar el puerto en dos nodos (Puerto_In y Puerto_Out) o inyectar la terna (2, 1, 0) en _forbiddenTurns.");
+            _output.WriteLine($"  Ruta Puerto 2 -> Puerto 1: {(routeToB?.Success == true ? "PERMITIDA" : "BLOQUEADA")} ({routeToB?.TotalLengthMeters:F1}m)");
+            _output.WriteLine($"  Ruta Puerto 1 -> Puerto 0: {(routeToA?.Success == true ? "PERMITIDA" : "BLOQUEADA")} ({routeToA?.TotalLengthMeters:F1}m)");
+                _output.WriteLine($"  DICTAMEN TÉCNICO: Dado que cada puerto se mapea a un único índice de nodo y _forbiddenTurns no se pobla en MapExtractor, un vehículo que llega al Puerto 1 puede tomar inmediatamente cualquier arista de salida del Puerto 1 hacia el Puerto 0. Para impedirlo físicamente se requiere desacoplar el puerto en dos nodos (Puerto_In y Puerto_Out) o inyectar la terna (2, 1, 0) en _forbiddenTurns.");
+            }
+            finally
+            {
+                foreach (var fs in fsList)
+                {
+                    if (fs is IDisposable disposable) disposable.Dispose();
+                }
+            }
         }
 
         [Fact]
@@ -567,7 +623,9 @@ namespace AtsGpsServer.Tests
                 midX, midY + 4));
 
             sb.AppendLine("</svg>");
-            string svgPath = @"C:\Users\gmlve\Downloads\Gap_12m_Sector2311.svg";
+            string testOutDir = Path.Combine(Path.GetTempPath(), "AtsGpsTests");
+            Directory.CreateDirectory(testOutDir);
+            string svgPath = Path.Combine(testOutDir, "Gap_12m_Sector2311.svg");
             File.WriteAllText(svgPath, sb.ToString());
             _output.WriteLine($"SVG del hueco generado en: {svgPath}");
         }
@@ -693,7 +751,9 @@ namespace AtsGpsServer.Tests
 
             string logPath = @"C:\Telemetriagps\server\data\telemetry_drive_log_30hz.csv";
             File.WriteAllLines(logPath, csvLines);
-            string downloadPath = @"C:\Users\gmlve\Downloads\telemetry_drive_log_30hz.csv";
+            string testOutDir = Path.Combine(Path.GetTempPath(), "AtsGpsTests");
+            Directory.CreateDirectory(testOutDir);
+            string downloadPath = Path.Combine(testOutDir, "telemetry_drive_log_30hz.csv");
             File.Copy(logPath, downloadPath, true);
 
             distancesToEdge.Sort();
@@ -723,7 +783,7 @@ namespace AtsGpsServer.Tests
             var route = pf.FindRoute(city1.NearestNodeIndex, city2.NearestNodeIndex);
             if (route == null || !route.Success || route.NodePath == null || route.NodePath.Count == 0)
             {
-                _output.WriteLine($"No hay ruta para generar SVG: {c1Name} ➔ {c2Name} (Success = false)");
+                _output.WriteLine($"No hay ruta para generar SVG: {c1Name} -> {c2Name} (Success = false)");
                 return;
             }
 
@@ -755,7 +815,7 @@ namespace AtsGpsServer.Tests
 
             var sb = new StringBuilder();
             sb.AppendLine("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\" width=\"1000\" height=\"1000\" style=\"background:#121212;\">");
-            sb.AppendLine($"<text x=\"20\" y=\"30\" fill=\"#FFFFFF\" font-family=\"sans-serif\" font-size=\"18\" font-weight=\"bold\">PUNTO DE DESVÍO: {c1Name} ➔ {c2Name}</text>");
+            sb.AppendLine($"<text x=\"20\" y=\"30\" fill=\"#FFFFFF\" font-family=\"sans-serif\" font-size=\"18\" font-weight=\"bold\">PUNTO DE DESVÍO: {c1Name} -> {c2Name}</text>");
             sb.AppendLine($"<text x=\"20\" y=\"55\" fill=\"#AAAAAA\" font-family=\"sans-serif\" font-size=\"12\">Centro en Nodo #{detourNode} (X={center.X:F1}, Z={center.Z:F1}) | InDeg={inDeg.GetValueOrDefault(detourNode)}, OutDeg={outDeg.GetValueOrDefault(detourNode)}</text>");
 
             float minX = center.X - radius;

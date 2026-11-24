@@ -111,8 +111,11 @@ namespace AtsGpsServer.Tests
             sb.AppendLine($"  <text x=\"{truckSvgX + 12:F1}\" y=\"{truckSvgY + 4:F1}\" fill=\"#FFFFFF\" font-family=\"sans-serif\" font-size=\"14\" font-weight=\"bold\">Camión</text>");
             sb.AppendLine("</svg>");
 
-            File.WriteAllText(@"C:\Users\gmlve\Downloads\Fan_Lines_Nogales_H4.svg", sb.ToString(), Encoding.UTF8);
-            _output.WriteLine("SVG de Nogales guardado en C:\\Users\\gmlve\\Downloads\\Fan_Lines_Nogales_H4.svg");
+            string testOutDir = Path.Combine(Path.GetTempPath(), "AtsGpsTests");
+            Directory.CreateDirectory(testOutDir);
+            string outSvgPath = Path.Combine(testOutDir, "Fan_Lines_Nogales_H4.svg");
+            File.WriteAllText(outSvgPath, sb.ToString(), Encoding.UTF8);
+            _output.WriteLine($"SVG de Nogales guardado en {outSvgPath}");
         }
     }
 }

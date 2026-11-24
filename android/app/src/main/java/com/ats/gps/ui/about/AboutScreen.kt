@@ -1,5 +1,7 @@
 package com.ats.gps.ui.about
 
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -8,10 +10,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -29,7 +33,7 @@ fun AboutScreen(
         val isLandscape = maxWidth > 800.dp
 
         if (isLandscape) {
-            // Diseño en dos columnas idéntico a Figma Screen 4 (1280x800)
+            // Diseño en dos columnas para pantallas apaisadas (1280x800)
             Row(
                 modifier = Modifier.fillMaxSize(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
@@ -103,6 +107,21 @@ private fun ProjectLicenseCard(
         )
 
         // Nombre de la App y Versión
+        val context = LocalContext.current
+        val appVersion = remember(context) {
+            runCatching {
+                val pkgInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    context.packageManager.getPackageInfo(
+                        context.packageName,
+                        PackageManager.PackageInfoFlags.of(0)
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.packageManager.getPackageInfo(context.packageName, 0)
+                }
+                pkgInfo.versionName ?: "1.4.2"
+            }.getOrDefault("1.4.2")
+        }
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(
                 text = "Telemetría GPS",
@@ -111,7 +130,7 @@ private fun ProjectLicenseCard(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Versión 1.3.8 • Producción",
+                text = "Versión $appVersion • Producción",
                 color = Color(0xFF94A3B8),
                 fontSize = 13.sp,
                 fontWeight = FontWeight.Medium
@@ -144,7 +163,7 @@ private fun ProjectLicenseCard(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Copyright (c) 2026 Gamavg06 / Equipo Telemetría GPS.\n\nSe concede permiso para utilizar, copiar, modificar y distribuir este software conforme a los términos de la licencia MIT estándar de código abierto.",
+                text = "Copyright (c) 2026 Gamaliel Velazquez Galicia (SGNIA). Todos los derechos reservados sobre el codigo fuente propio.\n\nSe concede permiso para utilizar, copiar, modificar y distribuir este software conforme a los términos de la licencia MIT estándar de código abierto.",
                 color = Color(0xFF94A3B8),
                 fontSize = 11.sp,
                 lineHeight = 16.sp
@@ -217,14 +236,14 @@ private fun ThirdPartyNoticesCard(
         // Item 1: SCS SDK Plugin
         NoticeItem(
             title = "SCS SDK Plugin (RenCloud)",
-            license = "Licencia MIT / Apache 2.0",
+            license = "Licencia MIT",
             description = "Plugin de telemetría nativo para extracción de memoria compartida en Euro Truck Simulator 2 y American Truck Simulator."
         )
 
         // Item 2: TruckLib & Map Binary Extractor
         NoticeItem(
             title = "TruckLib & Binary Map Extractor (sk-zk)",
-            license = "Licencia MIT",
+            license = "Licencia GNU GPL-2.0 (solo servidor PC)",
             description = "Estructuras de datos y algoritmos para extracción del grafo vial, nodos, conexiones y sectores de mapa de SCS Software."
         )
 

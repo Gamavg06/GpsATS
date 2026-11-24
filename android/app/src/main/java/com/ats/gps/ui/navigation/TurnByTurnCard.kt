@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -62,8 +63,14 @@ fun TurnByTurnCard(
 ) {
     if (activeRoute == null || activeRoute.edgePath.isEmpty()) return
 
-    val instruction = instructionOverride ?: calculateNavigationInstruction(truckX, truckZ, activeRoute, destinationCity)
-        ?: return
+    val navCache = remember { NavigationInstructionCache() }
+    val instruction = instructionOverride ?: calculateNavigationInstruction(
+        truckX = truckX,
+        truckZ = truckZ,
+        route = activeRoute,
+        destinationCity = destinationCity,
+        cache = navCache
+    ) ?: return
 
     Box(
         modifier = modifier
@@ -271,7 +278,7 @@ private fun DrawScope.drawManeuverPath(
             // Flecha curva en ángulo de 90° hacia la derecha
             path.moveTo(w * 0.25f, h * 0.88f)
             path.lineTo(w * 0.25f, h * 0.50f)
-            path.quadraticBezierTo(w * 0.25f, h * 0.25f, w * 0.55f, h * 0.25f)
+            path.quadraticTo(w * 0.25f, h * 0.25f, w * 0.55f, h * 0.25f)
             path.lineTo(w * 0.82f, h * 0.25f)
             // Punta de la flecha
             path.moveTo(w * 0.62f, h * 0.08f)
@@ -281,7 +288,7 @@ private fun DrawScope.drawManeuverPath(
         ManeuverType.SLIGHT_RIGHT -> {
             // Bifurcación suave a la derecha
             path.moveTo(w * 0.35f, h * 0.88f)
-            path.quadraticBezierTo(w * 0.4f, h * 0.5f, w * 0.75f, h * 0.25f)
+            path.quadraticTo(w * 0.4f, h * 0.5f, w * 0.75f, h * 0.25f)
             path.moveTo(w * 0.52f, h * 0.22f)
             path.lineTo(w * 0.80f, h * 0.22f)
             path.lineTo(w * 0.76f, h * 0.45f)
@@ -290,7 +297,7 @@ private fun DrawScope.drawManeuverPath(
             // Flecha curva en ángulo de 90° hacia la izquierda
             path.moveTo(w * 0.75f, h * 0.88f)
             path.lineTo(w * 0.75f, h * 0.50f)
-            path.quadraticBezierTo(w * 0.75f, h * 0.25f, w * 0.45f, h * 0.25f)
+            path.quadraticTo(w * 0.75f, h * 0.25f, w * 0.45f, h * 0.25f)
             path.lineTo(w * 0.18f, h * 0.25f)
             // Punta
             path.moveTo(w * 0.38f, h * 0.08f)
@@ -299,7 +306,7 @@ private fun DrawScope.drawManeuverPath(
         }
         ManeuverType.SLIGHT_LEFT -> {
             path.moveTo(w * 0.65f, h * 0.88f)
-            path.quadraticBezierTo(w * 0.6f, h * 0.5f, w * 0.25f, h * 0.25f)
+            path.quadraticTo(w * 0.6f, h * 0.5f, w * 0.25f, h * 0.25f)
             path.moveTo(w * 0.48f, h * 0.22f)
             path.lineTo(w * 0.20f, h * 0.22f)
             path.lineTo(w * 0.24f, h * 0.45f)
@@ -307,8 +314,8 @@ private fun DrawScope.drawManeuverPath(
         ManeuverType.U_TURN -> {
             path.moveTo(w * 0.70f, h * 0.88f)
             path.lineTo(w * 0.70f, h * 0.45f)
-            path.quadraticBezierTo(w * 0.70f, h * 0.15f, w * 0.45f, h * 0.15f)
-            path.quadraticBezierTo(w * 0.20f, h * 0.15f, w * 0.20f, h * 0.45f)
+            path.quadraticTo(w * 0.70f, h * 0.15f, w * 0.45f, h * 0.15f)
+            path.quadraticTo(w * 0.20f, h * 0.15f, w * 0.20f, h * 0.45f)
             path.lineTo(w * 0.20f, h * 0.75f)
             path.moveTo(w * 0.06f, h * 0.58f)
             path.lineTo(w * 0.20f, h * 0.82f)
@@ -323,12 +330,14 @@ private fun DrawScope.drawManeuverPath(
     )
 }
 
-// Cache interno para evitar recalcular la búsqueda en toda la ruta en cada frame
-private var lastCachedRoute: RouteResult? = null
-private var lastCachedTruckX: Float = Float.NaN
-private var lastCachedTruckZ: Float = Float.NaN
-private var lastCachedEdgeIdx: Int = 0
-private var lastInstruction: NavigationInstruction? = null
+class NavigationInstructionCache {
+    var lastRoute: RouteResult? = null
+    var lastDestinationCity: String = ""
+    var lastTruckX: Float = Float.NaN
+    var lastTruckZ: Float = Float.NaN
+    var lastEdgeIdx: Int = 0
+    var lastInstruction: NavigationInstruction? = null
+}
 
 /**
  * Analiza la ruta activa y posición del camión para deducir la próxima maniobra,
@@ -338,17 +347,18 @@ fun calculateNavigationInstruction(
     truckX: Float,
     truckZ: Float,
     route: RouteResult,
-    destinationCity: String
+    destinationCity: String,
+    cache: NavigationInstructionCache? = null
 ): NavigationInstruction? {
     val edges = route.edgePath
     if (edges.isEmpty()) return null
 
-    // Si el camión se movió menos de 1.5 metros y la ruta es la misma, devolver la instrucción en caché
-    if (lastCachedRoute === route && !lastCachedTruckX.isNaN()) {
-        val dx = truckX - lastCachedTruckX
-        val dz = truckZ - lastCachedTruckZ
-        if (dx * dx + dz * dz < 2.25f && lastInstruction != null) {
-            return lastInstruction
+    // Si el camión se movió menos de 1.5 metros y la ruta/destino son iguales, devolver la instrucción en caché
+    if (cache != null && cache.lastRoute === route && cache.lastDestinationCity == destinationCity && !cache.lastTruckX.isNaN()) {
+        val dx = truckX - cache.lastTruckX
+        val dz = truckZ - cache.lastTruckZ
+        if (dx * dx + dz * dz < 2.25f && cache.lastInstruction != null) {
+            return cache.lastInstruction
         }
     }
 
@@ -356,9 +366,9 @@ fun calculateNavigationInstruction(
     var currentEdgeIdx = 0
     var minDistSq = Float.MAX_VALUE
 
-    val isSameRoute = (lastCachedRoute === route)
-    val startSearch = if (isSameRoute) (lastCachedEdgeIdx - 2).coerceAtLeast(0) else 0
-    val endSearch = if (isSameRoute) (lastCachedEdgeIdx + 8).coerceAtMost(edges.size - 1) else edges.size - 1
+    val isSameRoute = (cache != null && cache.lastRoute === route)
+    val startSearch = if (isSameRoute) (cache!!.lastEdgeIdx - 2).coerceAtLeast(0) else 0
+    val endSearch = if (isSameRoute) (cache!!.lastEdgeIdx + 8).coerceAtMost(edges.size - 1) else edges.size - 1
 
     for (i in startSearch..endSearch) {
         val edge = edges[i]
@@ -412,17 +422,26 @@ fun calculateNavigationInstruction(
         if (eCurr.polyline.size >= 2 && eNext.polyline.size >= 2) {
             val p1 = eCurr.polyline[eCurr.polyline.size - 2]
             val p2 = eCurr.polyline[eCurr.polyline.size - 1]
-            val p3 = eNext.polyline[1]
+            val nextP0 = eNext.polyline[0]
+            val nextP1 = eNext.polyline[1]
 
-            val angle1 = atan2((p2.z - p1.z).toDouble(), (p2.x - p1.x).toDouble())
-            val angle2 = atan2((p3.z - p2.z).toDouble(), (p3.x - p2.x).toDouble())
+            val dx1 = (p2.x - p1.x).toDouble()
+            val dz1 = (p2.z - p1.z).toDouble()
+            val dx2 = (nextP1.x - nextP0.x).toDouble()
+            val dz2 = (nextP1.z - nextP0.z).toDouble()
+
+            if (dx1 * dx1 + dz1 * dz1 < 1e-4 || dx2 * dx2 + dz2 * dz2 < 1e-4) continue
+
+            val angle1 = atan2(dz1, dx1)
+            val angle2 = atan2(dz2, dx2)
 
             var diffDeg = Math.toDegrees(angle2 - angle1)
             while (diffDeg > 180.0) diffDeg -= 360.0
             while (diffDeg < -180.0) diffDeg += 360.0
 
-            if (abs(diffDeg) >= 20.0 || eNext.roadType.toInt() == 3) {
-                // Maniobra detectada
+            val isRamp = eNext.roadType.toInt() == 3
+            if (abs(diffDeg) >= 20.0 || isRamp) {
+                var matched = true
                 when {
                     diffDeg > 120.0 || diffDeg < -120.0 -> {
                         nextManeuver = ManeuverType.U_TURN
@@ -436,7 +455,7 @@ fun calculateNavigationInstruction(
                     }
                     diffDeg in 20.0..55.0 -> {
                         nextManeuver = ManeuverType.SLIGHT_RIGHT
-                        maneuverTitle = if (eNext.roadType.toInt() == 3) "Toma la salida a la derecha" else "Mantén a la derecha"
+                        maneuverTitle = if (isRamp) "Toma la salida a la derecha" else "Mantén a la derecha"
                         targetLane = totalLanes - 1
                     }
                     diffDeg < -55.0 -> {
@@ -446,11 +465,25 @@ fun calculateNavigationInstruction(
                     }
                     diffDeg in -55.0..-20.0 -> {
                         nextManeuver = ManeuverType.SLIGHT_LEFT
-                        maneuverTitle = "Mantén a la izquierda"
+                        maneuverTitle = if (isRamp) "Toma la salida a la izquierda" else "Mantén a la izquierda"
                         targetLane = 0
                     }
+                    isRamp -> {
+                        if (diffDeg >= 6.0) {
+                            nextManeuver = ManeuverType.SLIGHT_RIGHT
+                            maneuverTitle = "Toma la salida a la derecha"
+                            targetLane = totalLanes - 1
+                        } else if (diffDeg <= -6.0) {
+                            nextManeuver = ManeuverType.SLIGHT_LEFT
+                            maneuverTitle = "Toma la salida a la izquierda"
+                            targetLane = 0
+                        } else {
+                            matched = false
+                        }
+                    }
+                    else -> matched = false
                 }
-                break
+                if (matched) break
             }
         }
     }
@@ -460,7 +493,7 @@ fun calculateNavigationInstruction(
         maneuverTitle = "Camino Oculto / Atajo"
         maneuverSubtitle = "Tramo secreto no cartografiado"
     } else if (nextManeuver == ManeuverType.STRAIGHT) {
-        distAcc = route.totalDistanceMeters
+        distAcc += edges.last().length
         maneuverTitle = "Continúa recto"
         targetLane = if (totalLanes > 2) totalLanes - 2 else totalLanes - 1 // Carril central/derecho
     }
@@ -476,11 +509,14 @@ fun calculateNavigationInstruction(
         isHiddenRoad = isCurrentHidden
     )
 
-    lastCachedRoute = route
-    lastCachedTruckX = truckX
-    lastCachedTruckZ = truckZ
-    lastCachedEdgeIdx = currentEdgeIdx
-    lastInstruction = result
+    if (cache != null) {
+        cache.lastRoute = route
+        cache.lastDestinationCity = destinationCity
+        cache.lastTruckX = truckX
+        cache.lastTruckZ = truckZ
+        cache.lastEdgeIdx = currentEdgeIdx
+        cache.lastInstruction = result
+    }
 
     return result
 }

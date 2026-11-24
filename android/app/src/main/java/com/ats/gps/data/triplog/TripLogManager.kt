@@ -45,7 +45,7 @@ class TripLogManager(context: Context) {
                 )
             }
         } catch (_: Exception) { }
-        return list.reversed() // Más recientes primero
+        return list // Almacenado siempre en orden [mas reciente .. mas antiguo]
     }
 
     fun addTrip(record: TripRecord) {

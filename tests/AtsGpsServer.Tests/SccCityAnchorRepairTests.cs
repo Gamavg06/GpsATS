@@ -41,27 +41,59 @@ namespace AtsGpsServer.Tests
             int index = 0;
             var sccs = new List<List<int>>();
 
-            for (int u = 0; u < n; u++) if (indices[u] == -1) StrongConnect(u);
-
-            void StrongConnect(int v)
+            var callStack = new Stack<(int Node, int EdgeIdx)>();
+            for (int u = 0; u < n; u++)
             {
-                indices[v] = index; lowlink[v] = index; index++;
-                stack.Push(v); onStack[v] = true;
-                foreach (var w in adj[v])
+                if (indices[u] != -1) continue;
+                indices[u] = index;
+                lowlink[u] = index;
+                index++;
+                stack.Push(u);
+                onStack[u] = true;
+                callStack.Push((u, 0));
+
+                while (callStack.Count > 0)
                 {
-                    int wi = (int)w;
-                    if (indices[wi] == -1) { StrongConnect(wi); lowlink[v] = Math.Min(lowlink[v], lowlink[wi]); }
-                    else if (onStack[wi]) { lowlink[v] = Math.Min(lowlink[v], indices[wi]); }
-                }
-                if (lowlink[v] == indices[v])
-                {
-                    var comp = new List<int>();
-                    while (true)
+                    var (v, eIdx) = callStack.Pop();
+                    var neighbors = adj[v];
+                    if (eIdx < neighbors.Count)
                     {
-                        int w = stack.Pop(); onStack[w] = false; comp.Add(w);
-                        if (w == v) break;
+                        callStack.Push((v, eIdx + 1));
+                        int wi = (int)neighbors[eIdx];
+                        if (indices[wi] == -1)
+                        {
+                            indices[wi] = index;
+                            lowlink[wi] = index;
+                            index++;
+                            stack.Push(wi);
+                            onStack[wi] = true;
+                            callStack.Push((wi, 0));
+                        }
+                        else if (onStack[wi])
+                        {
+                            lowlink[v] = Math.Min(lowlink[v], indices[wi]);
+                        }
                     }
-                    sccs.Add(comp);
+                    else
+                    {
+                        if (callStack.Count > 0)
+                        {
+                            int parent = callStack.Peek().Node;
+                            lowlink[parent] = Math.Min(lowlink[parent], lowlink[v]);
+                        }
+                        if (lowlink[v] == indices[v])
+                        {
+                            var comp = new List<int>();
+                            while (true)
+                            {
+                                int w = stack.Pop();
+                                onStack[w] = false;
+                                comp.Add(w);
+                                if (w == v) break;
+                            }
+                            sccs.Add(comp);
+                        }
+                    }
                 }
             }
 

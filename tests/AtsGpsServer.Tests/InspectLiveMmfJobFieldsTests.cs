@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Text;
 using AtsGpsServer.Telemetry;
@@ -19,8 +20,20 @@ namespace AtsGpsServer.Tests
         [Fact]
         public void Dump_All_Strings_And_Job_Fields_In_Shared_Memory()
         {
-            using var mmf = MemoryMappedFile.OpenExisting(@"Local\SCSTelemetry", MemoryMappedFileRights.Read);
-            using var accessor = mmf.CreateViewAccessor(0, 32 * 1024, MemoryMappedFileAccess.Read);
+            MemoryMappedFile? mmf = null;
+            try
+            {
+                mmf = MemoryMappedFile.OpenExisting(@"Local\SCSTelemetry", MemoryMappedFileRights.Read);
+            }
+            catch (FileNotFoundException)
+            {
+                _output.WriteLine("[INFO] ATS no esta en ejecucion (memoria compartida Local\\SCSTelemetry no encontrada). Test omitido.");
+                return;
+            }
+
+            using (mmf)
+            using (var accessor = mmf.CreateViewAccessor(0, 32 * 1024, MemoryMappedFileAccess.Read))
+            {
 
             bool sdkActive = accessor.ReadBoolean(0);
             bool paused = accessor.ReadBoolean(4);
@@ -101,6 +114,7 @@ namespace AtsGpsServer.Tests
             {
                 float f = accessor.ReadSingle(offset);
                 _output.WriteLine($"Offset {offset} (Single): {f}");
+            }
             }
         }
 

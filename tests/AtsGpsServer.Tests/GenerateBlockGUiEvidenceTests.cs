@@ -18,23 +18,24 @@ namespace AtsGpsServer.Tests
         [Fact]
         public void Generate_All_Visual_Artifacts_For_Block_G()
         {
-            string outDir = @"C:\Users\gmlve\Downloads";
+            string outDir = Path.Combine(Path.GetTempPath(), "AtsGpsTests");
+            Directory.CreateDirectory(outDir);
 
             // 1. SVG: Tablero Propio Vertical (Portrait) con Tacómetro, Velocímetro y Luces
             string portraitSvg = GeneratePortraitDashboardSvg();
-            File.WriteAllText(Path.Combine(outDir, "UI_Dashboard_v1.3.0_Portrait.svg"), portraitSvg, Encoding.UTF8);
+            File.WriteAllText(Path.Combine(outDir, "UI_Dashboard_v1.4.2_Portrait.svg"), portraitSvg, Encoding.UTF8);
 
             // 2. SVG: Tablero Propio Horizontal (Landscape) con Split-Screen y Remolque
             string landscapeSvg = GenerateLandscapeDashboardSvg();
-            File.WriteAllText(Path.Combine(outDir, "UI_Dashboard_v1.3.0_Landscape.svg"), landscapeSvg, Encoding.UTF8);
+            File.WriteAllText(Path.Combine(outDir, "UI_Dashboard_v1.4.2_Landscape.svg"), landscapeSvg, Encoding.UTF8);
 
             // 3. SVG: Comparativa 2D vs 3D desde la MISMA posición con Carreteras bajo el camión
             string mapComparisonSvg = GenerateMapComparison2Dvs3DSvg();
             File.WriteAllText(Path.Combine(outDir, "Map_Comparison_2D_vs_3D_SamePosition.svg"), mapComparisonSvg, Encoding.UTF8);
 
-            _output.WriteLine("SVGs generados exitosamente en C:\\Users\\gmlve\\Downloads:");
-            _output.WriteLine(" - UI_Dashboard_v1.3.0_Portrait.svg");
-            _output.WriteLine(" - UI_Dashboard_v1.3.0_Landscape.svg");
+            _output.WriteLine($"SVGs generados exitosamente en {outDir}:");
+            _output.WriteLine(" - UI_Dashboard_v1.4.2_Portrait.svg");
+            _output.WriteLine(" - UI_Dashboard_v1.4.2_Landscape.svg");
             _output.WriteLine(" - Map_Comparison_2D_vs_3D_SamePosition.svg");
         }
 
@@ -61,7 +62,7 @@ namespace AtsGpsServer.Tests
 
             // Alerta de Exceso de Velocidad (G3)
             sb.AppendLine("  <rect x=\"16\" y=\"80\" width=\"418\" height=\"38\" rx=\"8\" fill=\"#450A0A\" stroke=\"#EF4444\" stroke-width=\"1.8\"/>");
-            sb.AppendLine("  <text x=\"32\" y=\"104\" fill=\"#FCA5A5\" font-family=\"sans-serif\" font-size=\"13\" font-weight=\"bold\">⚠️ ¡EXCESO DE VELOCIDAD! LÍMITE: 80 KM/H (ACTUAL: 105 KM/H)</text>");
+            sb.AppendLine("  <text x=\"32\" y=\"104\" fill=\"#FCA5A5\" font-family=\"sans-serif\" font-size=\"13\" font-weight=\"bold\">[ALERTA] ¡EXCESO DE VELOCIDAD! LÍMITE: 80 KM/H (ACTUAL: 105 KM/H)</text>");
 
             // Relojes Circulares Propios (G4): Velocímetro y Tacómetro
             // Velocímetro Izquierdo (Centro 125, 230)
@@ -181,9 +182,9 @@ namespace AtsGpsServer.Tests
 
             // Combustible / Ganancia en Landscape
             sb.AppendLine("  <rect x=\"490\" y=\"360\" width=\"320\" height=\"45\" rx=\"8\" fill=\"#1F2937\"/>");
-            sb.AppendLine("  <text x=\"510\" y=\"388\" fill=\"#FBBF24\" font-family=\"monospace\" font-size=\"15\" font-weight=\"bold\">⛽ 380 L</text>");
+            sb.AppendLine("  <text x=\"510\" y=\"388\" fill=\"#FBBF24\" font-family=\"monospace\" font-size=\"15\" font-weight=\"bold\">COMB: 380 L</text>");
             sb.AppendLine("  <text x=\"610\" y=\"388\" fill=\"#FFFFFF\" font-family=\"monospace\" font-size=\"15\" font-weight=\"bold\">32.5 L/100</text>");
-            sb.AppendLine("  <text x=\"725\" y=\"388\" fill=\"#10B981\" font-family=\"monospace\" font-size=\"15\" font-weight=\"bold\">💵 $1,438</text>");
+            sb.AppendLine("  <text x=\"725\" y=\"388\" fill=\"#10B981\" font-family=\"monospace\" font-size=\"15\" font-weight=\"bold\">$1,438</text>");
 
             // Barra inferior en Landscape
             sb.AppendLine("  <rect x=\"0\" y=\"435\" width=\"850\" height=\"45\" fill=\"#0A0F1D\"/>");

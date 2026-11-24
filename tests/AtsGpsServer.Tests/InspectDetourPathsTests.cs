@@ -41,27 +41,59 @@ namespace AtsGpsServer.Tests
             int idxCounter = 0;
             var sccs = new List<List<int>>();
 
-            for (int u = 0; u < n; u++) if (indices[u] == -1) StrongConnect(u);
-
-            void StrongConnect(int v)
+            var callStack = new Stack<(int Node, int EdgeIdx)>();
+            for (int u = 0; u < n; u++)
             {
-                indices[v] = idxCounter; lowlink[v] = idxCounter; idxCounter++;
-                stack.Push(v); onStack[v] = true;
-                foreach (var w in adj[v])
+                if (indices[u] != -1) continue;
+                indices[u] = idxCounter;
+                lowlink[u] = idxCounter;
+                idxCounter++;
+                stack.Push(u);
+                onStack[u] = true;
+                callStack.Push((u, 0));
+
+                while (callStack.Count > 0)
                 {
-                    int wi = (int)w;
-                    if (indices[wi] == -1) { StrongConnect(wi); lowlink[v] = Math.Min(lowlink[v], lowlink[wi]); }
-                    else if (onStack[wi]) { lowlink[v] = Math.Min(lowlink[v], indices[wi]); }
-                }
-                if (lowlink[v] == indices[v])
-                {
-                    var comp = new List<int>();
-                    while (true)
+                    var (v, eIdx) = callStack.Pop();
+                    var neighbors = adj[v];
+                    if (eIdx < neighbors.Count)
                     {
-                        int w = stack.Pop(); onStack[w] = false; comp.Add(w);
-                        if (w == v) break;
+                        callStack.Push((v, eIdx + 1));
+                        int wi = (int)neighbors[eIdx];
+                        if (indices[wi] == -1)
+                        {
+                            indices[wi] = idxCounter;
+                            lowlink[wi] = idxCounter;
+                            idxCounter++;
+                            stack.Push(wi);
+                            onStack[wi] = true;
+                            callStack.Push((wi, 0));
+                        }
+                        else if (onStack[wi])
+                        {
+                            lowlink[v] = Math.Min(lowlink[v], indices[wi]);
+                        }
                     }
-                    sccs.Add(comp);
+                    else
+                    {
+                        if (callStack.Count > 0)
+                        {
+                            int parent = callStack.Peek().Node;
+                            lowlink[parent] = Math.Min(lowlink[parent], lowlink[v]);
+                        }
+                        if (lowlink[v] == indices[v])
+                        {
+                            var comp = new List<int>();
+                            while (true)
+                            {
+                                int w = stack.Pop();
+                                onStack[w] = false;
+                                comp.Add(w);
+                                if (w == v) break;
+                            }
+                            sccs.Add(comp);
+                        }
+                    }
                 }
             }
 
@@ -114,7 +146,7 @@ namespace AtsGpsServer.Tests
                 var res = pf.FindRoute(n1, n2);
 
                 _output.WriteLine($"\n================================================================================");
-                _output.WriteLine($"DETALLE DE DESVÍO: {c1} (Nodo {n1}) ➔ {c2} (Nodo {n2})");
+                _output.WriteLine($"DETALLE DE DESVÍO: {c1} (Nodo {n1}) -> {c2} (Nodo {n2})");
                 _output.WriteLine($"  Longitud total ruta: {res.TotalLengthMeters / 1000f:F2} km");
                 _output.WriteLine($"  Distancia euclídea:   {res.EuclideanStraightDistance / 1000f:F2} km");
                 _output.WriteLine($"  Ratio de desvío:     {res.DetourRatio:F2}x");
