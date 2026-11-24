@@ -6,17 +6,29 @@ Todas las modificaciones notables, correcciones de errores y nuevas funcionalida
 
 ## [v1.4.2] - 2026-11-23
 ### Agregado, Corregido y Auditado
+- **Endurecimiento Integral de Seguridad Local (`server/Security/`, `server/Program.cs`, `android/`):**
+  - Nuevo `RequestSecurityMiddleware`: rechazo inmediato (`403 Forbidden`) ante cualquier cabecera `Origin` presente y validacion estricta del encabezado `Host` (`localhost`, loopback, RFC 1918, link-local IPv6 `fe80::/10` o ULA `fc00::/7`).
+  - Eliminacion completa de exenciones de PIN por USB/`localhost`/`192.168.42.x` en `POST /api/pair` y en el cliente Android.
+  - Bloqueo por intentos fallidos **por IP** (`429 Too Many Requests` con `Retry-After` tras 5 fallos durante 2 minutos sin afectar a otras IPs de la LAN).
+  - Autenticacion obligatoria mediante `Authorization: Bearer <token>` (`401 Unauthorized` si falta o es invalido) en `/api/control/key`, `/api/map/info`, `/api/map/build`, `/api/map/download`, `/api/destinations`, `/api/telemetry/snapshot` y `/ws/telemetry` (validado antes de `AcceptWebSocketAsync()`).
+  - Nuevo `AuthTokenStore` en Android para persistencia segura de sesion de 48 h y limpieza automatica ante respuestas `401` o cierre WebSocket `1008`.
+- **Generacion Local de Mapa sin Redistribucion de Activos del Juego:**
+  - `map_ats.bin` excluido del repositorio y del paquete `payload.zip` del instalador; se genera localmente en el equipo del usuario mediante `AtsGpsServer --build-map` (detectando encabezados `ATSMAP03` v3 existentes para omitir regeneracion redundante).
+  - El instalador Setup (`tools/AtsGpsInstaller/Program.cs`) incorpora casilla `chkBuildMap` y ejecuta `AtsGpsServer.exe --build-map` leyendo el progreso `[cur/tot]` en tiempo real.
+  - Documentacion tecnica precisa de geometria vial por interpolacion lineal de 5 puntos (`Vector3.Lerp`).
+- **Cumplimiento Legal, Distribucion Limpia y Lanzador WPF:**
+  - Creacion del archivo consolidado [`NOTICE`](NOTICE) (UTF-8 sin BOM) y actualizacion de [`LICENSES.md`](LICENSES.md) y `AboutScreen.kt` con el texto integro de la licencia MIT de RenCloud `scs-sdk-plugin`, avisos de TruckLib (GPL-2.0), SCS SDK (MIT), librerias .NET/Android y enlace clickable al repositorio oficial (`https://github.com/Gamavg06/GpsATS`).
+  - Paso 1 obligatorio de revision y aceptacion de licencias (`NOTICE`, `LICENSES.md`, `LICENSE`) en `tools/AtsGpsInstaller/Program.cs`.
+  - Resolucion de ADB (`adb.exe`) opcional en `tools/AtsGpsLauncher` (junto al ejecutable, raiz, Android SDK y `PATH`) con estado claro y boton clickable para descargar Android SDK Platform-Tools sin bloquear el uso por Wi-Fi.
+  - Eliminacion del APK duplicado (distribucion unica `apks/AtsGpsApp_v1.4.2.apk`), exclusion de `Microsoft.CodeAnalysis.dll` y archivos `.pdb` de `server/publish/`, y archivo de integridad [`SHA256SUMS`](SHA256SUMS).
 - **Soporte de Caminos Ocultos / Atajos Secretos SCS (`RoadType = 5` / `HiddenSecretRoad`):**
   - Deteccion, extraccion binaria y renderizado diferenciado en 2D y 3D para vias secretas / atajos ocultos del mapa SCS, incluyendo indicador dedicado en la tarjeta de maniobras `TurnByTurnCard`.
 - **Resolucion Exacta de Destinos y Ruteo Transcontinental Ampliado:**
   - Resolucion exacta y normalizada de destinos por ciudad y empresa entre la telemetria en vivo y `map_ats.bin`.
   - Ampliacion del limite de busqueda de `AStarRouter` a **500,000 pasos** para soportar rutas transcontinentales de larga distancia sin cortes prematuros.
-- **Correccion Geometrica de Prefabs 3D:**
+- **Correccion Geometrica de Prefabs 3D y Estabilidad:**
   - Eliminacion de picos triangulares y artefactos de proyeccion en prefabs dentro del renderizador 3D (`GpsMapCanvas.kt`).
-- **Auditoria Integral y Correcciones de Estabilidad:**
-  - Unificacion de version **v1.4.2 (Build 17)** en servidor, lanzador WPF, instalador Setup, aplicacion Android y documentacion.
-  - Deteccion dinamica de Steam y American Truck Simulator (`detect-ats.ps1` y scripts) eliminando rutas fijas heredadas.
-  - Refuerzo de seguridad en endpoints de control, correccion de concurrencia WebSocket/MMF en servidor, fijacion de destinos manuales, persistencia de bitacora y gestion de memoria de audio (TTS) en Android.
+  - Unificacion de version **v1.4.2 (Build 17)**, deteccion dinamica de Steam/ATS (`detect-ats.ps1`), fijacion de destinos manuales, persistencia de bitacora y gestion de memoria de audio (TTS) en Android.
 
 ---
 

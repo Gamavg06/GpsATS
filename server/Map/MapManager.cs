@@ -14,6 +14,7 @@ namespace AtsGpsServer.Map
         private MapGraph? _cachedGraph;
 
         public bool IsMapReady => File.Exists(_mapFilePath);
+        public bool HasValidMap => MapBinarySerializer.IsValidHeader(_mapFilePath);
         public string MapFilePath => _mapFilePath;
         public string AtsDirectory => _atsDir;
 

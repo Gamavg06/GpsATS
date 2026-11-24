@@ -6,26 +6,38 @@ Este documento describe las garantias de seguridad incorporadas en **SGNIA - ATS
 
 ## 1. Modelo de Seguridad en Red Local
 
-El servidor companion escucha en el puerto TCP `35500` y esta disenado exclusivamente para operar dentro de una red local de confianza o mediante tunel USB directo (`adb reverse`).
+El servidor companion escucha en el puerto TCP `35500` y esta disenado exclusivamente para operar dentro de una red local privada de confianza o mediante tunel USB opcional (`adb reverse`).
 
-### Autenticacion por PIN y Token de Sesion
-- **Generacion Criptografica del PIN:** Al iniciar el servidor, `AuthManager` genera un PIN aleatorio de 6 digitos mediante `RandomNumberGenerator.GetInt32`.
-- **Comparacion en Tiempo Constante y Bloqueo:** La verificacion del PIN en `POST /api/pair` utiliza `CryptographicOperations.FixedTimeEquals` y bloquea temporalmente nuevos intentos durante 2 minutos tras 5 fallos consecutivos.
-- **Tokens de Sesion (48 horas):** Tras emparejarse, el servidor emite un token criptografico de 32 bytes con vigencia de 48 horas.
-- **Endpoints Protegidos:** Tanto el canal WebSocket en tiempo real (`/ws/telemetry?token=...`) como los endpoints REST sensibles —`/api/telemetry/snapshot`, `/api/control/key` (emulacion de teclado virtual hacia el simulador) y `/api/map/build` (extraccion cartografica local)— exigen validacion estricta del token de sesion mediante query string `?token=` o cabecera `Authorization: Bearer <token>`.
-- **Exencion Directa USB:** Las conexiones provenientes de loopback (`127.0.0.1` / `::1`) via `adb reverse` o de la subred estandar de USB Tethering Android (`192.168.42.x`) pueden autorizarse automaticamente desde `/api/pair` sin introducir el PIN manual.
-
-### Restriccion a Subredes Privadas (RFC 1918 / Loopback)
-- **Middleware de Servidor (`IpWhitelistMiddleware`):** Todas las peticiones HTTP y WebSocket entrantes son filtradas antes de alcanzar los controladores; cualquier direccion IP externa o publica recibe `403 Forbidden`. Unicamente se aceptan direcciones Loopback (`127.0.0.1`, `::1`), RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), Link-Local (`169.254.0.0/16`, `fe80::`) y ULA IPv6 (`fc00::/7`).
-- **Validacion en Cliente Android (`AtsNetworkClient`):** El cliente movil valida mediante `isAllowedPrivateAddress` que el host destino pertenezca exclusivamente a direcciones loopback, locales de sitio o link-local antes de establecer conexiones HTTP o WebSocket.
+### Validacion Estricta de `Origin`, `Host` y Subredes Privadas
+- **Bloqueo de Peticiones con `Origin` (`RequestSecurityMiddleware`):** Cualquier peticion HTTP o WebSocket que incluya la cabecera `Origin` (sin importar su valor, incluyendo `localhost`) recibe **`403 Forbidden`** inmediatamente antes de alcanzar los endpoints, bloqueando ataques CSRF y llamadas desde navegadores web.
+- **Validacion Estricta del Encabezado `Host` (`RequestSecurityMiddleware`):** Se analiza el `Host` (sin puerto y normalizando IPv6) y se permiten unicamente `localhost`, direcciones loopback (`127.0.0.0/8`, `::1`), direcciones IPv4 privadas RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) e IPv6 link-local (`fe80::/10`) o ULA (`fc00::/7`). Cualquier otro valor (dominios externos, IPs publicas, `169.254.x.x` o `Host` vacio/invalido) recibe **`403 Forbidden`**.
+- **Middleware de IP de Origen (`IpWhitelistMiddleware`):** Todas las conexiones entrantes con IP publica o fuera de redes locales permitidas reciben **`403 Forbidden`**.
+- **Validacion en Cliente Android (`AtsNetworkClient`):** El cliente movil verifica mediante `isAllowedPrivateAddress` que el host destino pertenezca exclusivamente a direcciones loopback, locales de sitio o link-local antes de establecer conexiones HTTP o WebSocket.
 - **Regla de Firewall en Instalador:** El instalador oficial (`tools/AtsGpsInstaller/Program.cs`) configura la regla entrante para el puerto TCP `35500` restringida a perfil privado y subred local (`profile=private remoteip=LocalSubnet`).
+
+### Autenticacion Obligatoria por PIN, Bloqueo por IP y Token Bearer
+- **Generacion Criptografica del PIN:** Al iniciar el servidor, `AuthManager` genera un PIN aleatorio de 6 digitos mediante `RandomNumberGenerator.GetInt32`.
+- **Sin Exenciones USB ni Localhost:** `POST /api/pair` exige siempre el PIN valido de 6 digitos tanto por Wi-Fi como por cable USB (`adb reverse` / `127.0.0.1` o `192.168.42.x`). No existen credenciales especiales ni bypass automatico para conexiones locales; un PIN vacio, incorrecto o legado recibe **`401 Unauthorized`**.
+- **Comparacion en Tiempo Constante y Bloqueo por IP:** La verificacion del PIN utiliza `CryptographicOperations.FixedTimeEquals`. Tras 5 intentos fallidos consecutivos desde una misma direccion IP, el servidor bloquea esa IP especifica durante 2 minutos respondiendo **`429 Too Many Requests`** (con cabecera `Retry-After`), sin afectar a otros dispositivos legitimos de la red local.
+- **Tokens de Sesion (48 horas) y Persistencia Segura:** Tras emparejarse con el PIN correcto, el servidor emite un token criptografico de 32 bytes con vigencia de 48 horas. En Android, `AuthTokenStore` persiste el token vinculado al host durante 48 horas y lo revoca automaticamente si el servidor responde `401`, solicitando de nuevo el PIN.
+- **Endpoints Protegidos (`401 Unauthorized` sin `Authorization: Bearer <token>`):**
+  - `POST /api/control/key` (emulacion de teclado virtual hacia el simulador)
+  - `GET /api/map/info`
+  - `POST /api/map/build` (extraccion cartografica local)
+  - `GET /api/map/download`
+  - `GET /api/destinations`
+  - `GET /api/telemetry/snapshot`
+  - `GET /ws/telemetry` (el token mediante `Authorization: Bearer <token>` —o fallback opcional— se valida **antes** de ejecutar `AcceptWebSocketAsync()`, devolviendo HTTP `401` si falta o es invalido)
+- Unicamente `GET /api/status` (salud/version basica) y `POST /api/pair` (protegido por PIN y bloqueo por IP) no requieren cabecera `Authorization: Bearer`.
 
 ---
 
-## 2. Integridad del Instalador y Empaquetado
+## 2. Integridad del Instalador, Empaquetado y Mapa Local
 
-- **Proteccion contra Zip Slip:** Durante la extraccion del paquete embebido `payload.zip`, `tools/AtsGpsInstaller/Program.cs` resuelve `Path.GetFullPath(...)` y valida que cada ruta destino permanezca estrictamente dentro del directorio de instalacion seleccionado antes de crear directorios o escribir archivos.
-- **Escritura Atomica del Mapa Binario:** `MapManager.BuildMapAsync` serializa primero hacia un archivo temporal `.tmp` y realiza el reemplazo atomico sobre `map_ats.bin` bajo un `SemaphoreSlim(1, 1)` para evitar archivos corruptos ante lecturas concurrentes.
+- **Aceptacion Explicita de Licencias:** `tools/AtsGpsInstaller/Program.cs` presenta `NOTICE`, `LICENSES.md` y `LICENSE` antes de permitir la instalacion.
+- **Proteccion contra Zip Slip:** Durante la extraccion del paquete embebido `payload.zip`, el instalador resuelve `Path.GetFullPath(...)` y valida que cada ruta destino permanezca estrictamente dentro del directorio de instalacion seleccionado.
+- **Sin Redistribucion de Datos del Juego y Escritura Atomica:** `map_ats.bin` no se distribuye en el instalador ni en el repositorio; se genera localmente en la PC del usuario via `AtsGpsServer --build-map` escribiendo primero a `.tmp` y realizando reemplazo atomico bajo `SemaphoreSlim(1, 1)`.
+- **Verificacion de Binarios (`SHA256SUMS`):** Las sumas criptograficas de los artefactos de distribucion oficiales se publican en [`SHA256SUMS`](SHA256SUMS).
 
 ---
 

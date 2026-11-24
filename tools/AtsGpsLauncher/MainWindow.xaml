@@ -76,7 +76,7 @@
             </Style.Triggers>
         </Style>
 
-        <!-- Botón Mini para Copiar PIN -->
+        <!-- Boton Mini para Copiar PIN -->
         <Style x:Key="MiniCopyButton" TargetType="Button">
             <Setter Property="Background" Value="#1A232A"/>
             <Setter Property="Foreground" Value="#C7F36B"/>
@@ -103,6 +103,37 @@
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="#283A1E"/>
                     <Setter Property="BorderBrush" Value="#C7F36B"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- Boton Mini Cyan para Descargar Platform-Tools (ADB) -->
+        <Style x:Key="MiniLinkButton" TargetType="Button">
+            <Setter Property="Background" Value="#0F2432"/>
+            <Setter Property="Foreground" Value="#38BDF8"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="8,2"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="#254860"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#163449"/>
+                    <Setter Property="BorderBrush" Value="#7DD3FC"/>
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -183,10 +214,17 @@
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                         <Ellipse x:Name="UsbStatusLed" Width="10" Height="10" Fill="#C7F36B" Margin="0,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="UsbStatusText" Text="CONECTADO • REVERSE ACTIVO" FontWeight="Black" FontSize="12" Foreground="#C7F36B"/>
+                        <TextBlock x:Name="UsbStatusText" Text="CONECTADO • REVERSE ACTIVO" FontWeight="Black" FontSize="12" Foreground="#C7F36B" TextTrimming="CharacterEllipsis"/>
                     </StackPanel>
-                    <TextBlock x:Name="UsbDeviceText" Text="Dispositivo: Celular enlazado" FontSize="11" Foreground="#CBD5E1"/>
-                    <TextBlock Text="Enlace: tcp:35500 -> 127.0.0.1" FontSize="11" Foreground="#38BDF8" Margin="0,5,0,0"/>
+                    <TextBlock x:Name="UsbDeviceText" Text="Dispositivo: Celular enlazado" FontSize="11" Foreground="#CBD5E1" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="UsbLinkText" Text="Enlace: tcp:35500 -> 127.0.0.1" FontSize="11" Foreground="#38BDF8" Margin="0,5,0,0"/>
+                    <Button x:Name="BtnDownloadPlatformTools"
+                            Content="Descargar Platform-Tools (ADB)"
+                            Click="BtnDownloadPlatformTools_Click"
+                            Visibility="Collapsed"
+                            Style="{StaticResource MiniLinkButton}"
+                            HorizontalAlignment="Left"
+                            Margin="0,5,0,0"/>
                 </StackPanel>
             </Border>
 

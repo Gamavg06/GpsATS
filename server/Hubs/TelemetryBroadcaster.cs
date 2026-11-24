@@ -61,13 +61,17 @@ namespace AtsGpsServer.Hubs
                     var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
+                        if (socket.State == WebSocketState.CloseReceived)
+                        {
+                            await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Desconectado", CancellationToken.None);
+                        }
                         break;
                     }
                 }
             }
             catch
             {
-                // Desconexión normal del cliente
+                // Desconexion normal del cliente
             }
             finally
             {
@@ -77,6 +81,14 @@ namespace AtsGpsServer.Hubs
                     try
                     {
                         await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Desconectado", CancellationToken.None);
+                    }
+                    catch { }
+                }
+                else if (socket.State == WebSocketState.CloseReceived)
+                {
+                    try
+                    {
+                        await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Desconectado", CancellationToken.None);
                     }
                     catch { }
                 }

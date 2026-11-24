@@ -22,6 +22,15 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
+class UnauthorizedException(message: String) : IOException(message)
+
+class RateLimitedException(message: String) : IOException(message)
+
+data class PairResult(
+    val token: String,
+    val expiresInHours: Int
+)
+
 class AtsNetworkClient {
 
     companion object {
@@ -88,16 +97,22 @@ class AtsNetworkClient {
         }
     }
 
-    suspend fun pairWithServer(host: String, port: Int, pin: String): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun pairWithServer(host: String, port: Int, pin: String): Result<PairResult> = withContext(Dispatchers.IO) {
+        val cleanPin = pin.trim()
+        if (cleanPin.isEmpty()) {
+            return@withContext Result.failure(
+                IllegalArgumentException("Ingresa el PIN de 6 digitos del servidor PC.")
+            )
+        }
         if (!isAllowedPrivateAddress(host)) {
             return@withContext Result.failure(
-                SecurityException("Conexión rechazada: '$host' no es una IP privada (RFC 1918, loopback o link-local). Solo se admiten redes LAN privadas de confianza.")
+                SecurityException("Conexion rechazada: '$host' no es una IP privada (RFC 1918, loopback o link-local). Solo se admiten redes LAN privadas de confianza.")
             )
         }
         try {
             val formattedHost = formatHostForUrl(host)
             val url = "http://$formattedHost:$port/api/pair"
-            val json = JSONObject().put("pin", pin).toString()
+            val json = JSONObject().put("pin", cleanPin).toString()
             val requestBody = json.toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
@@ -108,13 +123,28 @@ class AtsNetworkClient {
             client.newCall(request).execute().use { response ->
                 val responseBody = response.body?.string() ?: ""
 
-                if (response.isSuccessful) {
-                    val jsonResp = JSONObject(responseBody)
-                    val token = jsonResp.getString("token")
-                    Result.success(token)
-                } else {
-                    val err = if (responseBody.isNotEmpty()) JSONObject(responseBody).optString("error", "Error de autenticación") else "HTTP ${response.code}"
-                    Result.failure(IOException(err))
+                when {
+                    response.isSuccessful -> {
+                        val jsonResp = JSONObject(responseBody)
+                        val token = jsonResp.getString("token")
+                        val expiresInHours = jsonResp.optInt("expiresInHours", 48).coerceAtLeast(1)
+                        Result.success(PairResult(token = token, expiresInHours = expiresInHours))
+                    }
+                    response.code == 401 -> {
+                        Result.failure(UnauthorizedException("PIN incorrecto"))
+                    }
+                    response.code == 429 -> {
+                        Result.failure(RateLimitedException("Demasiados intentos. Espera 2 minutos."))
+                    }
+                    else -> {
+                        val err = if (responseBody.isNotEmpty()) {
+                            runCatching { JSONObject(responseBody).optString("error", "") }.getOrDefault("")
+                                .ifEmpty { "HTTP ${response.code}" }
+                        } else {
+                            "HTTP ${response.code}"
+                        }
+                        Result.failure(IOException(err))
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -122,9 +152,12 @@ class AtsNetworkClient {
         }
     }
 
-    suspend fun sendControlKey(host: String, port: Int, action: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun sendControlKey(host: String, port: Int, token: String, action: String): Result<Boolean> = withContext(Dispatchers.IO) {
         if (!isAllowedPrivateAddress(host)) {
-            return@withContext Result.failure(SecurityException("Dirección de servidor no permitida"))
+            return@withContext Result.failure(SecurityException("Direccion de servidor no permitida"))
+        }
+        if (token.isBlank()) {
+            return@withContext Result.failure(UnauthorizedException("Sesion expirada o no autorizada"))
         }
         try {
             val formattedHost = formatHostForUrl(host)
@@ -133,14 +166,15 @@ class AtsNetworkClient {
             val requestBody = json.toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
                 .url(url)
+                .header("Authorization", "Bearer $token")
                 .post(requestBody)
                 .build()
 
             client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    Result.success(true)
-                } else {
-                    Result.failure(IOException("HTTP ${response.code}"))
+                when {
+                    response.isSuccessful -> Result.success(true)
+                    response.code == 401 -> Result.failure(UnauthorizedException("Sesion expirada o no autorizada"))
+                    else -> Result.failure(IOException("HTTP ${response.code}"))
                 }
             }
         } catch (e: Exception) {
@@ -148,23 +182,35 @@ class AtsNetworkClient {
         }
     }
 
-    suspend fun downloadMap(host: String, port: Int): Result<MapGraph> = withContext(Dispatchers.IO) {
+    suspend fun downloadMap(host: String, port: Int, token: String): Result<MapGraph> = withContext(Dispatchers.IO) {
         if (!isAllowedPrivateAddress(host)) {
             return@withContext Result.failure(
-                SecurityException("Conexión rechazada: '$host' no es una IP privada permitida.")
+                SecurityException("Conexion rechazada: '$host' no es una IP privada permitida.")
             )
+        }
+        if (token.isBlank()) {
+            return@withContext Result.failure(UnauthorizedException("Sesion expirada o no autorizada"))
         }
         try {
             val formattedHost = formatHostForUrl(host)
             val url = "http://$formattedHost:$port/api/map/download"
-            val request = Request.Builder().url(url).build()
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $token")
+                .build()
             client.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val stream = response.body?.byteStream() ?: throw IOException("Cuerpo de respuesta vacío.")
-                    val graph = BinaryMapReader.read(stream)
-                    Result.success(graph)
-                } else {
-                    Result.failure(IOException("No se pudo descargar el mapa. Código: ${response.code}"))
+                when {
+                    response.isSuccessful -> {
+                        val stream = response.body?.byteStream() ?: throw IOException("Cuerpo de respuesta vacio.")
+                        val graph = BinaryMapReader.read(stream)
+                        Result.success(graph)
+                    }
+                    response.code == 401 -> {
+                        Result.failure(UnauthorizedException("Sesion expirada o no autorizada"))
+                    }
+                    else -> {
+                        Result.failure(IOException("No se pudo descargar el mapa. Codigo: ${response.code}"))
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -172,12 +218,13 @@ class AtsNetworkClient {
         }
     }
 
-    fun connectTelemetryWebSocket(
+    fun connectWebSocket(
         host: String,
         port: Int,
         token: String,
         onTelemetry: (TelemetryData) -> Unit,
-        onStatusChanged: (Boolean) -> Unit
+        onStatusChanged: (Boolean) -> Unit,
+        onAuthExpired: () -> Unit = {}
     ) {
         isUserDisconnected.set(false)
         reconnectJob?.cancel()
@@ -188,9 +235,21 @@ class AtsNetworkClient {
             return
         }
 
+        if (token.isBlank()) {
+            disconnectWebSocketInternal()
+            postToMain {
+                onStatusChanged(false)
+                onAuthExpired()
+            }
+            return
+        }
+
         val formattedHost = formatHostForUrl(host)
-        val url = "ws://$formattedHost:$port/ws/telemetry?token=$token"
-        val request = Request.Builder().url(url).build()
+        val url = "ws://$formattedHost:$port/ws/telemetry"
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $token")
+            .build()
 
         synchronized(wsLock) {
             disconnectWebSocketInternal()
@@ -208,22 +267,56 @@ class AtsNetworkClient {
                         val telemetry = parseTelemetry(json)
                         postToMain { onTelemetry(telemetry) }
                     } catch (_: Exception) {
-                        // Ignorar frames con formato erróneo
+                        // Ignorar frames con formato erroneo
                     }
                 }
 
                 override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                     if (webSocket !== activeWebSocket) return
+                    if (code == 1008) {
+                        handleWebSocketAuthExpired(webSocket, onStatusChanged, onAuthExpired)
+                        webSocket.close(1008, "No autorizado")
+                        return
+                    }
                     postToMain { onStatusChanged(false) }
-                    scheduleReconnect(host, port, token, onTelemetry, onStatusChanged)
+                    scheduleReconnect(host, port, token, onTelemetry, onStatusChanged, onAuthExpired)
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    if (webSocket !== activeWebSocket) return
+                    if (code == 1008) {
+                        handleWebSocketAuthExpired(webSocket, onStatusChanged, onAuthExpired)
+                    }
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     if (webSocket !== activeWebSocket) return
+                    if (response?.code == 401) {
+                        handleWebSocketAuthExpired(webSocket, onStatusChanged, onAuthExpired)
+                        return
+                    }
                     postToMain { onStatusChanged(false) }
-                    scheduleReconnect(host, port, token, onTelemetry, onStatusChanged)
+                    scheduleReconnect(host, port, token, onTelemetry, onStatusChanged, onAuthExpired)
                 }
             })
+        }
+    }
+
+    private fun handleWebSocketAuthExpired(
+        webSocket: WebSocket,
+        onStatusChanged: (Boolean) -> Unit,
+        onAuthExpired: () -> Unit
+    ) {
+        synchronized(wsLock) {
+            if (webSocket !== activeWebSocket) return
+            activeWebSocket = null
+        }
+        isUserDisconnected.set(true)
+        reconnectJob?.cancel()
+        reconnectJob = null
+        postToMain {
+            onStatusChanged(false)
+            onAuthExpired()
         }
     }
 
@@ -232,19 +325,20 @@ class AtsNetworkClient {
         port: Int,
         token: String,
         onTelemetry: (TelemetryData) -> Unit,
-        onStatusChanged: (Boolean) -> Unit
+        onStatusChanged: (Boolean) -> Unit,
+        onAuthExpired: () -> Unit
     ) {
         if (isUserDisconnected.get()) return
 
         reconnectJob?.cancel()
         reconnectJob = clientScope.launch {
             val attempt = retryAttempt.incrementAndGet()
-            // Backoff exponencial: 1s, 2s, 4s, 8s, hasta máx 15s
+            // Backoff exponencial: 1s, 2s, 4s, 8s, hasta max 15s
             val delayMs = (1000L * (1L shl kotlin.math.min(attempt, 4))).coerceAtMost(15000L)
             delay(delayMs)
 
             if (!isUserDisconnected.get()) {
-                connectTelemetryWebSocket(host, port, token, onTelemetry, onStatusChanged)
+                connectWebSocket(host, port, token, onTelemetry, onStatusChanged, onAuthExpired)
             }
         }
     }

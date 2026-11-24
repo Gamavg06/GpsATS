@@ -9,6 +9,49 @@ namespace AtsGpsServer.Map
     {
         private static readonly byte[] Magic = Encoding.ASCII.GetBytes("ATSMAP03");
         private const uint FormatVersion = 3;
+        private const int MinValidFileLength = 48;
+
+        public static bool IsValidHeader(string filePath, uint expectedVersion = FormatVersion)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var info = new FileInfo(filePath);
+                if (info.Length < MinValidFileLength)
+                {
+                    return false;
+                }
+
+                Span<byte> header = stackalloc byte[12];
+                using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                int totalRead = 0;
+                while (totalRead < header.Length)
+                {
+                    int read = fs.Read(header.Slice(totalRead));
+                    if (read == 0)
+                    {
+                        return false;
+                    }
+                    totalRead += read;
+                }
+
+                if (!header.Slice(0, 8).SequenceEqual(Magic))
+                {
+                    return false;
+                }
+
+                uint version = BitConverter.ToUInt32(header.Slice(8, 4));
+                return version == expectedVersion;
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         public static void Serialize(MapGraph graph, Stream outputStream)
         {

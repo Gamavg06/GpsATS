@@ -6,6 +6,7 @@ using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -31,11 +32,33 @@ namespace AtsGpsInstaller
         }
     }
 
+    internal sealed class InstallOutcome
+    {
+        public List<string> Warnings = new List<string>();
+        public bool MapBuiltOrVerified;
+        public string MapNote = "";
+    }
+
     public class InstallerForm : Form
     {
+        private const string RepoUrl = "https://github.com/Gamavg06/GpsATS";
+
+        private Panel panelLicense;
+        private Button btnTabNotice;
+        private Button btnTabLicenses;
+        private Button btnTabGpl;
+        private TextBox txtLicenseViewer;
+        private CheckBox chkAcceptLicense;
+        private Button btnContinue;
+
+        private string noticeText = "";
+        private string licensesMdText = "";
+        private string gplLicenseText = "";
+
         private TextBox txtInstallDir;
         private TextBox txtAtsDir;
         private CheckBox chkInstallPlugin;
+        private CheckBox chkBuildMap;
         private CheckBox chkDesktopShortcut;
         private CheckBox chkStartMenu;
         private CheckBox chkFirewall;
@@ -43,6 +66,7 @@ namespace AtsGpsInstaller
         private Button btnInstall;
         private ProgressBar progressBar;
         private Label lblStatus;
+        private Label lblDoneDesc;
         private Panel panelSetup;
         private Panel panelProgress;
         private Panel panelDone;
@@ -50,15 +74,17 @@ namespace AtsGpsInstaller
 
         private Color bgDark = Color.FromArgb(12, 16, 19);
         private Color panelDark = Color.FromArgb(21, 28, 33);
+        private Color viewerDark = Color.FromArgb(7, 10, 13);
         private Color cyanAccent = Color.FromArgb(56, 189, 248);
         private Color limeAccent = Color.FromArgb(199, 243, 107);
         private Color textWhite = Color.FromArgb(241, 245, 249);
         private Color textGray = Color.FromArgb(148, 163, 184);
+        private Color borderDark = Color.FromArgb(36, 48, 59);
 
         public InstallerForm()
         {
             this.Text = "Instalador SGNIA - ATS Telemetria GPS v1.4.2";
-            this.Size = new Size(680, 560);
+            this.Size = new Size(680, 600);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -77,8 +103,48 @@ namespace AtsGpsInstaller
             }
             catch { }
 
+            LoadEmbeddedLicenses();
             BuildUI();
             DetectAtsPath();
+        }
+
+        private void LoadEmbeddedLicenses()
+        {
+            noticeText = ReadEmbeddedTextResource("NOTICE");
+            licensesMdText = ReadEmbeddedTextResource("LICENSES.md");
+            gplLicenseText = ReadEmbeddedTextResource("LICENSE");
+        }
+
+        private static string ReadEmbeddedTextResource(string resourceName)
+        {
+            Assembly asm = Assembly.GetExecutingAssembly();
+            Stream stream = asm.GetManifestResourceStream(resourceName);
+            if (stream == null)
+            {
+                string[] names = asm.GetManifestResourceNames();
+                foreach (string name in names)
+                {
+                    if (string.Equals(name, resourceName, StringComparison.OrdinalIgnoreCase) ||
+                        name.EndsWith("." + resourceName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        stream = asm.GetManifestResourceStream(name);
+                        break;
+                    }
+                }
+            }
+
+            if (stream == null)
+            {
+                return "Documento no disponible en los recursos embebidos (" + resourceName + ").\r\n" +
+                       "Consulta el repositorio oficial: " + RepoUrl;
+            }
+
+            using (stream)
+            using (StreamReader reader = new StreamReader(stream, Encoding.UTF8, true))
+            {
+                string raw = reader.ReadToEnd();
+                return raw.Replace("\r\n", "\n").Replace("\n", "\r\n");
+            }
         }
 
         private void BuildUI()
@@ -99,17 +165,115 @@ namespace AtsGpsInstaller
             header.Controls.Add(title);
 
             Label subtitle = new Label();
-            subtitle.Text = "Asistente de configuracion y sincronizacion companion v1.4.2";
+            subtitle.Text = "Asistente de configuracion, licencias y mapa local v1.4.2";
             subtitle.Font = new Font("Segoe UI", 9.5F, FontStyle.Regular);
             subtitle.ForeColor = textGray;
             subtitle.Location = new Point(25, 48);
             subtitle.AutoSize = true;
             header.Controls.Add(subtitle);
 
-            // Panel Setup Principal
+            // Paso 1: Panel Obligatorio de Licencias (visible al iniciar)
+            panelLicense = new Panel();
+            panelLicense.Location = new Point(24, 100);
+            panelLicense.Size = new Size(620, 440);
+            panelLicense.Visible = true;
+            this.Controls.Add(panelLicense);
+
+            Label lblLicIntro = new Label();
+            lblLicIntro.Text = "Paso 1: Revisa las licencias y avisos de terceros antes de instalar";
+            lblLicIntro.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
+            lblLicIntro.ForeColor = textWhite;
+            lblLicIntro.Location = new Point(0, 0);
+            lblLicIntro.AutoSize = true;
+            panelLicense.Controls.Add(lblLicIntro);
+
+            btnTabNotice = CreateTabButton("Aviso y Terceros (NOTICE)", 0, 28, 202);
+            btnTabNotice.Click += delegate { SelectLicenseDocument("NOTICE"); };
+            panelLicense.Controls.Add(btnTabNotice);
+
+            btnTabLicenses = CreateTabButton("Resumen Licencias (LICENSES.md)", 209, 28, 202);
+            btnTabLicenses.Click += delegate { SelectLicenseDocument("LICENSES.md"); };
+            panelLicense.Controls.Add(btnTabLicenses);
+
+            btnTabGpl = CreateTabButton("Licencia GPL-2.0 (LICENSE)", 418, 28, 202);
+            btnTabGpl.Click += delegate { SelectLicenseDocument("LICENSE"); };
+            panelLicense.Controls.Add(btnTabGpl);
+
+            txtLicenseViewer = new TextBox();
+            txtLicenseViewer.Location = new Point(0, 66);
+            txtLicenseViewer.Size = new Size(620, 250);
+            txtLicenseViewer.Multiline = true;
+            txtLicenseViewer.ReadOnly = true;
+            txtLicenseViewer.ScrollBars = ScrollBars.Vertical;
+            txtLicenseViewer.WordWrap = true;
+            txtLicenseViewer.BackColor = viewerDark;
+            txtLicenseViewer.ForeColor = Color.FromArgb(203, 213, 225);
+            txtLicenseViewer.Font = new Font("Consolas", 8.5F);
+            txtLicenseViewer.BorderStyle = BorderStyle.FixedSingle;
+            panelLicense.Controls.Add(txtLicenseViewer);
+
+            Label lblSourcePrefix = new Label();
+            lblSourcePrefix.Text = "Codigo fuente oficial:";
+            lblSourcePrefix.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+            lblSourcePrefix.ForeColor = textGray;
+            lblSourcePrefix.Location = new Point(0, 326);
+            lblSourcePrefix.AutoSize = true;
+            panelLicense.Controls.Add(lblSourcePrefix);
+
+            LinkLabel lnkSource = new LinkLabel();
+            lnkSource.Text = RepoUrl;
+            lnkSource.Font = new Font("Segoe UI", 9F, FontStyle.Underline);
+            lnkSource.LinkColor = cyanAccent;
+            lnkSource.ActiveLinkColor = limeAccent;
+            lnkSource.VisitedLinkColor = cyanAccent;
+            lnkSource.Location = new Point(138, 326);
+            lnkSource.AutoSize = true;
+            lnkSource.LinkClicked += delegate
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo(RepoUrl) { UseShellExecute = true });
+                }
+                catch { }
+            };
+            panelLicense.Controls.Add(lnkSource);
+
+            chkAcceptLicense = new CheckBox();
+            chkAcceptLicense.Text = "Acepto los terminos de GNU GPL-2.0, MIT y los avisos de terceros";
+            chkAcceptLicense.Checked = false;
+            chkAcceptLicense.ForeColor = textWhite;
+            chkAcceptLicense.Font = new Font("Segoe UI", 9.5F, FontStyle.Bold);
+            chkAcceptLicense.Location = new Point(0, 354);
+            chkAcceptLicense.AutoSize = true;
+            chkAcceptLicense.CheckedChanged += delegate
+            {
+                btnContinue.Enabled = chkAcceptLicense.Checked;
+                UpdateContinueButtonStyle();
+            };
+            panelLicense.Controls.Add(chkAcceptLicense);
+
+            btnContinue = new Button();
+            btnContinue.Text = "CONTINUAR";
+            btnContinue.Size = new Size(200, 40);
+            btnContinue.Location = new Point(210, 390);
+            btnContinue.Font = new Font("Segoe UI", 10.5F, FontStyle.Bold);
+            btnContinue.FlatStyle = FlatStyle.Flat;
+            btnContinue.Cursor = Cursors.Hand;
+            btnContinue.Enabled = false;
+            btnContinue.Click += delegate
+            {
+                panelLicense.Visible = false;
+                panelSetup.Visible = true;
+            };
+            panelLicense.Controls.Add(btnContinue);
+            UpdateContinueButtonStyle();
+            SelectLicenseDocument("NOTICE");
+
+            // Paso 2: Panel Setup Principal (oculto hasta aceptar licencias)
             panelSetup = new Panel();
             panelSetup.Location = new Point(24, 100);
-            panelSetup.Size = new Size(620, 390);
+            panelSetup.Size = new Size(620, 440);
+            panelSetup.Visible = false;
             this.Controls.Add(panelSetup);
 
             int y = 5;
@@ -151,7 +315,7 @@ namespace AtsGpsInstaller
             };
             panelSetup.Controls.Add(btnBrowseInstall);
 
-            y += 45;
+            y += 42;
             Label lblAts = new Label();
             lblAts.Text = "Carpeta de American Truck Simulator (Steam):";
             lblAts.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
@@ -190,7 +354,7 @@ namespace AtsGpsInstaller
             };
             panelSetup.Controls.Add(btnBrowseAts);
 
-            y += 45;
+            y += 42;
             Label lblOptions = new Label();
             lblOptions.Text = "Opciones de configuracion automatica:";
             lblOptions.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
@@ -208,6 +372,16 @@ namespace AtsGpsInstaller
             chkInstallPlugin.Location = new Point(5, y);
             chkInstallPlugin.AutoSize = true;
             panelSetup.Controls.Add(chkInstallPlugin);
+
+            y += 26;
+            chkBuildMap = new CheckBox();
+            chkBuildMap.Text = "Generar mapa local desde tu instalacion de ATS (AtsGpsServer --build-map)";
+            chkBuildMap.Checked = true;
+            chkBuildMap.ForeColor = textWhite;
+            chkBuildMap.Font = new Font("Segoe UI", 9F);
+            chkBuildMap.Location = new Point(5, y);
+            chkBuildMap.AutoSize = true;
+            panelSetup.Controls.Add(chkBuildMap);
 
             y += 26;
             chkDesktopShortcut = new CheckBox();
@@ -239,7 +413,7 @@ namespace AtsGpsInstaller
             chkFirewall.AutoSize = true;
             panelSetup.Controls.Add(chkFirewall);
 
-            y += 45;
+            y += 42;
             btnInstall = new Button();
             btnInstall.Text = "INSTALAR AHORA";
             btnInstall.Size = new Size(200, 42);
@@ -255,7 +429,7 @@ namespace AtsGpsInstaller
             // Panel Progreso
             panelProgress = new Panel();
             panelProgress.Location = new Point(24, 100);
-            panelProgress.Size = new Size(620, 390);
+            panelProgress.Size = new Size(620, 440);
             panelProgress.Visible = false;
             this.Controls.Add(panelProgress);
 
@@ -272,11 +446,11 @@ namespace AtsGpsInstaller
             lblStatus.Font = new Font("Segoe UI", 9.5F);
             lblStatus.ForeColor = textGray;
             lblStatus.Location = new Point(0, 95);
-            lblStatus.Size = new Size(610, 25);
+            lblStatus.Size = new Size(610, 42);
             panelProgress.Controls.Add(lblStatus);
 
             progressBar = new ProgressBar();
-            progressBar.Location = new Point(0, 130);
+            progressBar.Location = new Point(0, 145);
             progressBar.Size = new Size(610, 28);
             progressBar.Style = ProgressBarStyle.Continuous;
             panelProgress.Controls.Add(progressBar);
@@ -284,7 +458,7 @@ namespace AtsGpsInstaller
             // Panel Completado
             panelDone = new Panel();
             panelDone.Location = new Point(24, 100);
-            panelDone.Size = new Size(620, 390);
+            panelDone.Size = new Size(620, 440);
             panelDone.Visible = false;
             this.Controls.Add(panelDone);
 
@@ -292,16 +466,16 @@ namespace AtsGpsInstaller
             lblDoneTitle.Text = "Instalacion completada con exito";
             lblDoneTitle.Font = new Font("Segoe UI", 15F, FontStyle.Bold);
             lblDoneTitle.ForeColor = limeAccent;
-            lblDoneTitle.Location = new Point(0, 40);
+            lblDoneTitle.Location = new Point(0, 30);
             lblDoneTitle.AutoSize = true;
             panelDone.Controls.Add(lblDoneTitle);
 
-            Label lblDoneDesc = new Label();
+            lblDoneDesc = new Label();
             lblDoneDesc.Text = "Todos los componentes del servidor y la telemetria estan listos.\n\nPuedes conectar tu celular por cable USB o Wi-Fi e instalar la aplicacion movil desde el panel de control.";
             lblDoneDesc.Font = new Font("Segoe UI", 10F);
             lblDoneDesc.ForeColor = textWhite;
-            lblDoneDesc.Location = new Point(0, 85);
-            lblDoneDesc.Size = new Size(610, 70);
+            lblDoneDesc.Location = new Point(0, 75);
+            lblDoneDesc.Size = new Size(610, 130);
             panelDone.Controls.Add(lblDoneDesc);
 
             chkLaunchAfter = new CheckBox();
@@ -309,14 +483,14 @@ namespace AtsGpsInstaller
             chkLaunchAfter.Checked = true;
             chkLaunchAfter.ForeColor = cyanAccent;
             chkLaunchAfter.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
-            chkLaunchAfter.Location = new Point(5, 175);
+            chkLaunchAfter.Location = new Point(5, 220);
             chkLaunchAfter.AutoSize = true;
             panelDone.Controls.Add(chkLaunchAfter);
 
             Button btnFinish = new Button();
             btnFinish.Text = "FINALIZAR";
             btnFinish.Size = new Size(180, 40);
-            btnFinish.Location = new Point(210, 230);
+            btnFinish.Location = new Point(210, 275);
             btnFinish.BackColor = limeAccent;
             btnFinish.ForeColor = Color.FromArgb(10, 20, 28);
             btnFinish.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
@@ -338,6 +512,75 @@ namespace AtsGpsInstaller
                 Application.Exit();
             };
             panelDone.Controls.Add(btnFinish);
+        }
+
+        private Button CreateTabButton(string text, int x, int y, int width)
+        {
+            Button btn = new Button();
+            btn.Text = text;
+            btn.Location = new Point(x, y);
+            btn.Size = new Size(width, 30);
+            btn.BackColor = panelDark;
+            btn.ForeColor = textGray;
+            btn.Font = new Font("Segoe UI", 8.5F, FontStyle.Bold);
+            btn.FlatStyle = FlatStyle.Flat;
+            btn.FlatAppearance.BorderColor = borderDark;
+            btn.Cursor = Cursors.Hand;
+            return btn;
+        }
+
+        private void SelectLicenseDocument(string docName)
+        {
+            SetTabActive(btnTabNotice, docName == "NOTICE");
+            SetTabActive(btnTabLicenses, docName == "LICENSES.md");
+            SetTabActive(btnTabGpl, docName == "LICENSE");
+
+            if (docName == "NOTICE")
+            {
+                txtLicenseViewer.Text = noticeText;
+            }
+            else if (docName == "LICENSES.md")
+            {
+                txtLicenseViewer.Text = licensesMdText;
+            }
+            else
+            {
+                txtLicenseViewer.Text = gplLicenseText;
+            }
+
+            txtLicenseViewer.SelectionStart = 0;
+            txtLicenseViewer.SelectionLength = 0;
+            txtLicenseViewer.ScrollToCaret();
+        }
+
+        private void SetTabActive(Button btn, bool active)
+        {
+            if (active)
+            {
+                btn.BackColor = Color.FromArgb(15, 36, 50);
+                btn.ForeColor = cyanAccent;
+                btn.FlatAppearance.BorderColor = cyanAccent;
+            }
+            else
+            {
+                btn.BackColor = panelDark;
+                btn.ForeColor = textGray;
+                btn.FlatAppearance.BorderColor = borderDark;
+            }
+        }
+
+        private void UpdateContinueButtonStyle()
+        {
+            if (btnContinue.Enabled)
+            {
+                btnContinue.BackColor = cyanAccent;
+                btnContinue.ForeColor = Color.FromArgb(10, 20, 28);
+            }
+            else
+            {
+                btnContinue.BackColor = panelDark;
+                btnContinue.ForeColor = textGray;
+            }
         }
 
         private void DetectAtsPath()
@@ -404,6 +647,7 @@ namespace AtsGpsInstaller
             string targetDir = txtInstallDir.Text.Trim();
             string atsDir = txtAtsDir.Text.Trim();
             bool installPlugin = chkInstallPlugin.Checked;
+            bool buildMap = chkBuildMap.Checked;
             bool createDesktop = chkDesktopShortcut.Checked;
             bool createStartMenu = chkStartMenu.Checked;
             bool configureFirewall = chkFirewall.Checked;
@@ -412,10 +656,10 @@ namespace AtsGpsInstaller
             worker.WorkerReportsProgress = true;
             worker.DoWork += delegate(object s, DoWorkEventArgs args)
             {
-                List<string> warnings = new List<string>();
+                InstallOutcome outcome = new InstallOutcome();
 
-                // 1. Extraer payload.zip
-                worker.ReportProgress(10, "Extrayendo archivos de telemetria...");
+                // 1. Extraer payload.zip (sin map_ats.bin, con LICENSE, LICENSES.md y NOTICE)
+                worker.ReportProgress(10, "Extrayendo archivos del servidor y avisos legales...");
                 if (!Directory.Exists(targetDir))
                 {
                     Directory.CreateDirectory(targetDir);
@@ -441,7 +685,7 @@ namespace AtsGpsInstaller
                         foreach (ZipArchiveEntry entry in archive.Entries)
                         {
                             count++;
-                            int percent = 10 + (count * 60 / total);
+                            int percent = 10 + (count * 55 / total);
                             string destPath = Path.GetFullPath(Path.Combine(fullTargetDir, entry.FullName.Replace('/', '\\')));
                             if (!destPath.StartsWith(fullTargetDir, StringComparison.OrdinalIgnoreCase))
                             {
@@ -466,7 +710,7 @@ namespace AtsGpsInstaller
                 // 2. Instalar plugin SCS
                 if (installPlugin && Directory.Exists(atsDir))
                 {
-                    worker.ReportProgress(75, "Instalando plugin scs-telemetry.dll en American Truck Simulator...");
+                    worker.ReportProgress(68, "Instalando plugin scs-telemetry.dll en American Truck Simulator...");
                     try
                     {
                         string pluginTargetDir = Path.Combine(atsDir, @"bin\win_x64\plugins");
@@ -480,11 +724,11 @@ namespace AtsGpsInstaller
                     }
                     catch (UnauthorizedAccessException)
                     {
-                        warnings.Add("No se pudo copiar scs-telemetry.dll en la carpeta del juego porque requiere permisos de Administrador.");
+                        outcome.Warnings.Add("No se pudo copiar scs-telemetry.dll en la carpeta del juego porque requiere permisos de Administrador.");
                     }
                     catch (Exception ex)
                     {
-                        warnings.Add("No se pudo copiar scs-telemetry.dll en la carpeta del juego (puede requerir permisos de Administrador): " + ex.Message);
+                        outcome.Warnings.Add("No se pudo copiar scs-telemetry.dll en la carpeta del juego (puede requerir permisos de Administrador): " + ex.Message);
                     }
                 }
 
@@ -492,7 +736,7 @@ namespace AtsGpsInstaller
                 string launcherExe = Path.Combine(targetDir, "Iniciar_Servidor.exe");
                 if (createDesktop && File.Exists(launcherExe))
                 {
-                    worker.ReportProgress(85, "Creando acceso directo en el Escritorio...");
+                    worker.ReportProgress(70, "Creando acceso directo en el Escritorio...");
                     try
                     {
                         string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
@@ -505,7 +749,7 @@ namespace AtsGpsInstaller
                 // 4. Crear Acceso Directo Menu Inicio
                 if (createStartMenu && File.Exists(launcherExe))
                 {
-                    worker.ReportProgress(90, "Creando acceso directo en el Menu Inicio...");
+                    worker.ReportProgress(72, "Creando acceso directo en el Menu Inicio...");
                     try
                     {
                         string startMenu = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "ATS GPS");
@@ -519,7 +763,7 @@ namespace AtsGpsInstaller
                 // 5. Configurar Firewall
                 if (configureFirewall)
                 {
-                    worker.ReportProgress(95, "Configurando regla en Firewall de Windows...");
+                    worker.ReportProgress(74, "Configurando regla en Firewall de Windows...");
                     try
                     {
                         bool ruleExists = false;
@@ -555,23 +799,149 @@ namespace AtsGpsInstaller
                                     p.WaitForExit(3000);
                                     if (p.ExitCode != 0)
                                     {
-                                        warnings.Add("No se pudo crear la regla de Firewall (TCP 35500); ejecuta el instalador como Administrador o habilitala manualmente.");
+                                        outcome.Warnings.Add("No se pudo crear la regla de Firewall (TCP 35500); ejecuta el instalador como Administrador o habilitala manualmente.");
                                     }
                                 }
                                 else
                                 {
-                                    warnings.Add("No se pudo iniciar netsh para configurar el Firewall de Windows.");
+                                    outcome.Warnings.Add("No se pudo iniciar netsh para configurar el Firewall de Windows.");
                                 }
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        warnings.Add("Error configurando regla de Firewall (puede requerir permisos de Administrador): " + ex.Message);
+                        outcome.Warnings.Add("Error configurando regla de Firewall (puede requerir permisos de Administrador): " + ex.Message);
                     }
                 }
 
-                args.Result = warnings;
+                // 6. Generacion local del mapa desde los archivos propios de ATS
+                if (buildMap && Directory.Exists(atsDir))
+                {
+                    string serverPublishDir = Path.Combine(targetDir, @"server\publish");
+                    string serverExe = Path.Combine(serverPublishDir, "AtsGpsServer.exe");
+
+                    if (!File.Exists(serverExe))
+                    {
+                        outcome.Warnings.Add("No se encontro AtsGpsServer.exe para generar el mapa local; se generara en el primer arranque del servidor.");
+                        outcome.MapNote = "Nota del mapa: map_ats.bin se generara localmente en el primer arranque del servidor (no se redistribuyen datos del juego).";
+                    }
+                    else
+                    {
+                        worker.ReportProgress(75, "Generando mapa local desde ATS (AtsGpsServer --build-map)...");
+                        int currentPct = 75;
+                        object progressLock = new object();
+                        bool alreadyMatched = false;
+                        StringBuilder stderrBuilder = new StringBuilder();
+
+                        try
+                        {
+                            ProcessStartInfo mapPsi = new ProcessStartInfo
+                            {
+                                FileName = serverExe,
+                                Arguments = "--build-map",
+                                WorkingDirectory = serverPublishDir,
+                                RedirectStandardOutput = true,
+                                RedirectStandardError = true,
+                                StandardOutputEncoding = Encoding.UTF8,
+                                StandardErrorEncoding = Encoding.UTF8,
+                                UseShellExecute = false,
+                                CreateNoWindow = true
+                            };
+
+                            using (Process mapProc = new Process { StartInfo = mapPsi })
+                            {
+                                mapProc.OutputDataReceived += delegate(object senderObj, DataReceivedEventArgs ev)
+                                {
+                                    if (string.IsNullOrWhiteSpace(ev.Data)) return;
+                                    string line = ev.Data.Trim();
+
+                                    lock (progressLock)
+                                    {
+                                        if (line.IndexOf("ya existe y coincide", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                            line.IndexOf("Omitiendo regeneracion", StringComparison.OrdinalIgnoreCase) >= 0)
+                                        {
+                                            alreadyMatched = true;
+                                            currentPct = 98;
+                                            worker.ReportProgress(98, line);
+                                            return;
+                                        }
+
+                                        Match m = Regex.Match(line, @"\[(\d+)/(\d+)\]");
+                                        if (m.Success)
+                                        {
+                                            int cur;
+                                            int tot;
+                                            if (int.TryParse(m.Groups[1].Value, out cur) &&
+                                                int.TryParse(m.Groups[2].Value, out tot) &&
+                                                tot > 0)
+                                            {
+                                                int pct = 75 + (int)Math.Round((cur * 23.0) / tot);
+                                                if (pct < 75) pct = 75;
+                                                if (pct > 98) pct = 98;
+                                                if (pct > currentPct) currentPct = pct;
+                                            }
+                                            worker.ReportProgress(currentPct, line);
+                                        }
+                                        else if (line.IndexOf("Extraccion completada", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                 line.IndexOf("Archivo guardado", StringComparison.OrdinalIgnoreCase) >= 0)
+                                        {
+                                            currentPct = 98;
+                                            worker.ReportProgress(98, line);
+                                        }
+                                    }
+                                };
+
+                                mapProc.ErrorDataReceived += delegate(object senderObj, DataReceivedEventArgs ev)
+                                {
+                                    if (!string.IsNullOrWhiteSpace(ev.Data))
+                                    {
+                                        lock (progressLock)
+                                        {
+                                            stderrBuilder.AppendLine(ev.Data.Trim());
+                                        }
+                                    }
+                                };
+
+                                mapProc.Start();
+                                mapProc.BeginOutputReadLine();
+                                mapProc.BeginErrorReadLine();
+                                mapProc.WaitForExit();
+
+                                if (mapProc.ExitCode == 0)
+                                {
+                                    outcome.MapBuiltOrVerified = true;
+                                    outcome.MapNote = alreadyMatched
+                                        ? "Mapa local verificado: map_ats.bin ya coincide con la version del extractor (ATSMAP03 v3)."
+                                        : "Mapa local generado correctamente en tu equipo a partir de tu instalacion de ATS.";
+                                }
+                                else
+                                {
+                                    string errDetail = stderrBuilder.ToString().Trim();
+                                    string warnMsg = "La generacion del mapa local termino con codigo " + mapProc.ExitCode +
+                                                     ". Podras generarlo en el primer arranque del servidor.";
+                                    if (!string.IsNullOrEmpty(errDetail))
+                                    {
+                                        warnMsg += " (" + errDetail + ")";
+                                    }
+                                    outcome.Warnings.Add(warnMsg);
+                                    outcome.MapNote = "Nota del mapa: No se completo la extraccion ahora; el mapa se generara localmente en el primer arranque del servidor (no se redistribuyen datos del juego).";
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            outcome.Warnings.Add("No se pudo ejecutar AtsGpsServer --build-map (" + ex.Message + "). Puedes generarlo en el primer arranque del servidor.");
+                            outcome.MapNote = "Nota del mapa: El mapa se generara localmente en el primer arranque del servidor (no se redistribuyen datos del juego).";
+                        }
+                    }
+                }
+                else
+                {
+                    outcome.MapNote = "Nota del mapa: El mapa local (map_ats.bin) se generara automaticamente en el primer arranque del servidor desde tu instalacion de ATS (no se redistribuyen datos del juego).";
+                }
+
+                args.Result = outcome;
                 worker.ReportProgress(100, "Instalacion finalizada.");
             };
 
@@ -594,14 +964,25 @@ namespace AtsGpsInstaller
                 }
                 else
                 {
+                    InstallOutcome outcome = args.Result as InstallOutcome;
+                    string baseDone = "Todos los componentes del servidor y las licencias estan listos.\n\n" +
+                                      "Puedes conectar tu celular por cable USB (requiere Platform-Tools opcional) o por Wi-Fi e ingresar el PIN de 6 digitos mostrado en el servidor.";
+                    if (outcome != null && !string.IsNullOrEmpty(outcome.MapNote))
+                    {
+                        lblDoneDesc.Text = baseDone + "\n\n" + outcome.MapNote;
+                    }
+                    else
+                    {
+                        lblDoneDesc.Text = baseDone;
+                    }
+
                     panelProgress.Visible = false;
                     panelDone.Visible = true;
 
-                    List<string> warnings = args.Result as List<string>;
-                    if (warnings != null && warnings.Count > 0)
+                    if (outcome != null && outcome.Warnings.Count > 0)
                     {
                         MessageBox.Show(
-                            "La instalacion finalizo con los siguientes avisos:\n\n- " + string.Join("\n- ", warnings),
+                            "La instalacion finalizo con los siguientes avisos:\n\n- " + string.Join("\n- ", outcome.Warnings),
                             "Avisos de configuracion",
                             MessageBoxButtons.OK,
                             MessageBoxIcon.Warning);

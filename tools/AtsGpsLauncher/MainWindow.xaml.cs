@@ -17,6 +17,8 @@ namespace AtsGpsLauncher;
 
 public partial class MainWindow : Window
 {
+    private const string PlatformToolsUrl = "https://developer.android.com/tools/releases/platform-tools";
+    private const string PreferredApkName = "AtsGpsApp_v1.4.2.apk";
     private static readonly HttpClient StatusHttpClient = new() { Timeout = TimeSpan.FromMilliseconds(1500) };
     private Process? _serverProcess;
     private string _rootDir = "";
@@ -67,20 +69,61 @@ public partial class MainWindow : Window
             _rootDir = current.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         }
 
-        // Resolver ADB
-        string defaultSdkAdb = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            @"Android\Sdk\platform-tools\adb.exe"
-        );
+        _adbPath = ResolveAdbPath();
+    }
 
-        if (File.Exists(defaultSdkAdb))
+    private string ResolveAdbPath()
+    {
+        string appBaseDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string[] candidates =
         {
-            _adbPath = defaultSdkAdb;
-        }
-        else
+            Path.Combine(appBaseDir, "platform-tools", "adb.exe"),
+            Path.Combine(_rootDir, "platform-tools", "adb.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Android\Sdk\platform-tools\adb.exe")
+        };
+
+        foreach (string candidate in candidates)
         {
-            _adbPath = "adb";
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
         }
+
+        string? pathEnv = Environment.GetEnvironmentVariable("PATH");
+        if (!string.IsNullOrWhiteSpace(pathEnv))
+        {
+            foreach (string rawDir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string dir = rawDir.Trim().Trim('"');
+                if (string.IsNullOrEmpty(dir)) continue;
+                try
+                {
+                    string adbInPath = Path.Combine(dir, "adb.exe");
+                    if (File.Exists(adbInPath))
+                    {
+                        return adbInPath;
+                    }
+                }
+                catch
+                {
+                    // Ignorar entradas invalidas en PATH
+                }
+            }
+        }
+
+        return "";
+    }
+
+    private void SetAdbNotInstalledState()
+    {
+        var warnBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F7C948"));
+        UsbStatusLed.Fill = warnBrush;
+        UsbStatusText.Text = "ADB no instalado (opcional para USB)";
+        UsbStatusText.Foreground = warnBrush;
+        UsbDeviceText.Text = "Wi-Fi disponible sin ADB; USB requiere Platform-Tools";
+        UsbLinkText.Visibility = Visibility.Collapsed;
+        BtnDownloadPlatformTools.Visibility = Visibility.Visible;
     }
 
     private void DisplayLocalIps()
@@ -256,11 +299,24 @@ public partial class MainWindow : Window
 
     private async Task CheckAndConfigureAdbAsync()
     {
-        AppendLog("[USB] Verificando conexión de cable USB (ADB)...");
+        _adbPath = ResolveAdbPath();
+        if (string.IsNullOrEmpty(_adbPath))
+        {
+            SetAdbNotInstalledState();
+            AppendLog($"[USB] No se encontro adb.exe. La conexion por Wi-Fi funciona sin ADB; si deseas usar cable USB, puedes descargar Google Android SDK Platform-Tools (Apache 2.0) en {PlatformToolsUrl} y extraerlo en 'platform-tools\\' junto al lanzador o en el SDK de Android.");
+            return;
+        }
+
+        UsbLinkText.Visibility = Visibility.Visible;
+        BtnDownloadPlatformTools.Visibility = Visibility.Collapsed;
+        AppendLog($"[USB] Verificando conexion de cable USB (ADB: {_adbPath})...");
         try
         {
             string devicesOutput = await RunCommandAsync(_adbPath, "devices -l");
-            AppendLog(devicesOutput.Trim());
+            if (!string.IsNullOrWhiteSpace(devicesOutput))
+            {
+                AppendLog(devicesOutput.Trim());
+            }
 
             bool hasDevice = devicesOutput.Split('\n')
                 .Select(l => l.Trim())
@@ -268,20 +324,20 @@ public partial class MainWindow : Window
 
             if (hasDevice)
             {
-                string revOutput = await RunCommandAsync(_adbPath, "reverse tcp:35500 tcp:35500");
+                _ = await RunCommandAsync(_adbPath, "reverse tcp:35500 tcp:35500");
                 UsbStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
                 UsbStatusText.Text = "CONECTADO • REVERSE ACTIVO";
                 UsbStatusText.Foreground = UsbStatusLed.Fill;
-                UsbDeviceText.Text = "Celular detectado y enlazado vía USB";
-                AppendLog("[USB] Puerto 35500 enlazado correctamente al celular (adb reverse).");
+                UsbDeviceText.Text = "Celular detectado y enlazado via USB";
+                AppendLog("[USB] Puerto 35500 enlazado correctamente al celular (adb reverse). Ingresa el PIN de 6 digitos en la app Android.");
             }
             else
             {
                 UsbStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F7C948"));
                 UsbStatusText.Text = "ESPERANDO CABLE USB";
                 UsbStatusText.Foreground = UsbStatusLed.Fill;
-                UsbDeviceText.Text = "Conecta el celular con Depuración USB";
-                AppendLog("[USB] No se detectó celular por cable. Si usas Wi-Fi puedes conectarte directo por la IP local.");
+                UsbDeviceText.Text = "Conecta el celular con Depuracion USB";
+                AppendLog("[USB] No se detecto celular por cable. Si usas Wi-Fi puedes conectarte directo por la IP local.");
             }
         }
         catch (Exception ex)
@@ -293,23 +349,68 @@ public partial class MainWindow : Window
         }
     }
 
+    private void BtnDownloadPlatformTools_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo(PlatformToolsUrl) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[ERROR] No se pudo abrir el enlace de Platform-Tools: {ex.Message}");
+        }
+    }
+
     private async void BtnReverseUsb_Click(object sender, RoutedEventArgs e)
     {
         AppendLog("[ACCION] Re-enlazando puerto USB ADB...");
         await CheckAndConfigureAdbAsync();
     }
 
+    private string? ResolveApkPath()
+    {
+        string apksDir = Path.Combine(_rootDir, "apks");
+        string preferred = Path.Combine(apksDir, PreferredApkName);
+        if (File.Exists(preferred))
+        {
+            return preferred;
+        }
+
+        if (Directory.Exists(apksDir))
+        {
+            return Directory.GetFiles(apksDir, "*.apk")
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault();
+        }
+
+        return null;
+    }
+
     private async void BtnInstallApk_Click(object sender, RoutedEventArgs e)
     {
-        string apkPath = Path.Combine(_rootDir, @"apks\release.apk");
-        if (!File.Exists(apkPath))
+        string? apkPath = ResolveApkPath();
+        if (string.IsNullOrEmpty(apkPath) || !File.Exists(apkPath))
         {
-            AppendLog($"[ERROR] No se encontró el APK en: {apkPath}");
-            MessageBox.Show("No se encontró apks/release.apk", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            string expectedPath = Path.Combine(_rootDir, "apks", PreferredApkName);
+            AppendLog($"[ERROR] No se encontro el APK en: {expectedPath}");
+            MessageBox.Show($"No se encontro apks\\{PreferredApkName} ni ningun APK en la carpeta apks.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             return;
         }
 
-        AppendLog($"[INSTALL] Instalando {Path.GetFileName(apkPath)} en el celular vía USB...");
+        _adbPath = ResolveAdbPath();
+        if (string.IsNullOrEmpty(_adbPath))
+        {
+            SetAdbNotInstalledState();
+            AppendLog($"[USB] No se encontro adb.exe para instalar {Path.GetFileName(apkPath)}. Descarga Google Android SDK Platform-Tools (Apache 2.0) en {PlatformToolsUrl} o copia el APK manualmente al telefono.");
+            MessageBox.Show(
+                $"ADB no esta instalado (opcional para USB).\n\nPara instalar por cable USB, descarga Android SDK Platform-Tools en:\n{PlatformToolsUrl}\ny extrae 'platform-tools\\' junto al lanzador.\n\nTambien puedes copiar {Path.GetFileName(apkPath)} manualmente a tu dispositivo.",
+                "ADB no instalado",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        AppendLog($"[INSTALL] Instalando {Path.GetFileName(apkPath)} en el celular via USB...");
         TxtFooterStatus.Text = "Instalando APK en celular...";
         TxtFooterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F7C948"));
 
@@ -319,9 +420,9 @@ public partial class MainWindow : Window
             AppendLog(result.Trim());
             if (result.Contains("Success"))
             {
-                TxtFooterStatus.Text = "¡APK instalada con éxito en el celular!";
+                TxtFooterStatus.Text = "APK instalada con exito en el celular.";
                 TxtFooterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
-                MessageBox.Show("¡La aplicación se instaló y actualizó correctamente en tu celular!", "Instalación Exitosa", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("La aplicacion se instalo y actualizo correctamente en tu celular.", "Instalacion Exitosa", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             else
             {

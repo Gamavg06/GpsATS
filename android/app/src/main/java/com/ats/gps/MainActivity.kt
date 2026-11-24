@@ -7,8 +7,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,6 +20,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ats.gps.data.map.AStarRouter
@@ -24,6 +28,8 @@ import com.ats.gps.data.map.RouteResult
 import com.ats.gps.data.model.MapGraph
 import com.ats.gps.data.model.TelemetryData
 import com.ats.gps.data.network.AtsNetworkClient
+import com.ats.gps.data.network.AuthTokenStore
+import com.ats.gps.data.network.UnauthorizedException
 import com.ats.gps.ui.about.AboutScreen
 import com.ats.gps.ui.dashboard.DashboardScreen
 import com.ats.gps.ui.diagnostic.TelemetryDiagnosticScreen
@@ -129,6 +135,9 @@ fun AtsNavMainApp(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
     val tripLogManager = remember { TripLogManager(context) }
+    val authTokenStore = remember(context) { AuthTokenStore(context) }
+    var loadedMapHost by remember { mutableStateOf<String?>(null) }
+    var sessionRevision by remember { mutableIntStateOf(0) }
 
     // Alertas de Voz y Asistente Turn-by-Turn
     var lastSpeedWarningTime by remember { mutableLongStateOf(0L) }
@@ -533,6 +542,8 @@ fun AtsNavMainApp(
                 // ==========================================
                 PairingScreen(
                     networkClient = networkClient,
+                    authTokenStore = authTokenStore,
+                    sessionRevision = sessionRevision,
                     ip = serverIp,
                     onIpChange = { serverIp = it },
                     port = serverPort,
@@ -541,33 +552,89 @@ fun AtsNavMainApp(
                     onPinChange = { serverPin = it },
                     isLoading = isPairing,
                     errorMessage = pairError,
+                    onClearSavedSession = {
+                        authTokenStore.clearToken()
+                        loadedMapHost = null
+                        serverPin = ""
+                        pairError = null
+                        sessionRevision++
+                    },
                     onConnect = { targetHost ->
+                        val cleanHost = targetHost.trim()
+                        if (cleanHost.isEmpty()) {
+                            pairError = "Ingresa la IP del servidor PC."
+                            return@PairingScreen
+                        }
                         isPairing = true
                         pairError = null
                         coroutineScope.launch {
                             val portNum = serverPort.toIntOrNull() ?: 35500
-                            val effectivePin = if (targetHost == "127.0.0.1" && serverPin.isEmpty()) "USB_DIRECT" else serverPin.ifEmpty { "USB_DIRECT" }
-                            val pairResult = networkClient.pairWithServer(targetHost, portNum, effectivePin)
-                            if (pairResult.isSuccess) {
-                                val token = pairResult.getOrThrow()
-                                // Descargar mapa binario en streaming
-                                val mapResult = networkClient.downloadMap(targetHost, portNum)
-                                if (mapResult.isSuccess) {
-                                    mapGraph = mapResult.getOrThrow()
-                                    // Conectar WebSocket de telemetría a 30 Hz
-                                    networkClient.connectTelemetryWebSocket(
-                                        host = targetHost,
+                            val enteredPin = serverPin.trim()
+                            val savedToken = if (enteredPin.isEmpty()) authTokenStore.getValidToken(cleanHost) else null
+
+                            val activeToken: String? = if (savedToken != null) {
+                                savedToken
+                            } else {
+                                if (enteredPin.length != 6) {
+                                    pairError = "Ingresa el PIN de 6 digitos del servidor PC."
+                                    isPairing = false
+                                    return@launch
+                                }
+                                val pairResult = networkClient.pairWithServer(cleanHost, portNum, enteredPin)
+                                if (pairResult.isSuccess) {
+                                    val paired = pairResult.getOrThrow()
+                                    authTokenStore.saveToken(cleanHost, paired.token, paired.expiresInHours)
+                                    sessionRevision++
+                                    serverPin = ""
+                                    paired.token
+                                } else {
+                                    pairError = pairResult.exceptionOrNull()?.message ?: "Error de conexion"
+                                    isPairing = false
+                                    return@launch
+                                }
+                            }
+
+                            if (activeToken != null) {
+                                val needsMapDownload = mapGraph == null || loadedMapHost != cleanHost
+                                val mapOk = if (needsMapDownload) {
+                                    val mapResult = networkClient.downloadMap(cleanHost, portNum, activeToken)
+                                    if (mapResult.isSuccess) {
+                                        mapGraph = mapResult.getOrThrow()
+                                        loadedMapHost = cleanHost
+                                        true
+                                    } else {
+                                        val err = mapResult.exceptionOrNull()
+                                        if (err is UnauthorizedException) {
+                                            authTokenStore.clearToken()
+                                            loadedMapHost = null
+                                            sessionRevision++
+                                            pairError = "Sesion expirada o no autorizada. Ingresa el PIN actual del servidor PC."
+                                        } else {
+                                            pairError = "Error descargando mapa vial: " + (err?.message ?: "Codigo de error del servidor")
+                                        }
+                                        false
+                                    }
+                                } else {
+                                    true
+                                }
+
+                                if (mapOk) {
+                                    networkClient.connectWebSocket(
+                                        host = cleanHost,
                                         port = portNum,
-                                        token = token,
+                                        token = activeToken,
                                         onTelemetry = { telemetry = it },
-                                        onStatusChanged = { connected -> isConnected = connected }
+                                        onStatusChanged = { connected -> isConnected = connected },
+                                        onAuthExpired = {
+                                            authTokenStore.clearToken()
+                                            loadedMapHost = null
+                                            sessionRevision++
+                                            isConnected = false
+                                            pairError = "Sesion expirada o no autorizada. Ingresa el PIN actual del servidor PC."
+                                        }
                                     )
                                     isConnected = true
-                                } else {
-                                    pairError = "Error descargando mapa vial: " + (mapResult.exceptionOrNull()?.message ?: "Código de error del servidor")
                                 }
-                            } else {
-                                pairError = pairResult.exceptionOrNull()?.message ?: "Error de conexión"
                             }
                             isPairing = false
                         }
@@ -1326,6 +1393,8 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
 @Composable
 fun PairingScreen(
     networkClient: AtsNetworkClient,
+    authTokenStore: AuthTokenStore,
+    sessionRevision: Int,
     ip: String,
     onIpChange: (String) -> Unit,
     port: String,
@@ -1334,23 +1403,34 @@ fun PairingScreen(
     onPinChange: (String) -> Unit,
     isLoading: Boolean,
     errorMessage: String?,
+    onClearSavedSession: () -> Unit,
     onConnect: (String) -> Unit
 ) {
-    // Autodetección silenciosa: si el cable USB está conectado (127.0.0.1 o tethering), entrar directo al mapa
-    var autoProbing by remember { mutableStateOf(true) }
+    // Autodeteccion silenciosa de servidor activo; solo reconecta directo si ya hay sesion valida (< 48 h)
+    var autoProbing by remember { mutableStateOf(errorMessage == null) }
+    val hasSavedSession = remember(ip, sessionRevision) {
+        authTokenStore.getValidToken(ip.trim()) != null
+    }
 
     LaunchedEffect(Unit) {
+        if (errorMessage != null) {
+            autoProbing = false
+            return@LaunchedEffect
+        }
         val portNum = port.toIntOrNull() ?: 35500
         val candidates = listOf("127.0.0.1", "192.168.42.129", "192.168.42.1", ip)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
         for (host in candidates) {
-            if (host.isNotEmpty()) {
-                val isReady = networkClient.checkServerStatus(host, portNum)
-                if (isReady) {
-                    onIpChange(host)
-                    autoProbing = false
+            val isReady = networkClient.checkServerStatus(host, portNum)
+            if (isReady) {
+                onIpChange(host)
+                autoProbing = false
+                if (authTokenStore.getValidToken(host) != null) {
                     onConnect(host)
-                    return@LaunchedEffect
                 }
+                return@LaunchedEffect
             }
         }
         autoProbing = false
@@ -1372,71 +1452,133 @@ fun PairingScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text("ATS GPS", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
-        Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            if (autoProbing || isLoading) "Buscando servidor..." else "Ingresa los datos para conectar",
-            fontSize = 13.sp,
-            color = Color(0xFF94A3B8)
-        )
-        Spacer(modifier = Modifier.height(28.dp))
-
-        if (autoProbing) {
-            CircularProgressIndicator(color = Color(0xFF38BDF8), modifier = Modifier.size(36.dp))
-        } else {
-            OutlinedTextField(
-                value = ip,
-                onValueChange = onIpChange,
-                label = { Text("IP de la PC", color = Color(0xFF94A3B8)) },
-                modifier = Modifier.fillMaxWidth(),
-                textStyle = inputStyle,
-                colors = fieldColors,
-                singleLine = true
-            )
-            Spacer(modifier = Modifier.height(14.dp))
-
-            OutlinedTextField(
-                value = port,
-                onValueChange = onPortChange,
-                label = { Text("Puerto", color = Color(0xFF94A3B8)) },
-                modifier = Modifier.fillMaxWidth(),
-                textStyle = inputStyle,
-                colors = fieldColors,
-                singleLine = true
-            )
-            Spacer(modifier = Modifier.height(14.dp))
-
-            OutlinedTextField(
-                value = pin,
-                onValueChange = onPinChange,
-                label = { Text("PIN", color = Color(0xFF94A3B8)) },
-                modifier = Modifier.fillMaxWidth(),
-                textStyle = inputStyle,
-                colors = fieldColors,
-                singleLine = true
-            )
-            Spacer(modifier = Modifier.height(24.dp))
-
-            if (errorMessage != null) {
-                Text(text = errorMessage, color = Color(0xFFEF4444), fontSize = 13.sp)
-                Spacer(modifier = Modifier.height(14.dp))
-            }
-
-            Button(
-                onClick = { onConnect(ip) },
-                enabled = !isLoading && (pin.length >= 6 || ip == "127.0.0.1"),
-                modifier = Modifier.fillMaxWidth().height(48.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(22.dp))
+        Column(
+            modifier = Modifier.widthIn(max = 460.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("ATS GPS", fontSize = 28.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                if (autoProbing || isLoading) {
+                    "Buscando servidor..."
                 } else {
-                    Text("Conectar", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    "El PIN de 6 digitos del servidor PC se requiere en modo Wi-Fi y USB. La sesion se guarda durante 48 horas."
+                },
+                fontSize = 13.sp,
+                color = Color(0xFF94A3B8)
+            )
+            Spacer(modifier = Modifier.height(20.dp))
+
+            if (autoProbing) {
+                CircularProgressIndicator(color = Color(0xFF38BDF8), modifier = Modifier.size(36.dp))
+            } else {
+                if (hasSavedSession) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0x1AC7F36B))
+                            .border(1.dp, Color(0xFF84CC16), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Sesion guardada activa (48 h)",
+                            color = Color(0xFFC7F36B),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Cambiar PIN",
+                            color = Color(0xFF38BDF8),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.clickable(enabled = !isLoading) {
+                                onClearSavedSession()
+                            }
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                }
+
+                OutlinedTextField(
+                    value = ip,
+                    onValueChange = onIpChange,
+                    label = { Text("IP de la PC (Wi-Fi o 127.0.0.1 USB)", color = Color(0xFF94A3B8)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = inputStyle,
+                    colors = fieldColors,
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+
+                OutlinedTextField(
+                    value = port,
+                    onValueChange = onPortChange,
+                    label = { Text("Puerto", color = Color(0xFF94A3B8)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = inputStyle,
+                    colors = fieldColors,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+
+                OutlinedTextField(
+                    value = pin,
+                    onValueChange = { raw ->
+                        onPinChange(raw.filter { it.isDigit() }.take(6))
+                    },
+                    label = {
+                        Text(
+                            if (hasSavedSession) "Nuevo PIN de 6 digitos (opcional)" else "PIN de 6 digitos (Wi-Fi y USB)",
+                            color = Color(0xFF94A3B8)
+                        )
+                    },
+                    placeholder = {
+                        Text(
+                            if (hasSavedSession) "Deja vacio para reconectar directo" else "Ingresa los 6 digitos del servidor PC",
+                            color = Color(0xFF64748B),
+                            fontSize = 13.sp
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = inputStyle,
+                    colors = fieldColors,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(22.dp))
+
+                if (errorMessage != null) {
+                    Text(text = errorMessage, color = Color(0xFFEF4444), fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(14.dp))
+                }
+
+                val canReconnectSaved = hasSavedSession && pin.isBlank()
+                val canPairWithPin = pin.trim().length == 6
+                Button(
+                    onClick = { onConnect(ip) },
+                    enabled = !isLoading && ip.trim().isNotEmpty() && (canReconnectSaved || canPairWithPin),
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0284C7))
+                ) {
+                    if (isLoading) {
+                        CircularProgressIndicator(color = Color.White, modifier = Modifier.size(22.dp))
+                    } else {
+                        Text(
+                            text = if (canReconnectSaved) "Reconectar directo" else "Conectar",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 15.sp
+                        )
+                    }
                 }
             }
         }

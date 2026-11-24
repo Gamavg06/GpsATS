@@ -1,9 +1,9 @@
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Numerics;
-using System.Text.Json;
+using AtsGpsServer;
 using AtsGpsServer.Hubs;
+using AtsGpsServer.Map;
 using AtsGpsServer.Security;
 using AtsGpsServer.Telemetry;
 
@@ -11,29 +11,41 @@ if (args.Contains("--help") || args.Contains("-h"))
 {
     Console.WriteLine("ATS GPS Server (.NET 10)");
     Console.WriteLine("Uso:");
-    Console.WriteLine("  AtsGpsServer               Inicia el servidor de telemetría y WebSocket");
+    Console.WriteLine("  AtsGpsServer               Inicia el servidor de telemetria y WebSocket");
     Console.WriteLine("  AtsGpsServer --build-map   Extrae el mapa completo desde los archivos SCS del juego local");
+    Console.WriteLine("  AtsGpsServer --build-map --force  Fuerza la regeneracion de map_ats.bin aunque ya exista v3");
     return;
 }
 
 if (args.Contains("--build-map") || args.Contains("-b"))
 {
+    bool forceRebuild = args.Contains("--force") || args.Contains("-f");
     Console.WriteLine("================================================================================");
     Console.WriteLine("       ATS GPS - EXTRACTOR LOCAL DE MAPA DESDE ARCHIVOS SCS                   ");
     Console.WriteLine("================================================================================");
-    var mapMgr = new AtsGpsServer.Map.MapManager();
+    var mapMgr = new MapManager();
     Console.WriteLine($"Directorio del juego: {mapMgr.AtsDirectory}");
-    Console.WriteLine("Extrayendo sectores dinámicamente...");
+
+    if (!forceRebuild && MapBinarySerializer.IsValidHeader(mapMgr.MapFilePath))
+    {
+        Console.WriteLine("[MAPA] map_ats.bin ya existe y coincide con la version del extractor (ATSMAP03 v3). Omitiendo regeneracion.");
+        Console.WriteLine($"Archivo actual: {mapMgr.MapFilePath}");
+        return;
+    }
+
+    Console.WriteLine("Extrayendo sectores dinamicamente...");
     var sw = System.Diagnostics.Stopwatch.StartNew();
     try
     {
         var graph = await mapMgr.BuildMapAsync((step, cur, tot) =>
         {
             if (cur % 25 == 0 || cur == tot)
+            {
                 Console.WriteLine($"  [{cur}/{tot}] {step}");
+            }
         });
         sw.Stop();
-        Console.WriteLine($"\n[ÉXITO] Extracción completada en {sw.ElapsedMilliseconds / 1000.0:F1} s.");
+        Console.WriteLine($"\n[EXITO] Extraccion completada en {sw.ElapsedMilliseconds / 1000.0:F1} s.");
         Console.WriteLine($"  Nodos viales:    {graph.Nodes.Count}");
         Console.WriteLine($"  Aristas viales:  {graph.Edges.Count}");
         Console.WriteLine($"  Ciudades:        {graph.Cities.Count}");
@@ -44,241 +56,22 @@ if (args.Contains("--build-map") || args.Contains("-b"))
     catch (Exception ex)
     {
         Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"\n[ERROR] Falló la extracción: {ex.Message}");
+        Console.WriteLine($"\n[ERROR] Fallo la extraccion: {ex.Message}");
         Console.ResetColor();
+        Environment.ExitCode = 1;
     }
     return;
 }
 
-var builder = WebApplication.CreateBuilder(args);
-
-// Configurar Kestrel para escuchar en 0.0.0.0 puerto 35500
 const int ServerPort = 35500;
-builder.WebHost.ConfigureKestrel(options =>
-{
-    options.Listen(IPAddress.Any, ServerPort);
-});
-
-// Inyección de dependencias
-builder.Services.AddSingleton<ScsTelemetryReader>();
-builder.Services.AddSingleton<AuthManager>();
-builder.Services.AddSingleton<AtsGpsServer.Map.MapManager>();
-builder.Services.AddSingleton<AtsGpsServer.Map.DestinationResolver>();
-builder.Services.AddSingleton<TelemetryBroadcaster>();
-builder.Services.AddSingleton<AtsGpsServer.Input.VirtualInputController>();
-
-var app = builder.Build();
-
-// WebSockets habilitados
-app.UseWebSockets(new WebSocketOptions
-{
-    KeepAliveInterval = TimeSpan.FromSeconds(15)
-});
-
-// Middleware de seguridad: Restricción a IPs locales / privadas (RFC 1918)
-app.UseMiddleware<IpWhitelistMiddleware>();
-
-// =========================================================
-// ENDPOINTS DE LA API
-// =========================================================
-
-// 1. Estado del Servidor
-app.MapGet("/api/status", (ScsTelemetryReader reader, TelemetryBroadcaster broadcaster) =>
-{
-    return Results.Ok(new
-    {
-        server = "ATS GPS Server v1.4.2 (.NET 10)",
-        atsConnected = reader.IsGameConnected,
-        connectedClients = broadcaster.ConnectedClientsCount,
-        serverTime = DateTimeOffset.UtcNow
-    });
-});
-
-// 2. Emparejamiento por PIN (O autorización directa sin PIN por Cable USB Localhost)
-app.MapPost("/api/pair", async (HttpContext context, AuthManager auth) =>
-{
-    try
-    {
-        using var reader = new StreamReader(context.Request.Body);
-        var body = await reader.ReadToEndAsync();
-        using var doc = JsonDocument.Parse(body);
-        
-        string? pin = null;
-        if (doc.RootElement.TryGetProperty("pin", out var pinProp))
-        {
-            pin = pinProp.GetString();
-        }
-
-        var remoteIp = context.Connection.RemoteIpAddress;
-        if (remoteIp != null && remoteIp.IsIPv4MappedToIPv6) remoteIp = remoteIp.MapToIPv4();
-        bool isLoopback = remoteIp != null && IPAddress.IsLoopback(remoteIp);
-        bool isUsbCable = isLoopback;
-        if (remoteIp != null && remoteIp.AddressFamily == AddressFamily.InterNetwork)
-        {
-            byte[] ipBytes = remoteIp.GetAddressBytes();
-            // 192.168.42.x es la subred estándar de USB Tethering (RNDIS) de Android
-            if (ipBytes[0] == 192 && ipBytes[1] == 168 && ipBytes[2] == 42)
-            {
-                isUsbCable = true;
-            }
-        }
-
-        // Si la conexión es por Cable USB (Localhost 127.0.0.1 o USB Tethering), autorizar sin necesidad de PIN
-        if (isUsbCable && (string.IsNullOrWhiteSpace(pin) || pin == "USB_DIRECT" || pin == "AUTO_USB"))
-        {
-            string usbToken = auth.GenerateDirectUsbToken();
-            return Results.Ok(new
-            {
-                authenticated = true,
-                token = usbToken,
-                isUsbDirect = true,
-                expiresInHours = 48,
-                message = "Conexión directa por cable USB autorizada automáticamente sin PIN."
-            });
-        }
-
-        if (string.IsNullOrWhiteSpace(pin))
-        {
-            return Results.BadRequest(new { error = "El campo 'pin' es requerido para conexiones de red Wi-Fi." });
-        }
-
-        var (success, token, errorMsg) = auth.TryAuthenticate(pin);
-        if (success && token != null)
-        {
-            return Results.Ok(new
-            {
-                authenticated = true,
-                token = token,
-                expiresInHours = 48,
-                message = "Dispositivo emparejado exitosamente con la PC."
-            });
-        }
-
-        return Results.Json(new { authenticated = false, error = errorMsg ?? "Código PIN incorrecto." }, statusCode: 401);
-    }
-    catch (Exception ex)
-    {
-        return Results.BadRequest(new { error = "JSON inválido: " + ex.Message });
-    }
-});
-
-static string? ExtractToken(HttpContext context)
-{
-    string? token = context.Request.Query["token"].FirstOrDefault();
-    if (string.IsNullOrEmpty(token))
-    {
-        var authHeader = context.Request.Headers["Authorization"].FirstOrDefault();
-        if (authHeader != null && authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-        {
-            token = authHeader.Substring(7).Trim();
-        }
-    }
-    return token;
-}
-
-// 3. Snapshot puntual de telemetría (REST)
-app.MapGet("/api/telemetry/snapshot", (HttpContext context, ScsTelemetryReader reader, AuthManager auth) =>
-{
-    if (!auth.ValidateToken(ExtractToken(context)))
-    {
-        return Results.Json(new { error = "No autorizado. Proporcione un token válido tras emparejar con el PIN." }, statusCode: 401);
-    }
-
-    return Results.Ok(reader.ReadSnapshot());
-});
-
-// 4. WebSocket para transmisión en tiempo real (30 Hz)
-app.Map("/ws/telemetry", async (HttpContext context, TelemetryBroadcaster broadcaster) =>
-{
-    if (context.WebSockets.IsWebSocketRequest)
-    {
-        string? token = context.Request.Query["token"].FirstOrDefault();
-        using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
-        await broadcaster.HandleWebSocketAsync(webSocket, token);
-    }
-    else
-    {
-        context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
-    }
-});
-
-// 5. Información del Grafo de Mapa
-app.MapGet("/api/map/info", (AtsGpsServer.Map.MapManager mapManager) =>
-{
-    return Results.Ok(mapManager.GetMapInfo());
-});
-
-// 6. Generar / Reconstruir Mapa
-app.MapPost("/api/map/build", async (HttpContext context, AuthManager auth, AtsGpsServer.Map.MapManager mapManager) =>
-{
-    if (!auth.ValidateToken(ExtractToken(context)))
-    {
-        return Results.Json(new { error = "No autorizado. Proporcione un token válido tras emparejar con el PIN." }, statusCode: 401);
-    }
-
-    try
-    {
-        var graph = await mapManager.BuildMapAsync((step, cur, tot) =>
-        {
-            Console.WriteLine($"[GENERADOR MAPA] ({cur}/{tot}) {step}");
-        });
-
-        return Results.Ok(new
-        {
-            success = true,
-            message = "Mapa generado exitosamente.",
-            nodes = graph.Nodes.Count,
-            edges = graph.Edges.Count,
-            cities = graph.Cities.Count,
-            companies = graph.Companies.Count
-        });
-    }
-    catch (Exception ex)
-    {
-        return Results.Problem("Error generando el mapa: " + ex.Message);
-    }
-});
-
-// 7. Descarga de Archivo Binario de Mapa para la App Android
-app.MapGet("/api/map/download", (AtsGpsServer.Map.MapManager mapManager) =>
-{
-    if (!mapManager.IsMapReady)
-    {
-        return Results.NotFound(new { error = "El mapa aún no ha sido generado. Ejecute POST /api/map/build primero." });
-    }
-
-    return Results.File(mapManager.MapFilePath, "application/octet-stream", "map_ats.bin");
-});
-
-// 8. Lista de Destinos Disponibles (Ciudades y Empresas) para Selector en App
-app.MapGet("/api/destinations", (AtsGpsServer.Map.DestinationResolver resolver) =>
-{
-    return Results.Ok(resolver.GetAllSelectableDestinations());
-});
-
-// 9. Control interactivo de cabina desde el celular (Button Box táctil)
-app.MapPost("/api/control/key", (HttpContext context, AuthManager auth, AtsGpsServer.Input.VirtualInputController inputCtrl, ControlKeyRequest req) =>
-{
-    if (!auth.ValidateToken(ExtractToken(context)))
-    {
-        return Results.Json(new { error = "No autorizado. Proporcione un token válido tras emparejar con el PIN." }, statusCode: 401);
-    }
-
-    if (string.IsNullOrWhiteSpace(req?.Action))
-    {
-        return Results.BadRequest(new { success = false, error = "Acción no especificada" });
-    }
-
-    bool ok = inputCtrl.TriggerAction(req.Action);
-    return Results.Ok(new { success = ok, action = req.Action });
-});
+var app = AtsServerBuilder.CreateWebApplication(args, port: ServerPort);
 
 // =========================================================
 // PANTALLA DE INICIO EN CONSOLA
 // =========================================================
 var authManager = app.Services.GetRequiredService<AuthManager>();
 _ = app.Services.GetRequiredService<ScsTelemetryReader>();
-app.Lifetime.ApplicationStopping.Register(() => app.Services.GetRequiredService<TelemetryBroadcaster>().Stop());
+_ = app.Services.GetRequiredService<TelemetryBroadcaster>();
 
 try { Console.Clear(); } catch { }
 Console.ForegroundColor = ConsoleColor.Cyan;
@@ -287,17 +80,17 @@ Console.WriteLine("          ATS GPS & TELEMETRY SERVER (PC COMPANION - .NET 10)
 Console.WriteLine("================================================================================");
 Console.ResetColor();
 
-Console.WriteLine($"\n[SEGURIDAD] Código PIN de Emparejamiento: ");
+Console.WriteLine("\n[SEGURIDAD] Codigo PIN de Emparejamiento: ");
 Console.ForegroundColor = ConsoleColor.Yellow;
-Console.WriteLine($"  ***********************************");
+Console.WriteLine("  ***********************************");
 Console.WriteLine($"  *          PIN: {authManager.ServerPin}           *");
-Console.WriteLine($"  ***********************************");
+Console.WriteLine("  ***********************************");
 Console.ResetColor();
 
 Console.WriteLine("\n[RED LOCAL] Direcciones IP disponibles para conectar desde la App Android:");
 foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
 {
-    if (ni.OperationalStatus == OperationalStatus.Up && 
+    if (ni.OperationalStatus == OperationalStatus.Up &&
         (ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 || ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet))
     {
         foreach (var ip in ni.GetIPProperties().UnicastAddresses)
@@ -314,11 +107,12 @@ foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
 
 Console.WriteLine($"  -> http://127.0.0.1:{ServerPort} (Localhost)");
 
-Console.WriteLine("\n[CONEXIÓN CABLE USB (BAJA LATENCIA <1 MS)]");
+Console.WriteLine("\n[CONEXION CABLE USB (BAJA LATENCIA <1 MS)]");
 ConfigureUsbAdbReverse(ServerPort);
 
 Console.WriteLine("\n[PLUGIN SDK] Verificando scs-telemetry.dll...");
-string atsDir = AtsGpsServer.Map.AtsPathDetector.DetectAtsDirectory();
+string atsDir = AtsPathDetector.DetectAtsDirectory();
+bool atsDetected = IsAtsInstallationDetected(atsDir);
 string atsPluginPath = Path.Combine(atsDir, "bin", "win_x64", "plugins", "scs-telemetry.dll");
 if (File.Exists(atsPluginPath))
 {
@@ -328,89 +122,158 @@ if (File.Exists(atsPluginPath))
 else
 {
     Console.ForegroundColor = ConsoleColor.Red;
-    Console.WriteLine("  [AVISO] No se detectó scs-telemetry.dll en la carpeta del juego.");
+    Console.WriteLine("  [AVISO] No se detecto scs-telemetry.dll en la carpeta del juego.");
 }
 Console.ResetColor();
 
-Console.WriteLine("\n[FIREWALL] Si la app en el teléfono no conecta, asegúrate de permitir");
+Console.WriteLine("\n[FIREWALL] Si la app en el telefono no conecta, asegurate de permitir");
 Console.WriteLine($"           el puerto {ServerPort} TCP en el Firewall de Windows:");
 Console.WriteLine($"           powershell: New-NetFirewallRule -DisplayName \"ATS GPS Server\" -Direction Inbound -LocalPort {ServerPort} -Protocol TCP -Action Allow");
 
-var mapManagerInstance = app.Services.GetRequiredService<AtsGpsServer.Map.MapManager>();
-if (!mapManagerInstance.IsMapReady)
+var mapManagerInstance = app.Services.GetRequiredService<MapManager>();
+if (!MapBinarySerializer.IsValidHeader(mapManagerInstance.MapFilePath))
 {
-    Console.ForegroundColor = ConsoleColor.Yellow;
-    Console.WriteLine("\n[AVISO DE MAPA] No se detectó 'map_ats.bin'.");
-    Console.WriteLine("                Para generar la red vial desde tu instalación local de ATS, ejecuta:");
-    Console.WriteLine("                AtsGpsServer --build-map");
-    Console.ResetColor();
+    if (atsDetected)
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("\n[MAPA] No se detecto 'map_ats.bin' valido (ATSMAP03 v3).");
+        Console.WriteLine($"       Iniciando generacion automatica en segundo plano desde: {atsDir}");
+        Console.ResetColor();
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var graph = await mapManagerInstance.BuildMapAsync((step, cur, tot) =>
+                {
+                    if (cur % 50 == 0 || cur == tot)
+                    {
+                        Console.WriteLine($"[GENERADOR MAPA] ({cur}/{tot}) {step}");
+                    }
+                });
+                sw.Stop();
+                Console.WriteLine($"[MAPA] Generacion automatica completada en {sw.ElapsedMilliseconds / 1000.0:F1} s ({graph.Nodes.Count} nodos, {graph.Edges.Count} aristas).");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[MAPA] Error en generacion automatica en segundo plano: {ex.Message}");
+            }
+        });
+    }
+    else
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("\n[AVISO DE MAPA] No se detecto 'map_ats.bin' valido ni instalacion automatica de ATS.");
+        Console.WriteLine("                Para generar la red vial desde tu instalacion local de ATS, ejecuta:");
+        Console.WriteLine("                AtsGpsServer --build-map");
+        Console.ResetColor();
+    }
 }
 else
 {
     Console.ForegroundColor = ConsoleColor.Green;
-    Console.WriteLine($"\n[MAPA] Archivo 'map_ats.bin' disponible: {mapManagerInstance.MapFilePath}");
+    Console.WriteLine($"\n[MAPA] Archivo 'map_ats.bin' disponible (ATSMAP03 v3): {mapManagerInstance.MapFilePath}");
     Console.ResetColor();
 }
 
-Console.WriteLine("\n[CONEXIÓN WEBSOCKET]");
-Console.WriteLine("  Protocolo: ws:// autenticado con PIN (sin cifrado TLS, exclusivo para red local de confianza).");
+Console.WriteLine("\n[CONEXION WEBSOCKET]");
+Console.WriteLine("  Protocolo: ws:// autenticado con PIN y token Bearer (sin cifrado TLS, exclusivo para red local de confianza).");
 
-Console.WriteLine("\n[ESTADO] Servidor en ejecución. Esperando conexiones de la app móvil...\n");
+Console.WriteLine("\n[ESTADO] Servidor en ejecucion. Esperando conexiones de la app movil...\n");
 
 app.Run();
 
+static bool IsAtsInstallationDetected(string atsDir)
+{
+    if (string.IsNullOrWhiteSpace(atsDir) || !Directory.Exists(atsDir))
+    {
+        return false;
+    }
+
+    return File.Exists(Path.Combine(atsDir, "base_map.scs")) ||
+           File.Exists(Path.Combine(atsDir, "base.scs")) ||
+           Directory.Exists(Path.Combine(atsDir, "bin"));
+}
+
+static string? FindAdbExecutable()
+{
+    string appDir = AppContext.BaseDirectory;
+    string parentDir = Path.GetFullPath(Path.Combine(appDir, ".."));
+    string rootDir = Path.GetFullPath(Path.Combine(appDir, "..", ".."));
+
+    string[] localCandidates =
+    {
+        Path.Combine(appDir, "platform-tools", "adb.exe"),
+        Path.Combine(parentDir, "platform-tools", "adb.exe"),
+        Path.Combine(rootDir, "platform-tools", "adb.exe"),
+        Path.Combine(Directory.GetCurrentDirectory(), "platform-tools", "adb.exe"),
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Android\Sdk\platform-tools\adb.exe")
+    };
+
+    foreach (string candidate in localCandidates)
+    {
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+
+    var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+    foreach (var dir in pathEnv.Split(';', StringSplitOptions.RemoveEmptyEntries))
+    {
+        var candidate = Path.Combine(dir.Trim(), "adb.exe");
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
 static void ConfigureUsbAdbReverse(int port)
 {
+    string? adbPath = FindAdbExecutable();
+
+    if (adbPath == null)
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("  [AVISO ADB] No se encontro 'adb.exe' en platform-tools ni en PATH.");
+        Console.WriteLine("              Para usar cable USB (adb reverse), descarga Android SDK Platform-Tools:");
+        Console.WriteLine("              https://developer.android.com/tools/releases/platform-tools");
+        Console.ResetColor();
+        return;
+    }
+
     try
     {
-        string? adbPath = null;
-        string defaultSdkAdb = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Android\Sdk\platform-tools\adb.exe");
-        if (File.Exists(defaultSdkAdb))
+        var psi = new System.Diagnostics.ProcessStartInfo(adbPath, $"reverse tcp:{port} tcp:{port}")
         {
-            adbPath = defaultSdkAdb;
-        }
-        else
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        using var proc = System.Diagnostics.Process.Start(psi);
+        if (proc != null && proc.WaitForExit(2000) && proc.ExitCode == 0)
         {
-            var pathEnv = Environment.GetEnvironmentVariable("PATH") ?? "";
-            foreach (var dir in pathEnv.Split(';', StringSplitOptions.RemoveEmptyEntries))
-            {
-                var candidate = Path.Combine(dir, "adb.exe");
-                if (File.Exists(candidate))
-                {
-                    adbPath = candidate;
-                    break;
-                }
-            }
-        }
-
-        if (adbPath != null)
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo(adbPath, $"reverse tcp:{port} tcp:{port}")
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var proc = System.Diagnostics.Process.Start(psi);
-            if (proc != null && proc.WaitForExit(2000) && proc.ExitCode == 0)
-            {
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine($"  [OK] Reenvío USB activo (adb reverse tcp:{port} tcp:{port})");
-                Console.WriteLine("       En la app móvil selecciona 'Cable USB' para conexión directa sin PIN.");
-                Console.ResetColor();
-                return;
-            }
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.WriteLine($"  [OK] Reenvio USB activo (adb reverse tcp:{port} tcp:{port})");
+            Console.WriteLine("       En la app movil selecciona 'Cable USB' e ingresa el PIN mostrado en consola.");
+            Console.ResetColor();
+            return;
         }
     }
     catch { }
 
     Console.ForegroundColor = ConsoleColor.DarkCyan;
-    Console.WriteLine($"  -> Para conectar por Cable USB con latencia <1ms:");
-    Console.WriteLine($"     1. Activa 'Depuración USB' en el celular o tableta.");
+    Console.WriteLine("  -> Para conectar por Cable USB con latencia <1ms:");
+    Console.WriteLine("     1. Activa 'Depuracion USB' en el celular o tableta.");
     Console.WriteLine($"     2. Ejecuta en consola: adb reverse tcp:{port} tcp:{port}");
-    Console.WriteLine($"     3. O activa 'Compartir Internet por USB' (Tethering) y usa la IP del adaptador.");
+    Console.WriteLine("     3. En la app movil selecciona 'Cable USB' e ingresa el PIN mostrado en consola.");
+    Console.WriteLine("     4. O activa 'Compartir Internet por USB' (Tethering) e ingresa el PIN.");
     Console.ResetColor();
 }
 
-public record ControlKeyRequest(string? Action);
+public partial class Program { }

@@ -1,0 +1,132 @@
+SGNIA - ATS Telemetry & GPS v1.4.2
+Copyright (c) 2026 Gamaliel Velazquez Galicia (SGNIA)
+
+Official Source Code Repository:
+https://github.com/Gamavg06/GpsATS
+
+================================================================================
+1. PROJECT LICENSING SUMMARY
+================================================================================
+
+- AtsGpsServer (server/, tests/):
+  Distributed under the GNU General Public License v2.0 (GPL-2.0) because it
+  links against TruckLib (GPL-2.0). Full license text is provided in LICENSE
+  and complete source code is available at https://github.com/Gamavg06/GpsATS.
+
+- AtsGpsApp (android/) and AtsGpsLauncher (tools/AtsGpsLauncher/):
+  Distributed under the MIT License (see android/LICENSE). These components
+  communicate exclusively over HTTP/WebSocket and do not link or bundle TruckLib.
+
+- AtsGpsInstaller (tools/AtsGpsInstaller/):
+  Packages and deploys both server (GPL-2.0) and Android client (MIT) artifacts
+  together with the notices below.
+
+================================================================================
+2. THIRD-PARTY SOFTWARE AND SDK NOTICES
+================================================================================
+
+--------------------------------------------------------------------------------
+2.1 RenCloud scs-sdk-plugin (scs-telemetry.dll)
+--------------------------------------------------------------------------------
+Repository: https://github.com/RenCloud/scs-sdk-plugin
+Component:  server/plugins/scs-telemetry.dll (v1.12.1)
+License:    MIT License
+
+Copyright (c) 2018-2024 RenCloud / scs-sdk-plugin contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+2.2 SCS Software Telemetry SDK
+--------------------------------------------------------------------------------
+Source:     https://modding.scssoft.com/wiki/Documentation/Engine/SDK/Telemetry
+Files:      third_party/scs_sdk/scs_sdk_license.txt (and companion SDK headers)
+License:    MIT License
+
+SCS SDK
+Copyright (C) 2016 SCS Software
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------------
+2.3 TruckLib (sk-zk/TruckLib)
+--------------------------------------------------------------------------------
+Repository: https://github.com/sk-zk/TruckLib
+Packages:   TruckLib 0.5.2
+            TruckLib.HashFs 0.2.7
+            TruckLib.Models 0.4.3
+            TruckLib.Core 0.3.1
+            TruckLib.Sii 0.2.2
+License:    GNU General Public License v2.0 (GPL-2.0)
+
+Notice:
+AtsGpsServer links and incorporates TruckLib under the GNU General Public
+License v2.0. Consequently, AtsGpsServer is distributed under GPL-2.0. Complete
+source code for AtsGpsServer is available at https://github.com/Gamavg06/GpsATS
+and the full text of the GNU General Public License v2.0 is included in the
+root LICENSE file.
+
+--------------------------------------------------------------------------------
+2.4 Additional Server (.NET) Libraries (MIT License)
+--------------------------------------------------------------------------------
+- RBush (v4.0.0) - MIT License
+- Sprache (v2.3.1) - MIT License
+- GisDeflate (v1.0.2) - MIT License
+- System.IO.Hashing (v10.0.13) - MIT License
+
+--------------------------------------------------------------------------------
+2.5 Android Client Libraries (Apache License 2.0)
+--------------------------------------------------------------------------------
+- OkHttp & Okio (Square, Inc.)
+  Copyright 2019 Square, Inc. / Copyright 2013 Square, Inc.
+  Licensed under the Apache License, Version 2.0.
+
+- Kotlin Standard Library & Kotlinx Coroutines (JetBrains s.r.o.)
+  Copyright 2010-2024 JetBrains s.r.o.
+  Licensed under the Apache License, Version 2.0.
+
+- AndroidX & Jetpack Compose (Google / The Android Open Source Project)
+  Copyright (C) The Android Open Source Project
+  Licensed under the Apache License, Version 2.0.
+
+--------------------------------------------------------------------------------
+2.6 Optional External Tool: Android SDK Platform-Tools (adb)
+--------------------------------------------------------------------------------
+- Android SDK Platform-Tools (adb) - Google LLC / AOSP
+  Licensed under the Apache License, Version 2.0.
+  This external tool is NOT bundled in this repository or installer. It is
+  optional and only required if the user chooses USB cable mode (adb reverse).
+  Official download:
+  https://developer.android.com/tools/releases/platform-tools
