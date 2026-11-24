@@ -9,7 +9,10 @@ data class RoadSnapResult(
     val snappedZ: Float,
     val edge: MapEdge,
     val segmentIndex: Int,
-    val distanceSq: Float
+    val distanceSq: Float,
+    val alignmentDot: Float = 1f,
+    val signedLateralMeters: Float = 0f,
+    val headingDeltaDeg: Float = 0f
 )
 
 data class RouteTrackingState(
@@ -17,7 +20,9 @@ data class RouteTrackingState(
     val isWrongWay: Boolean,
     val distanceToRouteMeters: Float,
     val routeAlignmentDot: Float,
-    val currentSnap: RoadSnapResult?
+    val currentSnap: RoadSnapResult?,
+    val signedLateralMeters: Float = 0f,
+    val headingDeltaDeg: Float = 0f
 )
 
 data class MapNode(
@@ -101,7 +106,8 @@ data class MapGraph(
         x: Float,
         z: Float,
         hx: Float,
-        hz: Float
+        hz: Float,
+        headingDeg: Float
     ): RoadSnapResult? {
         var bestResult: RoadSnapResult? = null
         var bestEffectiveDistSq = Float.MAX_VALUE
@@ -129,22 +135,38 @@ data class MapGraph(
                 val dz = z - projZ
                 val distSq = dx * dx + dz * dz
 
+                val segLen = kotlin.math.sqrt(lenSq)
+                val dot = if (lenSq > 0.01f) (vx * hx + vz * hz) / segLen else 1f
                 var effectiveDistSq = distSq
-                if (lenSq > 0.01f) {
-                    val dot = (vx * hx + vz * hz) / kotlin.math.sqrt(lenSq)
-                    if (dot < -0.35f) {
-                        effectiveDistSq = distSq * 4.5f
-                    }
+                if (dot < -0.35f) {
+                    effectiveDistSq = distSq * 5.0f
+                } else if (dot < 0.0f) {
+                    effectiveDistSq = distSq * 3.0f
                 }
 
                 if (effectiveDistSq < bestEffectiveDistSq) {
                     bestEffectiveDistSq = effectiveDistSq
+                    val signedLat = if (segLen > 0.01f) {
+                        ((vx * (z - p1.z)) - (vz * (x - p1.x))) / segLen
+                    } else 0f
+                    var hDelta = if (lenSq > 0.01f) {
+                        val segBearingDeg = Math.toDegrees(
+                            kotlin.math.atan2(vx.toDouble(), -vz.toDouble())
+                        ).toFloat()
+                        (headingDeg - segBearingDeg) % 360f
+                    } else 0f
+                    if (hDelta > 180f) hDelta -= 360f
+                    if (hDelta < -180f) hDelta += 360f
+
                     bestResult = RoadSnapResult(
                         snappedX = projX,
                         snappedZ = projZ,
                         edge = edge,
                         segmentIndex = i,
-                        distanceSq = distSq
+                        distanceSq = distSq,
+                        alignmentDot = dot,
+                        signedLateralMeters = signedLat,
+                        headingDeltaDeg = hDelta
                     )
                 }
             }
@@ -169,8 +191,8 @@ data class MapGraph(
         if (!preferredEdges.isNullOrEmpty()) {
             val prefMaxDist = kotlin.math.min(28f, maxDistMeters)
             val prefMaxDistSq = prefMaxDist * prefMaxDist
-            val prefHit = findBestSnapInEdges(preferredEdges, x, z, hx, hz)
-            if (prefHit != null && prefHit.distanceSq <= prefMaxDistSq) {
+            val prefHit = findBestSnapInEdges(preferredEdges, x, z, hx, hz, headingDeg)
+            if (prefHit != null && prefHit.distanceSq <= prefMaxDistSq && prefHit.alignmentDot >= 0.0f) {
                 return prefHit
             }
         }
@@ -178,7 +200,7 @@ data class MapGraph(
         val candidates = spatialGrid.query(x, z, maxDistMeters * 2f)
         if (candidates.isEmpty()) return null
 
-        val bestHit = findBestSnapInEdges(candidates, x, z, hx, hz)
+        val bestHit = findBestSnapInEdges(candidates, x, z, hx, hz, headingDeg)
         return if (bestHit != null && bestHit.distanceSq <= maxDistSq) {
             bestHit
         } else {
@@ -188,6 +210,9 @@ data class MapGraph(
 
     fun findBestRouteStartNode(x: Float, z: Float, headingDeg: Float): Int {
         val snap = snapToRoad(x, z, headingDeg, null, 45f)
+        if (snap != null && adjacency.containsKey(snap.edge.toNodeIndex)) {
+            return snap.edge.toNodeIndex
+        }
         if (snap != null && adjacency.containsKey(snap.edge.fromNodeIndex)) {
             return snap.edge.fromNodeIndex
         }
@@ -245,18 +270,20 @@ data class MapGraph(
 
             minDist = if (bestRouteDistSq < Float.MAX_VALUE) kotlin.math.sqrt(bestRouteDistSq) else 0f
             routeDot = bestRouteDot
-            isOffRoute = (minDist > 34f) ||
-                (speedKmh > 10f && gear > 0 && minDist <= 34f && routeDot < -0.50f)
+            isOffRoute = (minDist > 26f) || (speedKmh > 8f && gear > 0 && routeDot < -0.35f)
         }
 
-        val isWrongWay = if (speedKmh > 8f && gear > 0) {
+        val isWrongWay = if (speedKmh > 18f && gear > 0) {
             val nearby = spatialGrid.query(x, z, 25f)
             var minSegDistSq = Float.MAX_VALUE
-            var maxDotWithin12m = -2f
+            var maxOneWayDotWithin12m = -2f
+            var hasOneWayWithin12m = false
+            var hasAlignedEdgeWithin18m = false
 
             for (edge in nearby) {
                 val poly = edge.polyline
                 if (poly.size < 2) continue
+                val isOneWay = edge.roadType.toInt() == 3 || (edge.flags.toInt() and 1) != 0
                 for (i in 0 until poly.size - 1) {
                     val p1 = poly[i]
                     val p2 = poly[i + 1]
@@ -275,19 +302,25 @@ data class MapGraph(
                     if (distSq < minSegDistSq) {
                         minSegDistSq = distSq
                     }
-                    if (distSq <= 144f && lenSq > 0.01f) {
+                    if (lenSq > 0.01f) {
                         val dot = (vx * hx + vz * hz) / kotlin.math.sqrt(lenSq)
-                        if (dot > maxDotWithin12m) {
-                            maxDotWithin12m = dot
+                        if (distSq <= 324f && dot > 0.25f) {
+                            hasAlignedEdgeWithin18m = true
+                        }
+                        if (isOneWay && distSq <= 144f) {
+                            hasOneWayWithin12m = true
+                            if (dot > maxOneWayDotWithin12m) {
+                                maxOneWayDotWithin12m = dot
+                            }
                         }
                     }
                 }
             }
 
-            val case1 = minSegDistSq <= 100f && maxDotWithin12m in -1.5f..-0.45f
-            val case2 = activeRoute != null && activeRoute.edgePath.isNotEmpty() &&
-                minDist <= 12f && routeDot < -0.60f
-            case1 || case2
+            minSegDistSq <= 64f &&
+                hasOneWayWithin12m &&
+                maxOneWayDotWithin12m < -0.75f &&
+                !hasAlignedEdgeWithin18m
         } else {
             false
         }
@@ -297,7 +330,9 @@ data class MapGraph(
             isWrongWay = isWrongWay,
             distanceToRouteMeters = minDist,
             routeAlignmentDot = routeDot,
-            currentSnap = currentSnap
+            currentSnap = currentSnap,
+            signedLateralMeters = currentSnap?.signedLateralMeters ?: 0f,
+            headingDeltaDeg = currentSnap?.headingDeltaDeg ?: 0f
         )
     }
 

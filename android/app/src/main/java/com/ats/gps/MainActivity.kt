@@ -50,6 +50,7 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 import androidx.compose.ui.platform.LocalContext
+import com.ats.gps.data.model.RouteTrackingState
 import com.ats.gps.data.triplog.TripLogManager
 import com.ats.gps.data.triplog.TripRecord
 import com.ats.gps.ui.triplog.TripLogScreen
@@ -329,6 +330,8 @@ fun AtsNavMainApp(
     var lastRoutedDestComp by remember { mutableStateOf("") }
     var lastRouteCalcTime by remember { mutableLongStateOf(0L) }
     var isWrongWay by remember { mutableStateOf(false) }
+    var isRecalculatingRoute by remember { mutableStateOf(false) }
+    var latestTracking by remember { mutableStateOf<RouteTrackingState?>(null) }
     var lastTargetNodeIndex by remember { mutableIntStateOf(-1) }
     var lastWrongWayVoiceTime by remember { mutableLongStateOf(0L) }
     var offRouteCounter by remember { mutableIntStateOf(0) }
@@ -384,7 +387,7 @@ fun AtsNavMainApp(
                 }
 
                 val movedDistSq = (curX - lastTrackingX) * (curX - lastTrackingX) + (curZ - lastTrackingZ) * (curZ - lastTrackingZ)
-                val shouldEvaluateTracking = (now - lastTrackingCheckTime > 200L) || (movedDistSq > 4.0f)
+                val shouldEvaluateTracking = (now - lastTrackingCheckTime > 120L) || (movedDistSq > 1.0f)
 
                 val tracking = if (shouldEvaluateTracking) {
                     val t = withContext(Dispatchers.Default) {
@@ -397,6 +400,7 @@ fun AtsNavMainApp(
                 } else null
 
                 if (tracking != null) {
+                    latestTracking = tracking
                     isWrongWay = tracking.isWrongWay
                     if (tracking.isWrongWay && now - lastWrongWayVoiceTime > 9000L) {
                         lastWrongWayVoiceTime = now
@@ -466,8 +470,9 @@ fun AtsNavMainApp(
                     val isNewDestination = effectiveDestLabel != lastRoutedDestCity ||
                         input.destinationCompany != lastRoutedDestComp ||
                         targetNode != lastTargetNodeIndex
-                    val isConfirmedOffRoute = tracking != null && (tracking.distanceToRouteMeters > 48f || offRouteCounter >= 4) &&
-                        (now - lastRouteCalcTime > 1500L)
+                    val isConfirmedOffRoute = tracking != null &&
+                        (tracking.distanceToRouteMeters > 35f || offRouteCounter >= 2) &&
+                        (now - lastRouteCalcTime > 1200L)
                     val shouldCompute = activeRoute == null || isNewDestination || isConfirmedOffRoute
 
                     if (shouldCompute) {
@@ -475,10 +480,18 @@ fun AtsNavMainApp(
                             routeJob?.cancel()
                         }
                         if (isNewDestination || routeJob == null || !routeJob!!.isActive) {
-                            val snap = tracking?.currentSnap ?: withContext(Dispatchers.Default) {
-                                graph.snapToRoad(curX, curZ, curHeading, null, 45f)
+                            val snap = if (isConfirmedOffRoute) {
+                                withContext(Dispatchers.Default) {
+                                    graph.snapToRoad(curX, curZ, curHeading, preferredEdges = null, maxDistMeters = 40f)
+                                }
+                            } else {
+                                tracking?.currentSnap ?: withContext(Dispatchers.Default) {
+                                    graph.snapToRoad(curX, curZ, curHeading, preferredEdges = null, maxDistMeters = 40f)
+                                }
                             }
-                            val startNode = snap?.edge?.fromNodeIndex?.takeIf { graph.adjacency.containsKey(it) }
+                            val leadEdge = snap?.edge
+                            val startNode = leadEdge?.toNodeIndex?.takeIf { graph.adjacency.containsKey(it) }
+                                ?: leadEdge?.fromNodeIndex?.takeIf { graph.adjacency.containsKey(it) }
                                 ?: withContext(Dispatchers.Default) {
                                     graph.findBestRouteStartNode(curX, curZ, curHeading)
                                 }
@@ -487,29 +500,59 @@ fun AtsNavMainApp(
                             lastTargetNodeIndex = targetNode
 
                             if (targetNode == startNode) {
-                                activeRoute = RouteResult(listOf(startNode), emptyList(), 0f)
+                                activeRoute = if (leadEdge != null && startNode == leadEdge.toNodeIndex) {
+                                    RouteResult(
+                                        nodePath = listOf(leadEdge.fromNodeIndex, leadEdge.toNodeIndex),
+                                        edgePath = listOf(leadEdge),
+                                        totalDistanceMeters = leadEdge.length
+                                    )
+                                } else {
+                                    RouteResult(listOf(startNode), emptyList(), 0f)
+                                }
                                 lastRouteCalcTime = System.currentTimeMillis()
                                 offRouteCounter = 0
+                                isRecalculatingRoute = false
                             } else {
                                 val navDistSnapshot = input.navDistanceMeters
+                                if (isConfirmedOffRoute) {
+                                    isRecalculatingRoute = true
+                                }
                                 routeJob = coroutineScope.launch {
-                                    val route = withContext(Dispatchers.Default) {
-                                        AStarRouter.findRoute(
-                                            graph = graph,
-                                            startNode = startNode,
-                                            targetNode = targetNode,
-                                            headingDeg = curHeading,
-                                            initialEdge = snap?.edge
-                                        )
-                                    }
-                                    lastRouteCalcTime = System.currentTimeMillis()
-                                    offRouteCounter = 0
-                                    if (route != null) {
-                                        activeRoute = route
-                                        if (navDistSnapshot > 0f) {
-                                            val destText = if (effectiveDestLabel.isNotEmpty()) effectiveDestLabel else "tu destino"
-                                            voiceAssistant.updateNavigation(navDistSnapshot, "hacia $destText")
+                                    try {
+                                        val route = withContext(Dispatchers.Default) {
+                                            AStarRouter.findRoute(
+                                                graph = graph,
+                                                startNode = startNode,
+                                                targetNode = targetNode,
+                                                headingDeg = curHeading,
+                                                initialEdge = leadEdge
+                                            )
                                         }
+                                        lastRouteCalcTime = System.currentTimeMillis()
+                                        offRouteCounter = 0
+                                        if (route != null) {
+                                            val finalRoute = if (
+                                                leadEdge != null &&
+                                                startNode == leadEdge.toNodeIndex &&
+                                                route.nodePath.firstOrNull() == leadEdge.toNodeIndex &&
+                                                route.edgePath.firstOrNull()?.edgeId != leadEdge.edgeId
+                                            ) {
+                                                RouteResult(
+                                                    nodePath = listOf(leadEdge.fromNodeIndex) + route.nodePath,
+                                                    edgePath = listOf(leadEdge) + route.edgePath,
+                                                    totalDistanceMeters = route.totalDistanceMeters + leadEdge.length
+                                                )
+                                            } else {
+                                                route
+                                            }
+                                            activeRoute = finalRoute
+                                            if (navDistSnapshot > 0f) {
+                                                val destText = if (effectiveDestLabel.isNotEmpty()) effectiveDestLabel else "tu destino"
+                                                voiceAssistant.updateNavigation(navDistSnapshot, "hacia $destText")
+                                            }
+                                        }
+                                    } finally {
+                                        isRecalculatingRoute = false
                                     }
                                 }
                             }
@@ -517,6 +560,7 @@ fun AtsNavMainApp(
                     }
                 } else {
                     routeJob?.cancel()
+                    isRecalculatingRoute = false
                     activeRoute = null
                     lastRoutedDestCity = ""
                     lastRoutedDestComp = ""
@@ -657,9 +701,11 @@ fun AtsNavMainApp(
                                 zoomScale = zoomScale,
                                 panOffset = panOffset,
                                 onZoomChange = { zoomScale = it },
-                                onPanChange = { 
-                                    panOffset = it
-                                    isFollowingTruck = false
+                                onPanChange = { newPan ->
+                                    panOffset = newPan
+                                    if (newPan.getDistance() > 8f) {
+                                        isFollowingTruck = false
+                                    }
                                 },
                                 onMapTapped = { tapX, tapZ ->
                                     val graph = mapGraph
@@ -845,16 +891,24 @@ fun AtsNavMainApp(
 
                                     if (junctionInstr != null) {
                                         JunctionView(
+                                            maneuver = junctionInstr.maneuver,
+                                            totalLanes = junctionInstr.totalLanes,
+                                            recommendedLaneIndex = junctionInstr.activeLaneIndex,
+                                            signedLateralMeters = latestTracking?.signedLateralMeters ?: 0f,
+                                            headingDeltaDeg = latestTracking?.headingDeltaDeg ?: 0f,
+                                            speedKmh = telemetry.speedKmh,
+                                            blinkerLeft = telemetry.blinkerLeft || telemetry.lightsHazard,
+                                            blinkerRight = telemetry.blinkerRight || telemetry.lightsHazard,
                                             exitName = junctionInstr.title,
                                             destinationName = effectiveDestinationName.ifEmpty { "DESTINO" },
                                             distanceMeters = junctionInstr.distanceMeters,
-                                            speedLimitKmh = telemetry.speedLimitKmh
+                                            speedLimitKmh = telemetry.speedLimitKmh.roundToInt()
                                         )
                                     }
                                 }
                             }
 
-                            // 2. Alertas Superior Central (Sentido Contrario + Parada de Descanso apiladas sin colisión)
+                            // 2. Alertas Superior Central (Sentido Contrario / Recalculando / Parada de Descanso)
                             val isRestStopRelevant = telemetry.restStopMinutes in 1..45
                             val currentMapGraph = mapGraph
                             val mapRestStop = remember(telemetry.posX, telemetry.posZ, currentMapGraph, isRestStopRelevant) {
@@ -862,7 +916,7 @@ fun AtsNavMainApp(
                                     currentMapGraph.findNearestRestStop(telemetry.posX.toFloat(), telemetry.posZ.toFloat())
                                 } else null
                             }
-                            if (isWrongWay || (isRestStopRelevant && mapRestStop != null)) {
+                            if (isWrongWay || isRecalculatingRoute || (isRestStopRelevant && mapRestStop != null)) {
                                 Column(
                                     modifier = Modifier
                                         .align(Alignment.TopCenter)
@@ -883,6 +937,21 @@ fun AtsNavMainApp(
                                                 color = Color.White,
                                                 fontWeight = FontWeight.Black,
                                                 fontSize = 14.sp
+                                            )
+                                        }
+                                    } else if (isRecalculatingRoute) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(Color(0xEE0F172A))
+                                                .border(1.5.dp, Color(0xFF38BDF8), RoundedCornerShape(14.dp))
+                                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                        ) {
+                                            Text(
+                                                text = "Recalculando ruta...",
+                                                color = Color(0xFFE0F2FE),
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp
                                             )
                                         }
                                     }

@@ -33,16 +33,16 @@ object AStarRouter {
         val route = executeAStar(graph, startNode, targetNode, nodeCount, headingDeg, initialEdge)
         if (route != null) return route
 
-        // Si el nodo exacto está desconectado o en sentido contrario, buscar un nodo adyacente conectado
+        // Si el nodo exacto esta desconectado o en sentido contrario, buscar un nodo adyacente conectado
         val candidateStarts = graph.adjacency[startNode]?.map { it.toNodeIndex }?.take(4) ?: emptyList()
         for (cand in candidateStarts) {
             if (cand in 0 until nodeCount && cand != targetNode) {
-                val altRoute = executeAStar(graph, cand, targetNode, nodeCount, headingDeg, null)
+                val altRoute = executeAStar(graph, cand, targetNode, nodeCount, headingDeg, initialEdge)
                 if (altRoute != null) return altRoute
             }
         }
 
-        // Búsqueda de respaldo: aristas de autopista o carretera principal cercanas a startNode (< 350m)
+        // Busqueda de respaldo conservando headingDeg e initialEdge (evitando giros atras)
         val startPt = graph.nodes[startNode]
         val nearbyStartEdges = graph.getEdgesNear(startPt.x, startPt.z, 350f)
             .sortedBy { edge ->
@@ -56,12 +56,12 @@ object AStarRouter {
         for (edge in nearbyStartEdges.take(6)) {
             val cand = edge.fromNodeIndex
             if (cand in 0 until nodeCount && cand != startNode && cand != targetNode) {
-                val altRoute = executeAStar(graph, cand, targetNode, nodeCount, Float.NaN, null)
+                val altRoute = executeAStar(graph, cand, targetNode, nodeCount, headingDeg, initialEdge)
                 if (altRoute != null) return altRoute
             }
         }
 
-        // Búsqueda de respaldo: aristas cercanas a targetNode (< 350m)
+        // Busqueda de respaldo: aristas cercanas a targetNode (< 350m)
         val targetPt = graph.nodes[targetNode]
         val nearbyTargetEdges = graph.getEdgesNear(targetPt.x, targetPt.z, 350f)
             .sortedBy { edge ->
@@ -77,6 +77,20 @@ object AStarRouter {
             if (candTarget in 0 until nodeCount && candTarget != targetNode && candTarget != startNode) {
                 val altRoute = executeAStar(graph, startNode, candTarget, nodeCount, headingDeg, initialEdge)
                 if (altRoute != null) return altRoute
+            }
+        }
+
+        // Ultimo recurso si no existe ruta hacia adelante (callejon sin salida): relajar headingDeg
+        if (!headingDeg.isNaN() || initialEdge != null) {
+            val fallbackDirect = executeAStar(graph, startNode, targetNode, nodeCount, Float.NaN, null)
+            if (fallbackDirect != null) return fallbackDirect
+
+            for (edge in nearbyStartEdges.take(6)) {
+                val cand = edge.fromNodeIndex
+                if (cand in 0 until nodeCount && cand != startNode && cand != targetNode) {
+                    val altRoute = executeAStar(graph, cand, targetNode, nodeCount, Float.NaN, null)
+                    if (altRoute != null) return altRoute
+                }
             }
         }
 
@@ -160,6 +174,11 @@ object AStarRouter {
                 // Prohibir retroceso inmediato A -> B -> A cuando hay alternativas
                 if (prevNode != -1 && neighbor == prevNode && edges.size > 1) continue
 
+                // Prohibir vuelta atras inmediata hacia el nodo origen de initialEdge
+                if (current == startNode && initialEdge != null && neighbor == initialEdge.fromNodeIndex) {
+                    continue
+                }
+
                 var initialReversePenalty = 0f
                 if (current == startNode && hasHeading) {
                     val dx = nodes[neighbor].x - nodes[startNode].x
@@ -169,7 +188,9 @@ object AStarRouter {
                         initialReversePenalty = 0f
                     } else if (len > 0.01f) {
                         val dot = (dx * hx + dz * hz) / len
-                        if (dot < -0.20f) {
+                        if (dot < -0.35f) {
+                            initialReversePenalty = 45000f
+                        } else if (dot < -0.20f) {
                             initialReversePenalty = 4500f
                         }
                     }

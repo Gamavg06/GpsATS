@@ -1,6 +1,7 @@
 package com.ats.gps.ui.map
 
 import android.graphics.Typeface
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -345,6 +346,17 @@ fun GpsMapCanvas(
         MapThemeStyle.CYBER_NEON -> Color(0xFF070B12)
     }
 
+    val cursorInfinite = rememberInfiniteTransition(label = "TruckCursorPulse")
+    val cursorPulseAlpha by cursorInfinite.animateFloat(
+        initialValue = 0.30f,
+        targetValue = 0.68f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "TruckCursorPulseAlpha"
+    )
+
     Canvas(
         modifier = modifier
             .fillMaxSize()
@@ -391,11 +403,25 @@ fun GpsMapCanvas(
                 }
             }
             .pointerInput(Unit) {
+                var pendingPan = Offset.Zero
                 detectTransformGestures { _, pan, zoom, _ ->
                     val newZoom = (currentZoom * zoom).coerceIn(0.10f, 4.5f)
                     currentOnZoom(newZoom)
-                    if (currentViewMode == MapViewMode.MODE_2D_TOP_DOWN && (pan.x != 0f || pan.y != 0f)) {
-                        currentOnPan(currentPan + pan)
+                    if (currentViewMode == MapViewMode.MODE_2D_TOP_DOWN) {
+                        val isPinchZoom = abs(zoom - 1f) >= 0.03f
+                        if (isPinchZoom) {
+                            pendingPan = Offset.Zero
+                        } else if (pan.x != 0f || pan.y != 0f) {
+                            if (!currentFollowing) {
+                                currentOnPan(currentPan + pan)
+                            } else {
+                                pendingPan += pan
+                                if (pendingPan.getDistance() > 8f) {
+                                    currentOnPan(currentPan + pendingPan)
+                                    pendingPan = Offset.Zero
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -477,6 +503,7 @@ fun GpsMapCanvas(
                         if (edge.polyline.size < 2) continue
                         val isRouteEdge = activeEdgeIds.contains(edge.edgeId)
                         if (!isRouteEdge && edge.roadType.toInt() == 3 && edge.length < 18f) continue
+                        if (!isRouteEdge && edge.roadType.toInt() == 5 && edge.length < 16f) continue
 
                         if (edge.isHidden) {
                             hiddenEdges.add(edge)
@@ -514,6 +541,7 @@ fun GpsMapCanvas(
                     routePoints = smoothRoutePoints,
                     zoomScale = zoomScale,
                     isFollowingTruck = isFollowingTruck,
+                    cursorPulseAlpha = cursorPulseAlpha,
                     mapTheme = mapTheme,
                     cityPaint = cityPaint,
                     poiIconPaint = poiIconPaint,
@@ -543,6 +571,7 @@ fun GpsMapCanvas(
                         if (edge.polyline.size < 2) continue
                         val isRouteEdge = activeEdgeIds.contains(edge.edgeId)
                         if (!isRouteEdge && edge.roadType.toInt() == 3 && edge.length < 18f) continue
+                        if (!isRouteEdge && edge.roadType.toInt() == 5 && edge.length < 16f) continue
 
                         val isFreeway = edge.roadType.toInt() == 0
                         val isHidden = edge.isHidden
@@ -569,6 +598,7 @@ fun GpsMapCanvas(
                     headingDeg = headingDeg,
                     routePoints = smoothRoutePoints,
                     zoomScale = dynamicZoom,
+                    cursorPulseAlpha = cursorPulseAlpha,
                     mapTheme = mapTheme,
                     poiIconPaint = poiIconPaint,
                     poiLabelPaint = poiLabelPaint,
@@ -675,16 +705,19 @@ private fun getOrUpdateSmoothedRoute(
     val fullPoints = routeCache.fullSmoothedPoints
     if (fullPoints.size < 2) return fullPoints
 
-    // Solo recortar si el camión se movió más de 2.0 metros
+    // Solo recortar si el camión se movió más de 0.8 metros
     val dx = truckX - routeCache.lastTruckX
     val dz = truckZ - routeCache.lastTruckZ
-    if (!routeCache.lastTruckX.isNaN() && (dx * dx + dz * dz) < 4.0f) {
+    if (!routeCache.lastTruckX.isNaN() && (dx * dx + dz * dz) < 0.64f) {
         return routeCache.trimmedPoints
     }
 
     // Búsqueda en ventana cercana a la posición anterior para O(1)
     var bestIdx = -1
     var bestDistSq = Float.MAX_VALUE
+    var bestProjX = truckX
+    var bestProjY = 0f
+    var bestProjZ = truckZ
     val startWindow = (routeCache.lastTrimIdx - 2).coerceAtLeast(0)
     val endWindow = (routeCache.lastTrimIdx + 25).coerceAtMost(fullPoints.size - 2)
 
@@ -703,6 +736,9 @@ private fun getOrUpdateSmoothedRoute(
         if (dSq < bestDistSq) {
             bestDistSq = dSq
             bestIdx = i
+            bestProjX = px
+            bestProjY = p1.y + t * (p2.y - p1.y)
+            bestProjZ = pz
         }
     }
 
@@ -723,15 +759,27 @@ private fun getOrUpdateSmoothedRoute(
             if (dSq < bestDistSq) {
                 bestDistSq = dSq
                 bestIdx = i
+                bestProjX = px
+                bestProjY = p1.y + t * (p2.y - p1.y)
+                bestProjZ = pz
             }
         }
     }
 
-    val trimStart = if (bestIdx >= 0) bestIdx.coerceAtMost(fullPoints.size - 1) else 0
+    val trimStart = if (bestIdx >= 0) bestIdx.coerceAtMost(fullPoints.size - 2) else 0
     routeCache.lastTrimIdx = trimStart
     routeCache.lastTruckX = truckX
     routeCache.lastTruckZ = truckZ
-    routeCache.trimmedPoints = if (trimStart > 0) fullPoints.subList(trimStart, fullPoints.size) else fullPoints
+    routeCache.trimmedPoints = if (bestIdx >= 0) {
+        val out = ArrayList<Point3D>(fullPoints.size - trimStart)
+        out.add(Point3D(bestProjX, bestProjY, bestProjZ))
+        for (k in (trimStart + 1) until fullPoints.size) {
+            out.add(fullPoints[k])
+        }
+        out
+    } else {
+        fullPoints
+    }
     return routeCache.trimmedPoints
 }
 
@@ -921,6 +969,7 @@ private fun DrawScope.drawMap2D(
     routePoints: List<Point3D>,
     zoomScale: Float,
     isFollowingTruck: Boolean,
+    cursorPulseAlpha: Float,
     mapTheme: MapThemeStyle,
     cityPaint: android.graphics.Paint,
     poiIconPaint: android.graphics.Paint,
@@ -1058,14 +1107,14 @@ private fun DrawScope.drawMap2D(
         drawPoiMarker2D(poi, sx, sy, zoomScale, poiIconPaint, poiLabelPaint, poiBgPaint)
     }
 
-    // 4. Cursor táctico del camión
+    // 4. Cursor táctico del camión (siempre dibujado AL FINAL)
     if (isFollowingTruck) {
-        drawTruckCursor(cx, cy, headingDeg, reusablePaths)
+        drawTruckCursor(cx, cy, headingDeg, cursorPulseAlpha, reusablePaths)
     } else {
         val truckSx = cx + (truckX - viewCenterX) * baseScale
         val truckSy = cy + (truckZ - viewCenterZ) * baseScale
         if (!truckSx.isNaN() && !truckSy.isNaN()) {
-            drawTruckCursor(truckSx, truckSy, headingDeg, reusablePaths)
+            drawTruckCursor(truckSx, truckSy, headingDeg, cursorPulseAlpha, reusablePaths)
         }
     }
 }
@@ -1145,6 +1194,7 @@ private fun DrawScope.drawMap3D(
     headingDeg: Float,
     routePoints: List<Point3D>,
     zoomScale: Float,
+    cursorPulseAlpha: Float,
     mapTheme: MapThemeStyle,
     poiIconPaint: android.graphics.Paint,
     poiLabelPaint: android.graphics.Paint,
@@ -1298,6 +1348,54 @@ private fun DrawScope.drawMap3D(
         return Pair(Offset(sx1, sy1), Offset(sx2, sy2))
     }
 
+    fun projectRouteSegment3D(x1: Float, z1: Float, x2: Float, z2: Float): Pair<Offset, Offset>? {
+        val dx1 = x1 - truckX
+        val dz1 = z1 - truckZ
+        var rx1 = dx1 * cosH - dz1 * sinH
+        var rz1 = -(dx1 * sinH + dz1 * cosH)
+
+        val dx2 = x2 - truckX
+        val dz2 = z2 - truckZ
+        var rx2 = dx2 * cosH - dz2 * sinH
+        var rz2 = -(dx2 * sinH + dz2 * cosH)
+
+        // Recortar estrictamente contra el plano del camion (rz >= 0f) para que nunca se dibuje detras
+        if (rz1 < 0f && rz2 < 0f) return null
+
+        if (rz1 < 0f) {
+            val denom = rz2 - rz1
+            if (abs(denom) < 1e-5f) return null
+            val t = (0f - rz1) / denom
+            rx1 += (rx2 - rx1) * t
+            rz1 = 0f
+        } else if (rz2 < 0f) {
+            val denom = rz1 - rz2
+            if (abs(denom) < 1e-5f) return null
+            val t = (0f - rz2) / denom
+            rx2 += (rx1 - rx2) * t
+            rz2 = 0f
+        }
+
+        val depth1 = rz1 + camDist3D
+        val depth2 = rz2 + camDist3D
+
+        val factor1 = focal3D / depth1
+        val sx1 = (w * 0.5f) + rx1 * factor1
+        val sy1 = horizonY + (camHeight3D * factor1)
+
+        val factor2 = focal3D / depth2
+        val sx2 = (w * 0.5f) + rx2 * factor2
+        val sy2 = horizonY + (camHeight3D * factor2)
+
+        if ((sy1 < horizonY - 2f && sy2 < horizonY - 2f) || (sy1 > h + 300f && sy2 > h + 300f)) {
+            return null
+        }
+        if ((sx1 < -w * 1.5f && sx2 < -w * 1.5f) || (sx1 > w * 2.5f && sx2 > w * 2.5f)) {
+            return null
+        }
+        return Pair(Offset(sx1, sy1), Offset(sx2, sy2))
+    }
+
     clipRect(0f, horizonY, w, h) {
         // 3. Rejilla virtual de perspectiva en el suelo
         drawGroundGrid3D(truckX, truckZ) { x1, z1, x2, z2 ->
@@ -1385,13 +1483,13 @@ private fun DrawScope.drawMap3D(
             }
         }
 
-        // 5. Ruta de Navegación Activa GPS en 3D
+        // 5. Ruta de Navegación Activa GPS en 3D (estrictamente hacia adelante rz >= 0f)
         routePool.reset()
         if (routePoints.size >= 2) {
             for (i in 0 until routePoints.size - 1) {
                 val p0 = routePoints[i]
                 val p1 = routePoints[i + 1]
-                val seg = projectSegment3D(p0.x, p0.z, p1.x, p1.z) ?: continue
+                val seg = projectRouteSegment3D(p0.x, p0.z, p1.x, p1.z) ?: continue
                 val midY = (seg.first.y + seg.second.y) * 0.5f
                 val depthRatio = ((midY - horizonY) / (targetTruckY - horizonY)).coerceIn(0.10f, 1.35f)
                 val rWidth = (28f * depthRatio).coerceIn(4.5f, 36f)
@@ -1438,8 +1536,8 @@ private fun DrawScope.drawMap3D(
         }
     }
 
-    // 7. Cursor 3D del camión con haz de luz
-    drawTruckCursor3D(w * 0.5f, targetTruckY, reusablePaths)
+    // 7. Cursor 3D del camión de alto contraste (siempre dibujado AL FINAL)
+    drawTruckCursor3D(w * 0.5f, targetTruckY, cursorPulseAlpha, reusablePaths)
 }
 
 private fun DrawScope.drawPoiMarker3D(
@@ -1516,80 +1614,151 @@ private fun DrawScope.drawGroundGrid3D(
     }
 }
 
-private fun DrawScope.drawTruckCursor3D(cx: Float, cy: Float, paths: ReusableCanvasPaths) {
+private fun DrawScope.drawTruckCursor3D(
+    cx: Float,
+    cy: Float,
+    pulseAlpha: Float,
+    paths: ReusableCanvasPaths
+) {
+    val r = 26f * density
+
     // 1. Sombra de contacto suave en el asfalto
     drawOval(
-        color = Color(0x77000000),
-        topLeft = Offset(cx - 20f, cy + 4f),
-        size = Size(40f, 16f)
+        color = Color(0x88000000),
+        topLeft = Offset(cx - r * 0.90f, cy + r * 0.18f),
+        size = Size(r * 1.80f, r * 0.62f)
     )
 
-    // 2. Haz de luz proyectado hacia adelante (Faros del camión sobre la carretera)
+    // 2. Haz de luz proyectado hacia adelante (Faros del camion sobre la carretera)
     val headlightPath = paths.headlightPath
     headlightPath.reset()
-    headlightPath.moveTo(cx - 7f, cy - 8f)
-    headlightPath.lineTo(cx - 32f, cy - 95f)
-    headlightPath.lineTo(cx + 32f, cy - 95f)
-    headlightPath.lineTo(cx + 7f, cy - 8f)
+    headlightPath.moveTo(cx - r * 0.28f, cy - r * 0.35f)
+    headlightPath.lineTo(cx - r * 1.35f, cy - r * 3.30f)
+    headlightPath.lineTo(cx + r * 1.35f, cy - r * 3.30f)
+    headlightPath.lineTo(cx + r * 0.28f, cy - r * 0.35f)
     headlightPath.close()
 
     drawPath(
         path = headlightPath,
         brush = Brush.verticalGradient(
-            colors = listOf(Color(0x35E0F2FE), Color(0x00E0F2FE)),
-            startY = cy - 8f,
-            endY = cy - 95f
+            colors = listOf(Color(0x2CF8FAFC), Color(0x00F8FAFC)),
+            startY = cy - r * 0.35f,
+            endY = cy - r * 3.30f
         )
     )
 
-    // 3. Halo de energía exterior
-    drawCircle(Color(0x3300E5FF), radius = 28f, center = Offset(cx, cy))
-    drawCircle(Color(0x6600E5FF), radius = 22f, center = Offset(cx, cy), style = Stroke(width = 1.5f))
+    // 3. Anillo exterior suave/pulsante en verde lima electrico (#C7F36B)
+    drawCircle(
+        color = Color(0xFFC7F36B).copy(alpha = pulseAlpha * 0.38f),
+        radius = r * 1.38f,
+        center = Offset(cx, cy)
+    )
+    drawCircle(
+        color = Color(0xFFC7F36B).copy(alpha = (pulseAlpha + 0.25f).coerceAtMost(0.92f)),
+        radius = r * 1.22f,
+        center = Offset(cx, cy),
+        style = Stroke(width = 2.0f * density)
+    )
 
-    // 4. Facetas 3D de la cabina del camión (con perspectiva e iluminación)
-    val leftFacet = paths.leftFacet
-    leftFacet.reset()
-    leftFacet.moveTo(cx, cy - 22f)
-    leftFacet.lineTo(cx - 14f, cy + 12f)
-    leftFacet.lineTo(cx, cy + 5f)
-    leftFacet.close()
-    drawPath(leftFacet, color = Color(0xFF0284C7))
+    // 4. Escudo/disco oscuro de alto contraste (#0B1218) con borde blanco nitido
+    drawCircle(
+        color = Color(0xFF0B1218),
+        radius = r * 0.94f,
+        center = Offset(cx, cy)
+    )
+    drawCircle(
+        color = Color.White,
+        radius = r * 0.94f,
+        center = Offset(cx, cy),
+        style = Stroke(width = 2.2f * density)
+    )
 
-    val rightFacet = paths.rightFacet
-    rightFacet.reset()
-    rightFacet.moveTo(cx, cy - 22f)
-    rightFacet.lineTo(cx + 14f, cy + 12f)
-    rightFacet.lineTo(cx, cy + 5f)
-    rightFacet.close()
-    drawPath(rightFacet, color = Color(0xFF00E5FF))
+    // 5. Flecha chevron blanca pura (#FFFFFF) con borde oscuro fuerte y acento central lima (#C7F36B)
+    val chevronPath = paths.outlinePath
+    chevronPath.reset()
+    chevronPath.moveTo(cx, cy - r * 0.68f)
+    chevronPath.lineTo(cx + r * 0.54f, cy + r * 0.44f)
+    chevronPath.lineTo(cx, cy + r * 0.18f)
+    chevronPath.lineTo(cx - r * 0.54f, cy + r * 0.44f)
+    chevronPath.close()
 
-    // Contorno exterior blanco nítido
-    val outlinePath = paths.outlinePath
-    outlinePath.reset()
-    outlinePath.moveTo(cx, cy - 22f)
-    outlinePath.lineTo(cx + 14f, cy + 12f)
-    outlinePath.lineTo(cx, cy + 5f)
-    outlinePath.lineTo(cx - 14f, cy + 12f)
-    outlinePath.close()
-    drawPath(outlinePath, color = Color.White, style = Stroke(width = 2.0f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    drawPath(
+        path = chevronPath,
+        color = Color(0xFF0B1218),
+        style = Stroke(width = 3.4f * density, cap = StrokeCap.Round, join = StrokeJoin.Round)
+    )
+    drawPath(path = chevronPath, color = Color.White)
 
-    // Faro frontal central
-    drawCircle(Color.White, radius = 3.5f, center = Offset(cx, cy - 20f))
+    val centerAccent = paths.rightFacet
+    centerAccent.reset()
+    centerAccent.moveTo(cx, cy - r * 0.44f)
+    centerAccent.lineTo(cx + r * 0.22f, cy + r * 0.24f)
+    centerAccent.lineTo(cx, cy + r * 0.12f)
+    centerAccent.lineTo(cx - r * 0.22f, cy + r * 0.24f)
+    centerAccent.close()
+    drawPath(path = centerAccent, color = Color(0xFFC7F36B))
 }
 
-private fun DrawScope.drawTruckCursor(cx: Float, cy: Float, rotationDeg: Float, paths: ReusableCanvasPaths) {
+private fun DrawScope.drawTruckCursor(
+    cx: Float,
+    cy: Float,
+    rotationDeg: Float,
+    pulseAlpha: Float,
+    paths: ReusableCanvasPaths
+) {
+    val r = 20f * density
+
+    // 1. Anillo exterior suave/pulsante en verde lima electrico (#C7F36B)
+    drawCircle(
+        color = Color(0xFFC7F36B).copy(alpha = pulseAlpha * 0.38f),
+        radius = r * 1.40f,
+        center = Offset(cx, cy)
+    )
+    drawCircle(
+        color = Color(0xFFC7F36B).copy(alpha = (pulseAlpha + 0.25f).coerceAtMost(0.92f)),
+        radius = r * 1.24f,
+        center = Offset(cx, cy),
+        style = Stroke(width = 1.8f * density)
+    )
+
+    // 2. Disco oscuro de alto contraste (#0B1218) con borde blanco nitido de 2.2f * density
+    drawCircle(
+        color = Color(0xFF0B1218),
+        radius = r,
+        center = Offset(cx, cy)
+    )
+    drawCircle(
+        color = Color.White,
+        radius = r,
+        center = Offset(cx, cy),
+        style = Stroke(width = 2.2f * density)
+    )
+
+    // 3. Flecha chevron blanca pura (#FFFFFF) rotada con borde oscuro fuerte y acento central lima (#C7F36B)
     rotate(rotationDeg, pivot = Offset(cx, cy)) {
         val cursorPath = paths.cursorPath
         cursorPath.reset()
-        cursorPath.moveTo(cx, cy - 16f)
-        cursorPath.lineTo(cx + 10f, cy + 10f)
-        cursorPath.lineTo(cx, cy + 5f)
-        cursorPath.lineTo(cx - 10f, cy + 10f)
+        cursorPath.moveTo(cx, cy - r * 0.70f)
+        cursorPath.lineTo(cx + r * 0.54f, cy + r * 0.48f)
+        cursorPath.lineTo(cx, cy + r * 0.20f)
+        cursorPath.lineTo(cx - r * 0.54f, cy + r * 0.48f)
         cursorPath.close()
 
-        drawCircle(Color(0x550284C7), radius = 20f, center = Offset(cx, cy))
-        drawPath(cursorPath, color = Color(0xFF38BDF8))
-        drawPath(cursorPath, color = Color.White, style = Stroke(width = 1.8f))
+        drawPath(
+            path = cursorPath,
+            color = Color(0xFF0B1218),
+            style = Stroke(width = 3.0f * density, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
+        drawPath(cursorPath, color = Color.White)
+
+        val accentPath = paths.leftFacet
+        accentPath.reset()
+        accentPath.moveTo(cx, cy - r * 0.45f)
+        accentPath.lineTo(cx + r * 0.22f, cy + r * 0.26f)
+        accentPath.lineTo(cx, cy + r * 0.14f)
+        accentPath.lineTo(cx - r * 0.22f, cy + r * 0.26f)
+        accentPath.close()
+        drawPath(accentPath, color = Color(0xFFC7F36B))
     }
 }
 
