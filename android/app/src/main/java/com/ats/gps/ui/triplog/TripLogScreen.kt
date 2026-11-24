@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ats.gps.data.triplog.TripLogManager
@@ -24,9 +25,13 @@ import java.util.Locale
 @Composable
 fun TripLogScreen(
     tripLogManager: TripLogManager,
+    tripLogVersion: Int = 0,
     modifier: Modifier = Modifier
 ) {
     var history by remember { mutableStateOf(tripLogManager.getTripHistory()) }
+    LaunchedEffect(tripLogVersion) {
+        history = tripLogManager.getTripHistory()
+    }
     val totalIncome = remember(history) { history.sumOf { it.incomeEarned } }
     val totalDistance = remember(history) { history.sumOf { it.distanceKm.toDouble() }.toFloat() }
     val totalTrips = history.size
@@ -43,7 +48,8 @@ fun TripLogScreen(
         modifier = modifier
             .fillMaxSize()
             .background(bgDark)
-            .padding(16.dp)
+            .displayCutoutPadding()
+            .padding(top = 88.dp, bottom = 52.dp, start = 16.dp, end = 16.dp)
     ) {
         // Encabezado
         Row(
@@ -229,21 +235,28 @@ private fun TripRecordCard(
 
             // Ruta: Origen -> Destino
             Row(
+                modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    trip.originCity,
+                    text = trip.originCity,
                     color = textWhite,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
                 Text("->", color = cyanAccent, fontWeight = FontWeight.Black, fontSize = 12.sp)
                 Text(
-                    trip.destinationCity,
+                    text = trip.destinationCity,
                     color = textWhite,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
             }
 
@@ -252,21 +265,46 @@ private fun TripRecordCard(
             // Detalles de Carga y Rendimiento
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 val tons = if (trip.cargoMassKg > 0f) String.format(" • %.1f t", trip.cargoMassKg / 1000f) else ""
                 Text(
-                    "${trip.cargoName}$tons",
+                    text = "${trip.cargoName}$tons",
                     color = textGray,
-                    fontSize = 11.sp
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp)
                 )
 
-                Text(
-                    String.format("%.1f km", trip.distanceKm),
-                    color = cyanAccent,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = String.format("%.1f km", trip.distanceKm),
+                        color = cyanAccent,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = String.format("%.0f km/h", trip.avgSpeedKmh),
+                        color = textGray,
+                        fontSize = 11.sp,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = String.format("Daño %.1f%%", trip.damagePercent),
+                        color = if (trip.damagePercent > 1f) Color(0xFFEF4444) else limeAccent,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
             }
         }
     }

@@ -40,6 +40,9 @@
                 <Trigger Property="IsPressed" Value="True">
                     <Setter Property="Background" Value="#10171D"/>
                 </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.55"/>
+                </Trigger>
             </Style.Triggers>
         </Style>
 
@@ -236,7 +239,7 @@
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
                         <Ellipse x:Name="AtsStatusLed" Width="10" Height="10" Fill="#38BDF8" Margin="0,0,6,0" VerticalAlignment="Center"/>
-                        <TextBlock x:Name="AtsStatusText" Text="SDK SCS CONECTADO" FontWeight="Black" FontSize="13" Foreground="#38BDF8"/>
+                        <TextBlock x:Name="AtsStatusText" Text="VERIFICANDO SDK SCS..." FontWeight="Black" FontSize="13" Foreground="#38BDF8"/>
                     </StackPanel>
                     <TextBlock x:Name="AtsSpeedText" Text="Telemetría en tiempo real: Listo" FontSize="11" Foreground="#CBD5E1"/>
                     <TextBlock Text="Shared Memory: SCS/Telemetry" FontSize="11" Foreground="#94A3B8" Margin="0,5,0,0"/>
@@ -248,7 +251,7 @@
         <Border Grid.Row="2" Background="#151C21" CornerRadius="10" BorderBrush="#1E2830" BorderThickness="1" Padding="10" Margin="0,0,0,14">
             <WrapPanel HorizontalAlignment="Center">
                 <Button Content="Re-enlazar USB (ADB Reverse)" Click="BtnReverseUsb_Click" Style="{StaticResource PrimaryButton}" Margin="5,3"/>
-                <Button Content="Instalar APK en Celular" Click="BtnInstallApk_Click" Style="{StaticResource SuccessButton}" Margin="5,3"/>
+                <Button x:Name="BtnInstallApk" Content="Instalar APK en Celular" Click="BtnInstallApk_Click" Style="{StaticResource SuccessButton}" Margin="5,3"/>
                 <Button Content="Reiniciar Servidor" Click="BtnRestartServer_Click" Style="{StaticResource ActionButton}" Margin="5,3"/>
                 <Button Content="Abrir Carpeta APKs" Click="BtnOpenApksFolder_Click" Style="{StaticResource ActionButton}" Margin="5,3"/>
                 <Button Content="Limpiar Logs" Click="BtnClearLogs_Click" Style="{StaticResource ActionButton}" Margin="5,3"/>

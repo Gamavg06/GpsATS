@@ -19,10 +19,12 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ats.gps.data.model.MapPoi
 import com.ats.gps.data.model.TelemetryData
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 private const val DEFAULT_FALLBACK_KM_PER_LITER = 2.4f
@@ -40,6 +42,7 @@ fun DashboardScreen(
     telemetry: TelemetryData,
     nearestRestStop: Pair<MapPoi, Float>? = null,
     onRouteToRestStop: (MapPoi) -> Unit = {},
+    isAppInForeground: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     // Alerta sonora configurable de exceso de velocidad con una unica instancia liberada al salir
@@ -57,10 +60,19 @@ fun DashboardScreen(
         }
     }
 
+    LaunchedEffect(isAppInForeground) {
+        if (!isAppInForeground) {
+            try {
+                toneGenerator?.stopTone()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     val isSpeeding = telemetry.speedLimitKmh > 5f && telemetry.speedKmh > (telemetry.speedLimitKmh + 1.5f)
 
-    LaunchedEffect(isSpeeding, isAudioAlertEnabled, telemetry.gamePaused) {
-        if (isSpeeding && isAudioAlertEnabled && !telemetry.gamePaused) {
+    LaunchedEffect(isSpeeding, isAudioAlertEnabled, telemetry.gamePaused, isAppInForeground) {
+        if (isAppInForeground && isSpeeding && isAudioAlertEnabled && !telemetry.gamePaused) {
             try {
                 toneGenerator?.startTone(ToneGenerator.TONE_PROP_BEEP2, 180)
             } catch (_: Exception) {
@@ -75,10 +87,11 @@ fun DashboardScreen(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFF0C1013)) // Fondo ultra oscuro HUD
+            .displayCutoutPadding()
             .padding(top = 88.dp, bottom = 48.dp, start = 16.dp, end = 16.dp)
             .alpha(contentAlpha)
     ) {
-        val isLandscape = maxWidth > 850.dp
+        val isLandscape = maxWidth > 680.dp
 
         Column(
             modifier = Modifier
@@ -298,7 +311,7 @@ private fun InstrumentGaugesCard(
             }
         }
 
-        val speed = telemetry.speedKmh.coerceAtLeast(0f)
+        val speed = abs(telemetry.speedKmh)
         val rpm = telemetry.engineRpm.coerceAtLeast(0f)
 
         // Interpoladores animados continuos para 60-120Hz sin saltos
@@ -407,13 +420,23 @@ private fun InstrumentGaugesCard(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             val fuelPct = if (telemetry.fuelCapacity > 0f) {
-                ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt()
+                ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt().coerceIn(0, 100)
             } else 0
             val range = estimateRangeKm(telemetry)
+            val dashGear = if (telemetry.gearDashboard != 0 || telemetry.gear == 0) {
+                telemetry.gearDashboard
+            } else {
+                telemetry.gear
+            }
+            val dashGearText = when {
+                dashGear == 0 -> "N"
+                dashGear < 0 -> "R${-dashGear}"
+                else -> "D$dashGear"
+            }
 
             MetricPill("Nivel Combustible", "$fuelPct %")
             MetricPill("Autonomía Est.", "~$range km")
-            MetricPill("Marcha Tablero", if (telemetry.gear == 0) "N" else if (telemetry.gear < 0) "R" else "D${telemetry.gear}")
+            MetricPill("Marcha Tablero", dashGearText)
         }
     }
 }
@@ -555,7 +578,7 @@ private fun FuelAndRangeCard(
     modifier: Modifier = Modifier
 ) {
     val fuelPct = if (telemetry.fuelCapacity > 0f) {
-        ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt()
+        ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt().coerceIn(0, 100)
     } else 0
 
     // SCS SDK reporta fuelAvgConsumption en L/km; L/100km = fuelAvgConsumption * 100
@@ -586,12 +609,20 @@ private fun FuelAndRangeCard(
 
             // Recomendación de parada
             val restMin = telemetry.restStopMinutes
+            val isRestDue = telemetry.connected && restMin <= 0
+            val isRestSoon = telemetry.connected && restMin in 1..45
+            val isFuelLow = telemetry.fuelCapacity > 0f && fuelPct < 15
             val recText = when {
-                restMin in 1..45 -> "Descanso pronto"
-                fuelPct < 15 -> "Repostaje urgente"
+                isRestDue -> "DESCANSO VENCIDO"
+                isRestSoon -> "Descanso pronto"
+                isFuelLow -> "Repostaje urgente"
                 else -> "Sin paradas necesarias"
             }
-            val recColor = if (fuelPct < 15 || restMin in 1..45) Color(0xFFF7C948) else Color(0xFFC7F36B)
+            val recColor = when {
+                isRestDue -> Color(0xFFEF4444)
+                isRestSoon || isFuelLow -> Color(0xFFF7C948)
+                else -> Color(0xFFC7F36B)
+            }
 
             Box(
                 modifier = Modifier
@@ -657,6 +688,7 @@ private fun FuelAndRangeCard(
                 .background(Color(0xFF1E262C))
         ) {
             val barColor = when {
+                telemetry.fuelCapacity <= 0f -> Color(0xFF64748B)
                 fuelPct < 15 -> Color(0xFFEF4444)
                 fuelPct < 30 -> Color(0xFFF7C948)
                 else -> Color(0xFFC7F36B)
@@ -685,7 +717,12 @@ private fun FuelAndRangeCard(
                 Text(
                     text = "Parada cercana: ${nearestRestStop.first.name.ifEmpty { "Área de Servicio" }} (~${nearestRestStop.second.roundToInt()} km)",
                     color = Color(0xFFCBD5E1),
-                    fontSize = 11.sp
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 8.dp)
                 )
                 Button(
                     onClick = { onRouteToRestStop(nearestRestStop.first) },

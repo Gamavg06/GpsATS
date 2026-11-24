@@ -11,6 +11,17 @@ class AuthTokenStore(context: Context) {
     private val prefs: SharedPreferences =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    fun saveLastHost(host: String) {
+        val normalizedHost = host.trim()
+        if (normalizedHost.isEmpty()) return
+        prefs.edit().putString(KEY_LAST_HOST, normalizedHost).apply()
+    }
+
+    fun getSavedHost(): String? {
+        return prefs.getString(KEY_LAST_HOST, null)?.takeIf { it.isNotBlank() }
+            ?: prefs.getString(KEY_HOST, null)?.takeIf { it.isNotBlank() }
+    }
+
     fun saveToken(host: String, token: String, expiresInHours: Int = DEFAULT_EXPIRES_HOURS) {
         val normalizedHost = host.trim()
         if (normalizedHost.isEmpty() || token.isBlank()) return
@@ -20,6 +31,7 @@ class AuthTokenStore(context: Context) {
 
         prefs.edit()
             .putString(KEY_HOST, normalizedHost)
+            .putString(KEY_LAST_HOST, normalizedHost)
             .putString(KEY_TOKEN, token.trim())
             .putLong(KEY_EXPIRES_AT, expiresAtMillis)
             .apply()
@@ -56,6 +68,7 @@ class AuthTokenStore(context: Context) {
     companion object {
         private const val PREFS_NAME = "ats_gps_auth"
         private const val KEY_HOST = "host"
+        private const val KEY_LAST_HOST = "last_host"
         private const val KEY_TOKEN = "token"
         private const val KEY_EXPIRES_AT = "expiresAtMillis"
         private const val DEFAULT_EXPIRES_HOURS = 48

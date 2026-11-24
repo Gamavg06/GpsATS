@@ -84,6 +84,8 @@ namespace AtsGpsServer.Tests
         [InlineData("172.16.0.1", true)]
         [InlineData("172.24.50.100", true)]
         [InlineData("172.31.255.254", true)]
+        [InlineData("169.254.1.10", false)]
+        [InlineData("169.254.255.254", false)]
         [InlineData("8.8.8.8", false)]
         [InlineData("1.1.1.1", false)]
         [InlineData("172.15.255.255", false)]

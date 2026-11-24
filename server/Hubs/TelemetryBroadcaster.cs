@@ -1,13 +1,12 @@
 using System;
 using System.Collections.Concurrent;
-using System.IO;
 using System.Net.WebSockets;
-using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using AtsGpsServer.Telemetry;
+using AtsGpsServer.Map;
 using AtsGpsServer.Security;
+using AtsGpsServer.Telemetry;
 
 namespace AtsGpsServer.Hubs
 {
@@ -15,25 +14,30 @@ namespace AtsGpsServer.Hubs
     {
         private sealed class ClientConnection
         {
+            private volatile bool _closed;
+
             public WebSocket Socket { get; }
             public SemaphoreSlim SendLock { get; } = new(1, 1);
+            public bool IsClosed => _closed;
 
             public ClientConnection(WebSocket socket)
             {
                 Socket = socket;
             }
+
+            public void MarkClosed() => _closed = true;
         }
 
         private readonly ScsTelemetryReader _reader;
         private readonly AuthManager _auth;
-        private readonly AtsGpsServer.Map.DestinationResolver _resolver;
+        private readonly DestinationResolver _resolver;
         private readonly ConcurrentDictionary<Guid, ClientConnection> _sockets = new();
         private readonly CancellationTokenSource _cts = new();
         private int _stopped;
 
         public int ConnectedClientsCount => _sockets.Count;
 
-        public TelemetryBroadcaster(ScsTelemetryReader reader, AuthManager auth, AtsGpsServer.Map.DestinationResolver resolver)
+        public TelemetryBroadcaster(ScsTelemetryReader reader, AuthManager auth, DestinationResolver resolver)
         {
             _reader = reader;
             _auth = auth;
@@ -61,10 +65,6 @@ namespace AtsGpsServer.Hubs
                     var result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), _cts.Token);
                     if (result.MessageType == WebSocketMessageType.Close)
                     {
-                        if (socket.State == WebSocketState.CloseReceived)
-                        {
-                            await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Desconectado", CancellationToken.None);
-                        }
                         break;
                     }
                 }
@@ -76,21 +76,32 @@ namespace AtsGpsServer.Hubs
             finally
             {
                 _sockets.TryRemove(id, out _);
-                if (socket.State == WebSocketState.Open)
+                connection.MarkClosed();
+
+                bool lockTaken = false;
+                try
                 {
-                    try
+                    lockTaken = await connection.SendLock.WaitAsync(TimeSpan.FromSeconds(2));
+                    if (socket.State == WebSocketState.Open)
                     {
                         await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Desconectado", CancellationToken.None);
                     }
-                    catch { }
-                }
-                else if (socket.State == WebSocketState.CloseReceived)
-                {
-                    try
+                    else if (socket.State == WebSocketState.CloseReceived)
                     {
                         await socket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Desconectado", CancellationToken.None);
                     }
-                    catch { }
+                }
+                catch
+                {
+                    // Ignorar errores al cerrar socket ya abortado
+                }
+                finally
+                {
+                    if (lockTaken)
+                    {
+                        connection.SendLock.Release();
+                    }
+                    connection.SendLock.Dispose();
                 }
             }
         }
@@ -103,6 +114,11 @@ namespace AtsGpsServer.Hubs
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             };
 
+            string? cachedCity = null;
+            string? cachedCompany = null;
+            (uint NodeIndex, float X, float Z)? cachedTarget = null;
+            long lastNullResolveTick = 0;
+
             while (!token.IsCancellationRequested)
             {
                 try
@@ -112,13 +128,31 @@ namespace AtsGpsServer.Hubs
                         var snapshot = _reader.ReadSnapshot();
                         if (!string.IsNullOrEmpty(snapshot.DestinationCity))
                         {
-                            var target = _resolver.ResolveJobDestination(snapshot.DestinationCity, snapshot.DestinationCompany);
-                            if (target != null)
+                            bool jobChanged =
+                                !string.Equals(cachedCity, snapshot.DestinationCity, StringComparison.Ordinal) ||
+                                !string.Equals(cachedCompany, snapshot.DestinationCompany, StringComparison.Ordinal);
+
+                            if (jobChanged || (cachedTarget == null && Environment.TickCount64 - lastNullResolveTick >= 2000))
                             {
-                                snapshot.TargetNodeIndex = target.Value.NodeIndex;
-                                snapshot.TargetPosX = target.Value.X;
-                                snapshot.TargetPosZ = target.Value.Z;
+                                cachedCity = snapshot.DestinationCity;
+                                cachedCompany = snapshot.DestinationCompany;
+                                cachedTarget = _resolver.ResolveJobDestination(cachedCity, cachedCompany);
+                                lastNullResolveTick = cachedTarget == null ? Environment.TickCount64 : 0;
                             }
+
+                            if (cachedTarget != null)
+                            {
+                                snapshot.TargetNodeIndex = cachedTarget.Value.NodeIndex;
+                                snapshot.TargetPosX = ScsTelemetryReader.SanitizeFloat(cachedTarget.Value.X);
+                                snapshot.TargetPosZ = ScsTelemetryReader.SanitizeFloat(cachedTarget.Value.Z);
+                            }
+                        }
+                        else if (cachedCity != null || cachedCompany != null || cachedTarget != null)
+                        {
+                            cachedCity = null;
+                            cachedCompany = null;
+                            cachedTarget = null;
+                            lastNullResolveTick = 0;
                         }
 
                         byte[] jsonBytes = JsonSerializer.SerializeToUtf8Bytes(snapshot, options);
@@ -127,7 +161,7 @@ namespace AtsGpsServer.Hubs
                         foreach (var kvp in _sockets)
                         {
                             var client = kvp.Value;
-                            if (client.Socket.State == WebSocketState.Open)
+                            if (!client.IsClosed && client.Socket.State == WebSocketState.Open)
                             {
                                 _ = SendSafeAsync(client, segment, token);
                             }
@@ -157,25 +191,41 @@ namespace AtsGpsServer.Hubs
 
         private static async Task SendSafeAsync(ClientConnection client, ArraySegment<byte> segment, CancellationToken token)
         {
-            if (!client.SendLock.Wait(0))
+            if (client.IsClosed)
             {
                 return;
             }
 
+            bool lockTaken = false;
             try
             {
-                if (client.Socket.State == WebSocketState.Open && !token.IsCancellationRequested)
+                lockTaken = client.SendLock.Wait(0);
+                if (!lockTaken)
+                {
+                    return;
+                }
+
+                if (!client.IsClosed && client.Socket.State == WebSocketState.Open && !token.IsCancellationRequested)
                 {
                     await client.Socket.SendAsync(segment, WebSocketMessageType.Text, true, token);
                 }
             }
             catch
             {
-                // Ignorar error si el cliente cerró el socket durante el envío
+                // Ignorar error si el cliente cerro el socket durante el envio
             }
             finally
             {
-                client.SendLock.Release();
+                if (lockTaken)
+                {
+                    try
+                    {
+                        client.SendLock.Release();
+                    }
+                    catch (ObjectDisposedException)
+                    {
+                    }
+                }
             }
         }
 

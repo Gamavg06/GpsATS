@@ -107,7 +107,8 @@ data class MapGraph(
         z: Float,
         hx: Float,
         hz: Float,
-        headingDeg: Float
+        headingDeg: Float,
+        minAlignmentDot: Float = -2.0f
     ): RoadSnapResult? {
         var bestResult: RoadSnapResult? = null
         var bestEffectiveDistSq = Float.MAX_VALUE
@@ -137,6 +138,7 @@ data class MapGraph(
 
                 val segLen = kotlin.math.sqrt(lenSq)
                 val dot = if (lenSq > 0.01f) (vx * hx + vz * hz) / segLen else 1f
+                if (dot < minAlignmentDot) continue
                 var effectiveDistSq = distSq
                 if (dot < -0.35f) {
                     effectiveDistSq = distSq * 5.0f
@@ -200,8 +202,9 @@ data class MapGraph(
         val candidates = spatialGrid.query(x, z, maxDistMeters * 2f)
         if (candidates.isEmpty()) return null
 
-        val bestHit = findBestSnapInEdges(candidates, x, z, hx, hz, headingDeg)
-        return if (bestHit != null && bestHit.distanceSq <= maxDistSq) {
+        val minDot = if (preferredEdges == null) -0.1f else -2.0f
+        val bestHit = findBestSnapInEdges(candidates, x, z, hx, hz, headingDeg, minDot)
+        return if (bestHit != null && bestHit.distanceSq <= maxDistSq && (preferredEdges != null || bestHit.alignmentDot >= -0.1f)) {
             bestHit
         } else {
             null

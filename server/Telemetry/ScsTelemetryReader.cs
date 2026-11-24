@@ -2,26 +2,75 @@ using System;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace AtsGpsServer.Telemetry
 {
     public class ScsTelemetryReader : IDisposable
     {
-        private const string MmfName = @"Local\SCSTelemetry";
+        private const string DefaultMmfName = @"Local\SCSTelemetry";
         private const int MmfSize = 32 * 1024; // 32 KB
 
+        private readonly string _mmfName;
         private MemoryMappedFile? _mmf;
         private MemoryMappedViewAccessor? _accessor;
         private readonly byte[] _stringBuffer = new byte[64];
         private readonly object _syncRoot = new();
 
-        public bool IsGameConnected
+        [ActivatorUtilitiesConstructor]
+        public ScsTelemetryReader() : this(DefaultMmfName)
         {
-            get
+        }
+
+        internal ScsTelemetryReader(string mmfName)
+        {
+            _mmfName = string.IsNullOrWhiteSpace(mmfName) ? DefaultMmfName : mmfName;
+        }
+
+        public bool IsGameConnected => CheckConnectionStatus();
+
+        public static float SanitizeFloat(float value, float fallback = 0f) =>
+            float.IsFinite(value) ? value : fallback;
+
+        public static double SanitizeDouble(double value, double fallback = 0.0) =>
+            double.IsFinite(value) ? value : fallback;
+
+        public static double ConvertScsHeadingToCompassDegrees(double rawHeading)
+        {
+            double cleanHeading = SanitizeDouble(rawHeading);
+            double headingDeg = ((360.0 - (cleanHeading * 360.0)) % 360.0 + 360.0) % 360.0;
+            return (headingDeg >= 360.0 || headingDeg == 0.0) ? 0.0 : headingDeg;
+        }
+
+        public bool CheckConnectionStatus()
+        {
+            lock (_syncRoot)
             {
-                lock (_syncRoot)
+                if (_accessor == null)
                 {
-                    return _accessor != null;
+                    TryConnect();
+                }
+
+                if (_accessor == null)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    bool sdkActive = _accessor.ReadBoolean(0);
+                    if (!sdkActive)
+                    {
+                        Disconnect();
+                        return false;
+                    }
+
+                    return true;
+                }
+                catch
+                {
+                    Disconnect();
+                    return false;
                 }
             }
         }
@@ -57,10 +106,12 @@ namespace AtsGpsServer.Telemetry
 
                     if (!sdkActive)
                     {
+                        Disconnect();
+                        snapshot.Connected = false;
                         return snapshot;
                     }
 
-                    // Zona 2: Enteros de Configuración
+                    // Zona 2: Enteros de Configuracion
                     snapshot.TimeAbsDelivery = _accessor.ReadUInt32(88);
                     snapshot.PlannedDistanceKm = _accessor.ReadUInt32(100);
 
@@ -70,26 +121,26 @@ namespace AtsGpsServer.Telemetry
                     snapshot.GearDashboard = _accessor.ReadInt32(508);
 
                     // Zona 4: Flotantes (Config_f y Truck_f)
-                    snapshot.Scale = _accessor.ReadSingle(700);
-                    if (snapshot.Scale <= 0f) snapshot.Scale = 20.0f;
+                    float scale = SanitizeFloat(_accessor.ReadSingle(700), 20.0f);
+                    snapshot.Scale = scale > 0f ? scale : 20.0f;
 
-                    snapshot.FuelCapacity = _accessor.ReadSingle(704);
-                    snapshot.CargoMassKg = _accessor.ReadSingle(748);
-                    if (snapshot.CargoMassKg <= 0f)
-                    {
-                        snapshot.CargoMassKg = _accessor.ReadSingle(1800);
-                    }
-                    snapshot.EngineRpmMax = _accessor.ReadSingle(740);
+                    snapshot.FuelCapacity = SanitizeFloat(_accessor.ReadSingle(704));
+                    float cargoMass = SanitizeFloat(_accessor.ReadSingle(748));
+                    snapshot.CargoMassKg = cargoMass >= 0f ? cargoMass : 0f;
+                    snapshot.EngineRpmMax = SanitizeFloat(_accessor.ReadSingle(740));
 
-                    float speedMs = _accessor.ReadSingle(948);
-                    snapshot.SpeedKmh = speedMs * 3.6f;
-                    snapshot.EngineRpm = _accessor.ReadSingle(952);
+                    float speedMs = SanitizeFloat(_accessor.ReadSingle(948));
+                    snapshot.SpeedKmh = SanitizeFloat(speedMs * 3.6f);
+                    snapshot.EngineRpm = SanitizeFloat(_accessor.ReadSingle(952));
 
-                    snapshot.Fuel = _accessor.ReadSingle(1000);
-                    snapshot.FuelAvgConsumption = _accessor.ReadSingle(1004);
+                    float cruiseControlMs = SanitizeFloat(_accessor.ReadSingle(988));
+                    snapshot.CruiseControlSpeed = cruiseControlMs > 0f ? SanitizeFloat(cruiseControlMs * 3.6f) : 0f;
+
+                    snapshot.Fuel = SanitizeFloat(_accessor.ReadSingle(1000));
+                    snapshot.FuelAvgConsumption = SanitizeFloat(_accessor.ReadSingle(1004));
                     if (snapshot.FuelAvgConsumption > 0.0001f)
                     {
-                        snapshot.FuelRangeKm = snapshot.Fuel / snapshot.FuelAvgConsumption;
+                        snapshot.FuelRangeKm = SanitizeFloat(snapshot.Fuel / snapshot.FuelAvgConsumption);
                     }
                     else
                     {
@@ -97,19 +148,19 @@ namespace AtsGpsServer.Telemetry
                     }
 
                     // 5 Canales Reales de Desgaste del SDK
-                    snapshot.WearEngine = _accessor.ReadSingle(1036);
-                    snapshot.WearTransmission = _accessor.ReadSingle(1040);
-                    snapshot.WearCabin = _accessor.ReadSingle(1044);
-                    snapshot.WearChassis = _accessor.ReadSingle(1048);
-                    snapshot.WearWheels = _accessor.ReadSingle(1052);
+                    snapshot.WearEngine = SanitizeFloat(_accessor.ReadSingle(1036));
+                    snapshot.WearTransmission = SanitizeFloat(_accessor.ReadSingle(1040));
+                    snapshot.WearCabin = SanitizeFloat(_accessor.ReadSingle(1044));
+                    snapshot.WearChassis = SanitizeFloat(_accessor.ReadSingle(1048));
+                    snapshot.WearWheels = SanitizeFloat(_accessor.ReadSingle(1052));
 
-                    snapshot.NavDistanceMeters = _accessor.ReadSingle(1060);
-                    snapshot.NavTimeSeconds = _accessor.ReadSingle(1064);
-                    float speedLimitMs = _accessor.ReadSingle(1068);
-                    snapshot.SpeedLimitKmh = speedLimitMs * 3.6f;
+                    snapshot.NavDistanceMeters = SanitizeFloat(_accessor.ReadSingle(1060));
+                    snapshot.NavTimeSeconds = SanitizeFloat(_accessor.ReadSingle(1064));
+                    float speedLimitMs = SanitizeFloat(_accessor.ReadSingle(1068));
+                    snapshot.SpeedLimitKmh = SanitizeFloat(speedLimitMs * 3.6f);
 
-                    // Daño de Carga en Trabajo (job_f)
-                    snapshot.CargoDamage = _accessor.ReadSingle(1468);
+                    // Dano de Carga en Trabajo (job_f)
+                    snapshot.CargoDamage = SanitizeFloat(_accessor.ReadSingle(1468));
 
                     // Zona 5: Booleanos (Config_b y Truck_b)
                     snapshot.IsCargoLoaded = _accessor.ReadBoolean(1564);
@@ -127,24 +178,22 @@ namespace AtsGpsServer.Telemetry
                     snapshot.DifferentialLock = _accessor.ReadBoolean(1608);
                     snapshot.LiftAxle = _accessor.ReadBoolean(1609);
 
-                    // Zona 8: Posición y Orientación Doble Precisión (Truck_dp)
-                    snapshot.PosX = _accessor.ReadDouble(2200);
-                    snapshot.PosY = _accessor.ReadDouble(2208);
-                    snapshot.PosZ = _accessor.ReadDouble(2216);
+                    // Zona 8: Posicion y Orientacion Doble Precision (Truck_dp)
+                    snapshot.PosX = SanitizeDouble(_accessor.ReadDouble(2200));
+                    snapshot.PosY = SanitizeDouble(_accessor.ReadDouble(2208));
+                    snapshot.PosZ = SanitizeDouble(_accessor.ReadDouble(2216));
 
                     // Offsets RenCloud SDK v1.12:
                     // 2200: coordinateX, 2208: coordinateY, 2216: coordinateZ
-                    // 2224: rotationX (HEADING en revoluciones [0.0, 1.0))
+                    // 2224: rotationX (HEADING en revoluciones [0.0, 1.0), antihorario)
                     // 2232: rotationY (PITCH)
                     // 2240: rotationZ (ROLL)
-                    double heading = _accessor.ReadDouble(2224); // rotationX: Heading
-                    snapshot.Heading = heading;
-                    double headingDeg = (heading * 360.0) % 360.0;
-                    if (headingDeg < 0) headingDeg += 360.0;
-                    snapshot.HeadingDegrees = headingDeg;
+                    double rawHeading = SanitizeDouble(_accessor.ReadDouble(2224));
+                    snapshot.Heading = rawHeading;
+                    snapshot.HeadingDegrees = ConvertScsHeadingToCompassDegrees(rawHeading);
 
-                    snapshot.Pitch = _accessor.ReadDouble(2232); // rotationY: Pitch
-                    snapshot.Roll = _accessor.ReadDouble(2240);  // rotationZ: Roll
+                    snapshot.Pitch = SanitizeDouble(_accessor.ReadDouble(2232));
+                    snapshot.Roll = SanitizeDouble(_accessor.ReadDouble(2240));
 
                     // Zona 9: Cadenas de Texto (Carga, Trabajo y Destino con Offsets Exactos)
                     string cargoId = ReadString(2556);
@@ -180,18 +229,17 @@ namespace AtsGpsServer.Telemetry
                     // Zona 12: Eventos Especiales
                     snapshot.OnJob = _accessor.ReadBoolean(4300);
 
-                    // Zona 14: Trailer 0 (Offset 6000)
-                    snapshot.TrailerAttached = _accessor.ReadBoolean(6058);
+                    // Zona 14: Trailer 0 (Offset base 6000; attached en offset 6080)
+                    snapshot.TrailerAttached = _accessor.ReadBoolean(6080);
                     if (snapshot.TrailerAttached)
                     {
-                        snapshot.TrailerCargoDamage = _accessor.ReadSingle(6152);
-                        snapshot.TrailerWearChassis = _accessor.ReadSingle(6156);
-                        snapshot.TrailerWearWheels = _accessor.ReadSingle(6160);
-                        snapshot.TrailerWearBody = _accessor.ReadSingle(6164);
+                        snapshot.TrailerCargoDamage = SanitizeFloat(_accessor.ReadSingle(6152));
+                        snapshot.TrailerWearChassis = SanitizeFloat(_accessor.ReadSingle(6156));
+                        snapshot.TrailerWearWheels = SanitizeFloat(_accessor.ReadSingle(6160));
+                        snapshot.TrailerWearBody = SanitizeFloat(_accessor.ReadSingle(6164));
                     }
 
-                    // Soporte robusto de trabajos con carga oculta o campos vacíos (Customer Priority / Quick Job):
-                    // Si el juego tiene una ruta de navegación activa o flag onJob/isCargoLoaded pero el nombre de la carga está vacío
+                    // Soporte robusto de trabajos con carga oculta o campos vacios (Customer Priority / Quick Job):
                     if (string.IsNullOrWhiteSpace(snapshot.CargoName))
                     {
                         if (snapshot.SpecialJob)
@@ -200,17 +248,17 @@ namespace AtsGpsServer.Telemetry
                         }
                         else if (snapshot.IsCargoLoaded || snapshot.OnJob)
                         {
-                            snapshot.CargoName = "Envío Prioritario / General";
+                            snapshot.CargoName = "Envio Prioritario / General";
                         }
                         else if (snapshot.NavDistanceMeters > 50f && !string.IsNullOrWhiteSpace(snapshot.DestinationCity))
                         {
-                            snapshot.CargoName = "Carga en Tránsito";
+                            snapshot.CargoName = "Carga en Transito";
                         }
                     }
                 }
                 catch (Exception)
                 {
-                    // Si ATS se cerró o se invalidó la memoria
+                    // Si ATS se cerro o se invalido la memoria
                     Disconnect();
                     snapshot.Connected = false;
                 }
@@ -235,7 +283,7 @@ namespace AtsGpsServer.Telemetry
             {
                 try
                 {
-                    _mmf = MemoryMappedFile.OpenExisting(MmfName, MemoryMappedFileRights.Read);
+                    _mmf = MemoryMappedFile.OpenExisting(_mmfName, MemoryMappedFileRights.Read);
                     _accessor = _mmf.CreateViewAccessor(0, MmfSize, MemoryMappedFileAccess.Read);
                 }
                 catch (FileNotFoundException)

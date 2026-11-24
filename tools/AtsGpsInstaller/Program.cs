@@ -5,7 +5,9 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.IO.Compression;
+using System.Net.NetworkInformation;
 using System.Reflection;
+using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -36,12 +38,14 @@ namespace AtsGpsInstaller
     {
         public List<string> Warnings = new List<string>();
         public bool MapBuiltOrVerified;
+        public bool MapRuntimeFailed;
         public string MapNote = "";
     }
 
     public class InstallerForm : Form
     {
         private const string RepoUrl = "https://github.com/Gamavg06/GpsATS";
+        private const string DotNetDownloadUrl = "https://dotnet.microsoft.com/download/dotnet/10.0";
 
         private Panel panelLicense;
         private Button btnTabNotice;
@@ -64,13 +68,22 @@ namespace AtsGpsInstaller
         private CheckBox chkFirewall;
         private CheckBox chkLaunchAfter;
         private Button btnInstall;
+        private Panel panelRuntimeWarning;
+        private Label lblRuntimeWarning;
+        private LinkLabel lnkRuntimeDownload;
         private ProgressBar progressBar;
         private Label lblStatus;
         private Label lblDoneDesc;
+        private LinkLabel lnkDoneRuntime;
         private Panel panelSetup;
         private Panel panelProgress;
         private Panel panelDone;
         private BackgroundWorker worker;
+        private Process activeMapProc;
+        private readonly object activeProcLock = new object();
+        private bool hasDesktopRuntime10;
+        private bool hasAspNetRuntime10;
+        private string missingRuntimesDesc = "";
 
         private Color bgDark = Color.FromArgb(12, 16, 19);
         private Color panelDark = Color.FromArgb(21, 28, 33);
@@ -84,7 +97,7 @@ namespace AtsGpsInstaller
         public InstallerForm()
         {
             this.Text = "Instalador SGNIA - ATS Telemetria GPS v1.4.2";
-            this.Size = new Size(680, 600);
+            this.Size = new Size(680, 640);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
@@ -106,6 +119,8 @@ namespace AtsGpsInstaller
             LoadEmbeddedLicenses();
             BuildUI();
             DetectAtsPath();
+            CheckDotNet10Runtimes();
+            this.FormClosing += InstallerForm_FormClosing;
         }
 
         private void LoadEmbeddedLicenses()
@@ -175,7 +190,7 @@ namespace AtsGpsInstaller
             // Paso 1: Panel Obligatorio de Licencias (visible al iniciar)
             panelLicense = new Panel();
             panelLicense.Location = new Point(24, 100);
-            panelLicense.Size = new Size(620, 440);
+            panelLicense.Size = new Size(620, 480);
             panelLicense.Visible = true;
             this.Controls.Add(panelLicense);
 
@@ -272,7 +287,7 @@ namespace AtsGpsInstaller
             // Paso 2: Panel Setup Principal (oculto hasta aceptar licencias)
             panelSetup = new Panel();
             panelSetup.Location = new Point(24, 100);
-            panelSetup.Size = new Size(620, 440);
+            panelSetup.Size = new Size(620, 480);
             panelSetup.Visible = false;
             this.Controls.Add(panelSetup);
 
@@ -426,10 +441,39 @@ namespace AtsGpsInstaller
             btnInstall.Click += BtnInstall_Click;
             panelSetup.Controls.Add(btnInstall);
 
+            panelRuntimeWarning = new Panel();
+            panelRuntimeWarning.Location = new Point(0, y + 52);
+            panelRuntimeWarning.Size = new Size(620, 106);
+            panelRuntimeWarning.BackColor = Color.FromArgb(46, 30, 12);
+            panelRuntimeWarning.BorderStyle = BorderStyle.FixedSingle;
+            panelRuntimeWarning.Visible = false;
+            panelSetup.Controls.Add(panelRuntimeWarning);
+
+            lblRuntimeWarning = new Label();
+            lblRuntimeWarning.Location = new Point(10, 8);
+            lblRuntimeWarning.Size = new Size(598, 66);
+            lblRuntimeWarning.Font = new Font("Segoe UI", 8.5F, FontStyle.Bold);
+            lblRuntimeWarning.ForeColor = Color.FromArgb(253, 224, 71);
+            panelRuntimeWarning.Controls.Add(lblRuntimeWarning);
+
+            lnkRuntimeDownload = new LinkLabel();
+            lnkRuntimeDownload.Text = "Descargar .NET 10 Runtime: " + DotNetDownloadUrl;
+            lnkRuntimeDownload.Font = new Font("Segoe UI", 8.5F, FontStyle.Underline);
+            lnkRuntimeDownload.LinkColor = cyanAccent;
+            lnkRuntimeDownload.ActiveLinkColor = limeAccent;
+            lnkRuntimeDownload.VisitedLinkColor = cyanAccent;
+            lnkRuntimeDownload.Location = new Point(10, 78);
+            lnkRuntimeDownload.AutoSize = true;
+            lnkRuntimeDownload.LinkClicked += delegate
+            {
+                OpenUrl(DotNetDownloadUrl);
+            };
+            panelRuntimeWarning.Controls.Add(lnkRuntimeDownload);
+
             // Panel Progreso
             panelProgress = new Panel();
             panelProgress.Location = new Point(24, 100);
-            panelProgress.Size = new Size(620, 440);
+            panelProgress.Size = new Size(620, 480);
             panelProgress.Visible = false;
             this.Controls.Add(panelProgress);
 
@@ -458,7 +502,7 @@ namespace AtsGpsInstaller
             // Panel Completado
             panelDone = new Panel();
             panelDone.Location = new Point(24, 100);
-            panelDone.Size = new Size(620, 440);
+            panelDone.Size = new Size(620, 480);
             panelDone.Visible = false;
             this.Controls.Add(panelDone);
 
@@ -466,31 +510,46 @@ namespace AtsGpsInstaller
             lblDoneTitle.Text = "Instalacion completada con exito";
             lblDoneTitle.Font = new Font("Segoe UI", 15F, FontStyle.Bold);
             lblDoneTitle.ForeColor = limeAccent;
-            lblDoneTitle.Location = new Point(0, 30);
+            lblDoneTitle.Location = new Point(0, 24);
             lblDoneTitle.AutoSize = true;
             panelDone.Controls.Add(lblDoneTitle);
 
             lblDoneDesc = new Label();
             lblDoneDesc.Text = "Todos los componentes del servidor y la telemetria estan listos.\n\nPuedes conectar tu celular por cable USB o Wi-Fi e instalar la aplicacion movil desde el panel de control.";
-            lblDoneDesc.Font = new Font("Segoe UI", 10F);
+            lblDoneDesc.Font = new Font("Segoe UI", 9.5F);
             lblDoneDesc.ForeColor = textWhite;
-            lblDoneDesc.Location = new Point(0, 75);
-            lblDoneDesc.Size = new Size(610, 130);
+            lblDoneDesc.Location = new Point(0, 68);
+            lblDoneDesc.Size = new Size(610, 155);
             panelDone.Controls.Add(lblDoneDesc);
+
+            lnkDoneRuntime = new LinkLabel();
+            lnkDoneRuntime.Text = "Descargar .NET 10 Desktop y ASP.NET Core Runtime: " + DotNetDownloadUrl;
+            lnkDoneRuntime.Font = new Font("Segoe UI", 9F, FontStyle.Underline);
+            lnkDoneRuntime.LinkColor = cyanAccent;
+            lnkDoneRuntime.ActiveLinkColor = limeAccent;
+            lnkDoneRuntime.VisitedLinkColor = cyanAccent;
+            lnkDoneRuntime.Location = new Point(0, 230);
+            lnkDoneRuntime.AutoSize = true;
+            lnkDoneRuntime.Visible = false;
+            lnkDoneRuntime.LinkClicked += delegate
+            {
+                OpenUrl(DotNetDownloadUrl);
+            };
+            panelDone.Controls.Add(lnkDoneRuntime);
 
             chkLaunchAfter = new CheckBox();
             chkLaunchAfter.Text = "Abrir ATS Telemetria GPS Server ahora";
             chkLaunchAfter.Checked = true;
             chkLaunchAfter.ForeColor = cyanAccent;
             chkLaunchAfter.Font = new Font("Segoe UI", 10F, FontStyle.Bold);
-            chkLaunchAfter.Location = new Point(5, 220);
+            chkLaunchAfter.Location = new Point(5, 265);
             chkLaunchAfter.AutoSize = true;
             panelDone.Controls.Add(chkLaunchAfter);
 
             Button btnFinish = new Button();
             btnFinish.Text = "FINALIZAR";
             btnFinish.Size = new Size(180, 40);
-            btnFinish.Location = new Point(210, 275);
+            btnFinish.Location = new Point(210, 315);
             btnFinish.BackColor = limeAccent;
             btnFinish.ForeColor = Color.FromArgb(10, 20, 28);
             btnFinish.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
@@ -500,12 +559,13 @@ namespace AtsGpsInstaller
             {
                 if (chkLaunchAfter.Checked)
                 {
-                    string exePath = Path.Combine(txtInstallDir.Text, "Iniciar_Servidor.exe");
-                    if (File.Exists(exePath))
+                    string installDir = txtInstallDir.Text.Trim();
+                    string exePath = Path.Combine(installDir, "Iniciar_Servidor.exe");
+                    if (!string.IsNullOrEmpty(installDir) && File.Exists(exePath))
                     {
                         Process.Start(new ProcessStartInfo(exePath)
                         {
-                            WorkingDirectory = txtInstallDir.Text
+                            WorkingDirectory = installDir
                         });
                     }
                 }
@@ -639,13 +699,264 @@ namespace AtsGpsInstaller
             catch { }
         }
 
+        private static void OpenUrl(string url)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch { }
+        }
+
+        private void CheckDotNet10Runtimes()
+        {
+            hasDesktopRuntime10 = HasRuntimeVersion10("Microsoft.WindowsDesktop.App");
+            hasAspNetRuntime10 = HasRuntimeVersion10("Microsoft.AspNetCore.App");
+
+            if (!hasDesktopRuntime10 || !hasAspNetRuntime10)
+            {
+                List<string> missing = new List<string>();
+                if (!hasDesktopRuntime10) missing.Add(".NET 10 Desktop Runtime (Microsoft.WindowsDesktop.App 10.x)");
+                if (!hasAspNetRuntime10) missing.Add("ASP.NET Core 10 Runtime (Microsoft.AspNetCore.App 10.x)");
+                missingRuntimesDesc = "Falta " + string.Join(" y ", missing.ToArray()) + ".";
+
+                lblRuntimeWarning.Text = "ADVERTENCIA DE REQUISITO (.NET 10):\r\n" +
+                                         missingRuntimesDesc + "\r\n" +
+                                         "Instala ambos runtimes antes de ejecutar el servidor o generar el mapa.";
+                panelRuntimeWarning.Visible = true;
+            }
+            else
+            {
+                missingRuntimesDesc = "";
+                panelRuntimeWarning.Visible = false;
+            }
+        }
+
+        private static bool HasRuntimeVersion10(string runtimeName)
+        {
+            List<string> dotnetRoots = new List<string>();
+            string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            if (!string.IsNullOrEmpty(programFiles))
+            {
+                dotnetRoots.Add(Path.Combine(programFiles, "dotnet"));
+            }
+
+            string programW6432 = Environment.GetEnvironmentVariable("ProgramW6432");
+            if (!string.IsNullOrEmpty(programW6432))
+            {
+                dotnetRoots.Add(Path.Combine(programW6432, "dotnet"));
+            }
+
+            string dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT");
+            if (!string.IsNullOrEmpty(dotnetRoot))
+            {
+                dotnetRoots.Add(dotnetRoot);
+            }
+
+            foreach (string root in dotnetRoots)
+            {
+                try
+                {
+                    string sharedRuntimeDir = Path.Combine(root, Path.Combine("shared", runtimeName));
+                    if (Directory.Exists(sharedRuntimeDir))
+                    {
+                        string[] dirs = Directory.GetDirectories(sharedRuntimeDir, "10.*");
+                        foreach (string dir in dirs)
+                        {
+                            if (Directory.GetFiles(dir).Length > 0)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo("dotnet", "--list-runtimes")
+                {
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using (Process p = Process.Start(psi))
+                {
+                    if (p != null)
+                    {
+                        string output = p.StandardOutput.ReadToEnd();
+                        p.WaitForExit(3000);
+                        string pattern = Regex.Escape(runtimeName) + @"\s+10\.";
+                        if (Regex.IsMatch(output, pattern, RegexOptions.IgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            return false;
+        }
+
+        private static bool IsRunningAsAdministrator()
+        {
+            try
+            {
+                using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+                {
+                    WindowsPrincipal principal = new WindowsPrincipal(identity);
+                    return principal.IsInRole(WindowsBuiltInRole.Administrator);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsProtectedSystemDirectory(string fullPath)
+        {
+            string normalized = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            List<string> protectedRoots = new List<string>();
+
+            string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            if (!string.IsNullOrEmpty(pf)) protectedRoots.Add(pf);
+
+            string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+            if (!string.IsNullOrEmpty(pf86)) protectedRoots.Add(pf86);
+
+            string pf64 = Environment.GetEnvironmentVariable("ProgramW6432");
+            if (!string.IsNullOrEmpty(pf64)) protectedRoots.Add(pf64);
+
+            string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            if (!string.IsNullOrEmpty(winDir)) protectedRoots.Add(winDir);
+
+            foreach (string root in protectedRoots)
+            {
+                string cleanRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (string.Equals(normalized, cleanRoot, StringComparison.OrdinalIgnoreCase) ||
+                    normalized.StartsWith(cleanRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsPublicFirewallProfileActive()
+        {
+            try
+            {
+                Type fwType = Type.GetTypeFromProgID("HNetCfg.FwPolicy2");
+                if (fwType == null) return false;
+                dynamic fwPolicy = Activator.CreateInstance(fwType);
+                int currentProfiles = (int)fwPolicy.CurrentProfileTypes;
+                // NET_FW_PROFILE2_PUBLIC = 4
+                return (currentProfiles & 4) != 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool HasActiveWifiInterface()
+        {
+            try
+            {
+                foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus == OperationalStatus.Up &&
+                        ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        private void InstallerForm_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            lock (activeProcLock)
+            {
+                if (activeMapProc != null)
+                {
+                    try
+                    {
+                        if (!activeMapProc.HasExited)
+                        {
+                            activeMapProc.Kill();
+                            activeMapProc.WaitForExit(2000);
+                        }
+                    }
+                    catch { }
+                }
+            }
+        }
+
         private void BtnInstall_Click(object sender, EventArgs e)
         {
+            string targetDir = txtInstallDir.Text.Trim();
+            string atsDir = txtAtsDir.Text.Trim();
+
+            if (string.IsNullOrEmpty(targetDir))
+            {
+                MessageBox.Show(
+                    "La carpeta de instalacion no puede estar vacia.\n\nPor favor indica una ruta valida (por ejemplo C:\\Telemetriagps).",
+                    "Carpeta de instalacion requerida",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                txtInstallDir.Focus();
+                return;
+            }
+
+            string validatedFullTargetDir;
+            try
+            {
+                validatedFullTargetDir = Path.GetFullPath(targetDir);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    "La ruta de instalacion no es valida: " + ex.Message,
+                    "Ruta invalida",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                txtInstallDir.Focus();
+                return;
+            }
+
+            if (IsProtectedSystemDirectory(validatedFullTargetDir) && !IsRunningAsAdministrator())
+            {
+                string localAppFallback = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AtsGps");
+                DialogResult dr = MessageBox.Show(
+                    "La ruta seleccionada (" + validatedFullTargetDir + ") requiere permisos de Administrador para escribir archivos y generar el mapa local.\n\n" +
+                    "Se recomienda elegir una carpeta escribible como:\n" +
+                    "  C:\\Telemetriagps\n" +
+                    "  " + localAppFallback + "\n\n" +
+                    "Deseas continuar de todos modos con la ruta actual?",
+                    "Permisos requeridos para Program Files",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+                if (dr != DialogResult.Yes)
+                {
+                    txtInstallDir.Focus();
+                    return;
+                }
+            }
+
+            txtInstallDir.Text = targetDir;
+            txtAtsDir.Text = atsDir;
+            CheckDotNet10Runtimes();
+
             panelSetup.Visible = false;
             panelProgress.Visible = true;
 
-            string targetDir = txtInstallDir.Text.Trim();
-            string atsDir = txtAtsDir.Text.Trim();
             bool installPlugin = chkInstallPlugin.Checked;
             bool buildMap = chkBuildMap.Checked;
             bool createDesktop = chkDesktopShortcut.Checked;
@@ -657,6 +968,10 @@ namespace AtsGpsInstaller
             worker.DoWork += delegate(object s, DoWorkEventArgs args)
             {
                 InstallOutcome outcome = new InstallOutcome();
+                if (!hasDesktopRuntime10 || !hasAspNetRuntime10)
+                {
+                    outcome.Warnings.Add(missingRuntimesDesc + " Descargalo en " + DotNetDownloadUrl);
+                }
 
                 // 1. Extraer payload.zip (sin map_ats.bin, con LICENSE, LICENSES.md y NOTICE)
                 worker.ReportProgress(10, "Extrayendo archivos del servidor y avisos legales...");
@@ -783,29 +1098,42 @@ namespace AtsGpsInstaller
                             }
                         }
 
-                        if (!ruleExists)
+                        string netshArgs = ruleExists
+                            ? "advfirewall firewall set rule name=\"ATS GPS Server\" new profile=private,domain remoteip=LocalSubnet"
+                            : "advfirewall firewall add rule name=\"ATS GPS Server\" dir=in action=allow protocol=TCP localport=35500 profile=private,domain remoteip=LocalSubnet";
+
+                        ProcessStartInfo psi = new ProcessStartInfo("netsh", netshArgs)
                         {
-                            ProcessStartInfo psi = new ProcessStartInfo("netsh", "advfirewall firewall add rule name=\"ATS GPS Server\" dir=in action=allow protocol=TCP localport=35500 profile=private remoteip=LocalSubnet")
+                            CreateNoWindow = true,
+                            UseShellExecute = false,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true
+                        };
+                        using (Process p = Process.Start(psi))
+                        {
+                            if (p != null)
                             {
-                                CreateNoWindow = true,
-                                UseShellExecute = false,
-                                RedirectStandardOutput = true,
-                                RedirectStandardError = true
-                            };
-                            using (Process p = Process.Start(psi))
+                                p.WaitForExit(3000);
+                                if (p.ExitCode != 0 && !ruleExists)
+                                {
+                                    outcome.Warnings.Add("No se pudo crear la regla de Firewall (TCP 35500); ejecuta el instalador como Administrador o habilitala manualmente.");
+                                }
+                            }
+                            else if (!ruleExists)
                             {
-                                if (p != null)
-                                {
-                                    p.WaitForExit(3000);
-                                    if (p.ExitCode != 0)
-                                    {
-                                        outcome.Warnings.Add("No se pudo crear la regla de Firewall (TCP 35500); ejecuta el instalador como Administrador o habilitala manualmente.");
-                                    }
-                                }
-                                else
-                                {
-                                    outcome.Warnings.Add("No se pudo iniciar netsh para configurar el Firewall de Windows.");
-                                }
+                                outcome.Warnings.Add("No se pudo iniciar netsh para configurar el Firewall de Windows.");
+                            }
+                        }
+
+                        if (IsPublicFirewallProfileActive())
+                        {
+                            if (HasActiveWifiInterface())
+                            {
+                                outcome.Warnings.Add("Tu red Wi-Fi actual esta en perfil Publico. La regla TCP 35500 aplica a perfiles Privado y Dominio; cambia la red Wi-Fi a perfil Privado en Configuracion de Windows para conectar el celular por Wi-Fi.");
+                            }
+                            else
+                            {
+                                outcome.Warnings.Add("Se detecto un perfil de red Publico activo en el Firewall de Windows. La regla TCP 35500 aplica a perfiles Privado y Dominio; si usas Wi-Fi, cambia la red a perfil Privado.");
                             }
                         }
                     }
@@ -833,13 +1161,19 @@ namespace AtsGpsInstaller
                         object progressLock = new object();
                         bool alreadyMatched = false;
                         StringBuilder stderrBuilder = new StringBuilder();
+                        List<string> stdoutTail = new List<string>();
+                        string cleanAtsDir = atsDir.TrimEnd('\\', '/');
+                        if (cleanAtsDir.Length == 2 && cleanAtsDir[1] == ':')
+                        {
+                            cleanAtsDir += "\\\\";
+                        }
 
                         try
                         {
                             ProcessStartInfo mapPsi = new ProcessStartInfo
                             {
                                 FileName = serverExe,
-                                Arguments = "--build-map",
+                                Arguments = "--build-map --ats-dir \"" + cleanAtsDir + "\"",
                                 WorkingDirectory = serverPublishDir,
                                 RedirectStandardOutput = true,
                                 RedirectStandardError = true,
@@ -858,6 +1192,12 @@ namespace AtsGpsInstaller
 
                                     lock (progressLock)
                                     {
+                                        stdoutTail.Add(line);
+                                        if (stdoutTail.Count > 12)
+                                        {
+                                            stdoutTail.RemoveAt(0);
+                                        }
+
                                         if (line.IndexOf("ya existe y coincide", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                             line.IndexOf("Omitiendo regeneracion", StringComparison.OrdinalIgnoreCase) >= 0)
                                         {
@@ -903,10 +1243,24 @@ namespace AtsGpsInstaller
                                     }
                                 };
 
-                                mapProc.Start();
-                                mapProc.BeginOutputReadLine();
-                                mapProc.BeginErrorReadLine();
-                                mapProc.WaitForExit();
+                                lock (activeProcLock)
+                                {
+                                    activeMapProc = mapProc;
+                                }
+                                try
+                                {
+                                    mapProc.Start();
+                                    mapProc.BeginOutputReadLine();
+                                    mapProc.BeginErrorReadLine();
+                                    mapProc.WaitForExit();
+                                }
+                                finally
+                                {
+                                    lock (activeProcLock)
+                                    {
+                                        activeMapProc = null;
+                                    }
+                                }
 
                                 if (mapProc.ExitCode == 0)
                                 {
@@ -917,7 +1271,46 @@ namespace AtsGpsInstaller
                                 }
                                 else
                                 {
-                                    string errDetail = stderrBuilder.ToString().Trim();
+                                    string stderrText = stderrBuilder.ToString().Trim();
+                                    string stdoutText;
+                                    lock (progressLock)
+                                    {
+                                        int takeCount = Math.Min(5, stdoutTail.Count);
+                                        int startIdx = stdoutTail.Count - takeCount;
+                                        List<string> lastLines = new List<string>();
+                                        for (int i = startIdx; i < stdoutTail.Count; i++)
+                                        {
+                                            lastLines.Add(stdoutTail[i]);
+                                        }
+                                        stdoutText = string.Join(" | ", lastLines.ToArray());
+                                    }
+
+                                    string errDetail = "";
+                                    if (!string.IsNullOrEmpty(stderrText) && !string.IsNullOrEmpty(stdoutText))
+                                    {
+                                        errDetail = stderrText + " | " + stdoutText;
+                                    }
+                                    else if (!string.IsNullOrEmpty(stderrText))
+                                    {
+                                        errDetail = stderrText;
+                                    }
+                                    else if (!string.IsNullOrEmpty(stdoutText))
+                                    {
+                                        errDetail = stdoutText;
+                                    }
+
+                                    bool runtimeError = (!hasDesktopRuntime10 || !hasAspNetRuntime10) ||
+                                        errDetail.IndexOf("You must install", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                        errDetail.IndexOf("Microsoft.AspNetCore.App", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                        errDetail.IndexOf("Microsoft.NETCore.App", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                        errDetail.IndexOf("hostfxr", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                        errDetail.IndexOf("framework", StringComparison.OrdinalIgnoreCase) >= 0;
+
+                                    if (runtimeError)
+                                    {
+                                        outcome.MapRuntimeFailed = true;
+                                    }
+
                                     string warnMsg = "La generacion del mapa local termino con codigo " + mapProc.ExitCode +
                                                      ". Podras generarlo en el primer arranque del servidor.";
                                     if (!string.IsNullOrEmpty(errDetail))
@@ -925,7 +1318,9 @@ namespace AtsGpsInstaller
                                         warnMsg += " (" + errDetail + ")";
                                     }
                                     outcome.Warnings.Add(warnMsg);
-                                    outcome.MapNote = "Nota del mapa: No se completo la extraccion ahora; el mapa se generara localmente en el primer arranque del servidor (no se redistribuyen datos del juego).";
+                                    outcome.MapNote = runtimeError
+                                        ? "Error de runtime .NET 10 durante --build-map: " + (!string.IsNullOrEmpty(missingRuntimesDesc) ? missingRuntimesDesc : "Falta .NET 10 Runtime.")
+                                        : "Nota del mapa: No se completo la extraccion ahora; el mapa se generara localmente en el primer arranque del servidor (no se redistribuyen datos del juego).";
                                 }
                             }
                         }
@@ -974,6 +1369,15 @@ namespace AtsGpsInstaller
                     else
                     {
                         lblDoneDesc.Text = baseDone;
+                    }
+
+                    bool showRuntimeLink = (!hasDesktopRuntime10 || !hasAspNetRuntime10) ||
+                                           (outcome != null && outcome.MapRuntimeFailed);
+                    lnkDoneRuntime.Visible = showRuntimeLink;
+                    if (showRuntimeLink && !string.IsNullOrEmpty(missingRuntimesDesc) &&
+                        lblDoneDesc.Text.IndexOf(missingRuntimesDesc, StringComparison.OrdinalIgnoreCase) < 0)
+                    {
+                        lblDoneDesc.Text += "\n\nRequisito pendiente: " + missingRuntimesDesc;
                     }
 
                     panelProgress.Visible = false;

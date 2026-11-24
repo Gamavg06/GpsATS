@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -20,11 +22,17 @@ public partial class MainWindow : Window
     private const string PlatformToolsUrl = "https://developer.android.com/tools/releases/platform-tools";
     private const string PreferredApkName = "AtsGpsApp_v1.4.2.apk";
     private static readonly HttpClient StatusHttpClient = new() { Timeout = TimeSpan.FromMilliseconds(1500) };
+    private static readonly string[] VirtualAdapterKeywords =
+    {
+        "WSL", "Hyper-V", "vEthernet", "VirtualBox", "VMware",
+        "Tailscale", "ZeroTier", "TAP", "VPN"
+    };
     private Process? _serverProcess;
     private string _rootDir = "";
     private string _adbPath = "";
     private string _serverPin = "----";
     private bool _pluginInstalled;
+    private volatile bool _isStoppingServer;
     private DispatcherTimer? _statusTimer;
 
     public MainWindow()
@@ -130,9 +138,42 @@ public partial class MainWindow : Window
     {
         try
         {
-            var host = Dns.GetHostEntry(Dns.GetHostName());
-            var ip = host.AddressList.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a));
-            string lanIp = ip?.ToString() ?? "No detectada";
+            var candidates = new List<(int Priority, int TypeOrder, string Ip)>();
+
+            foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                if (ni.NetworkInterfaceType != NetworkInterfaceType.Ethernet &&
+                    ni.NetworkInterfaceType != NetworkInterfaceType.Wireless80211)
+                {
+                    continue;
+                }
+
+                if (IsVirtualAdapter(ni.Name, ni.Description)) continue;
+
+                foreach (UnicastIPAddressInformation ua in ni.GetIPProperties().UnicastAddresses)
+                {
+                    IPAddress addr = ua.Address;
+                    if (addr.AddressFamily != AddressFamily.InterNetwork || IPAddress.IsLoopback(addr))
+                    {
+                        continue;
+                    }
+
+                    byte[] bytes = addr.GetAddressBytes();
+                    if (bytes[0] == 169 && bytes[1] == 254) continue; // Excluir APIPA
+
+                    int priority = GetLanPriority(bytes);
+                    int typeOrder = ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211 ? 0 : 1;
+                    candidates.Add((priority, typeOrder, addr.ToString()));
+                }
+            }
+
+            string lanIp = candidates
+                .OrderBy(c => c.Priority)
+                .ThenBy(c => c.TypeOrder)
+                .Select(c => c.Ip)
+                .FirstOrDefault() ?? "No detectada";
+
             ServerIpText.Text = $"IP: 127.0.0.1 (USB) • LAN: {lanIp}";
         }
         catch
@@ -141,11 +182,33 @@ public partial class MainWindow : Window
         }
     }
 
+    private static bool IsVirtualAdapter(string name, string description)
+    {
+        foreach (string keyword in VirtualAdapterKeywords)
+        {
+            if ((!string.IsNullOrEmpty(name) && name.Contains(keyword, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrEmpty(description) && description.Contains(keyword, StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int GetLanPriority(byte[] bytes)
+    {
+        if (bytes[0] == 192 && bytes[1] == 168) return 0; // RFC 1918: 192.168.0.0/16
+        if (bytes[0] == 10) return 1;                      // RFC 1918: 10.0.0.0/8
+        if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return 2; // RFC 1918: 172.16.0.0/12
+        return 3;
+    }
+
     private void StartServer()
     {
         try
         {
             StopServer();
+            _isStoppingServer = false;
 
             string serverExe = Path.Combine(_rootDir, @"server\publish\AtsGpsServer.exe");
             if (!File.Exists(serverExe))
@@ -170,6 +233,7 @@ public partial class MainWindow : Window
             };
 
             _serverProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+            _serverProcess.Exited += ServerProcess_Exited;
             _serverProcess.OutputDataReceived += (s, ev) =>
             {
                 if (!string.IsNullOrEmpty(ev.Data) && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
@@ -203,15 +267,54 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ServerProcess_Exited(object? sender, EventArgs e)
+    {
+        if (_isStoppingServer || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        var exitedProc = sender as Process;
+        int? exitCode = null;
+        if (exitedProc != null)
+        {
+            try { exitCode = exitedProc.ExitCode; } catch { }
+        }
+
+        _ = Dispatcher.InvokeAsync(() =>
+        {
+            if (_isStoppingServer || !ReferenceEquals(exitedProc, _serverProcess))
+            {
+                return;
+            }
+
+            var errorBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#EF4444"));
+            ServerStatusLed.Fill = errorBrush;
+            ServerStatusText.Text = "SERVIDOR DETENIDO (ERROR)";
+            ServerStatusText.Foreground = errorBrush;
+
+            SetAtsDisconnectedState("DESCONECTADO");
+
+            string codeText = exitCode.HasValue ? exitCode.Value.ToString() : "desconocido";
+            AppendLog($"[ERROR] AtsGpsServer.exe termino inesperadamente (codigo de salida: {codeText}).");
+        });
+    }
+
     private void StopServer()
     {
+        _isStoppingServer = true;
         try
         {
-            if (_serverProcess != null && !_serverProcess.HasExited)
+            if (_serverProcess != null)
             {
-                _serverProcess.Kill(true);
-                _serverProcess.Dispose();
+                var proc = _serverProcess;
                 _serverProcess = null;
+                if (!proc.HasExited)
+                {
+                    proc.Kill(true);
+                    proc.WaitForExit(3000);
+                }
+                proc.Dispose();
             }
 
             // Asegurar que no queden procesos huérfanos de AtsGpsServer
@@ -219,7 +322,15 @@ public partial class MainWindow : Window
             {
                 using (p)
                 {
-                    try { p.Kill(); } catch { }
+                    try
+                    {
+                        if (!p.HasExited)
+                        {
+                            p.Kill(true);
+                            p.WaitForExit(3000);
+                        }
+                    }
+                    catch { }
                 }
             }
         }
@@ -230,13 +341,13 @@ public partial class MainWindow : Window
     {
         AppendLog(line);
 
-        // Detectar PIN en el log si el servidor lo imprime
+        // Detectar PIN en el banner de seguridad del servidor
         if (line.Contains("PIN", StringComparison.OrdinalIgnoreCase))
         {
-            var match = Regex.Match(line, @"\b\d{4,6}\b");
+            var match = Regex.Match(line, @"\bPIN\s*:\s*(\d{4,6})\b", RegexOptions.IgnoreCase);
             if (match.Success)
             {
-                _serverPin = match.Value;
+                _serverPin = match.Groups[1].Value;
                 PinText.Text = _serverPin;
             }
         }
@@ -248,7 +359,8 @@ public partial class MainWindow : Window
             AtsStatusText.Text = "PLUGIN SDK LISTO";
             AtsStatusText.Foreground = AtsStatusLed.Fill;
         }
-        else if (line.Contains("No se detectó scs-telemetry.dll", StringComparison.OrdinalIgnoreCase))
+        else if (line.Contains("No se detecto scs-telemetry.dll", StringComparison.OrdinalIgnoreCase) ||
+                 line.Contains("No se detectó scs-telemetry.dll", StringComparison.OrdinalIgnoreCase))
         {
             _pluginInstalled = false;
             AtsStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F7C948"));
@@ -264,13 +376,32 @@ public partial class MainWindow : Window
         _statusTimer.Start();
     }
 
+    private void SetAtsDisconnectedState(string statusText)
+    {
+        var disconnectedBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#94A3B8"));
+        AtsStatusLed.Fill = disconnectedBrush;
+        AtsStatusText.Text = statusText;
+        AtsStatusText.Foreground = disconnectedBrush;
+    }
+
     private async Task RefreshAtsStatusAsync()
     {
         if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished) return;
+
+        if (_serverProcess == null || _serverProcess.HasExited)
+        {
+            SetAtsDisconnectedState("DESCONECTADO");
+            return;
+        }
+
         try
         {
             using var response = await StatusHttpClient.GetAsync("http://127.0.0.1:35500/api/status");
-            if (!response.IsSuccessStatusCode) return;
+            if (!response.IsSuccessStatusCode)
+            {
+                SetAtsDisconnectedState("SERVIDOR NO RESPONDE");
+                return;
+            }
 
             string json = await response.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
@@ -289,11 +420,20 @@ public partial class MainWindow : Window
                     AtsStatusText.Text = "ESPERANDO JUEGO ATS";
                     AtsStatusText.Foreground = AtsStatusLed.Fill;
                 }
+                else
+                {
+                    AtsStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F7C948"));
+                    AtsStatusText.Text = "PLUGIN NO DETECTADO";
+                    AtsStatusText.Foreground = AtsStatusLed.Fill;
+                }
             }
         }
         catch
         {
-            // Ignorar si el servidor aún está iniciando o fue detenido
+            if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+            {
+                SetAtsDisconnectedState("SERVIDOR NO RESPONDE");
+            }
         }
     }
 
@@ -410,13 +550,14 @@ public partial class MainWindow : Window
             return;
         }
 
+        BtnInstallApk.IsEnabled = false;
         AppendLog($"[INSTALL] Instalando {Path.GetFileName(apkPath)} en el celular via USB...");
         TxtFooterStatus.Text = "Instalando APK en celular...";
         TxtFooterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#F7C948"));
 
         try
         {
-            string result = await RunCommandAsync(_adbPath, $"install -r \"{apkPath}\"");
+            string result = await RunCommandAsync(_adbPath, $"install -r \"{apkPath}\"", 60000);
             AppendLog(result.Trim());
             if (result.Contains("Success"))
             {
@@ -434,6 +575,10 @@ public partial class MainWindow : Window
         {
             AppendLog($"[ERROR] Fallo al instalar APK: {ex.Message}");
         }
+        finally
+        {
+            BtnInstallApk.IsEnabled = true;
+        }
     }
 
     private void BtnRestartServer_Click(object sender, RoutedEventArgs e)
@@ -449,7 +594,7 @@ public partial class MainWindow : Window
             string apksDir = Path.Combine(_rootDir, "apks");
             if (Directory.Exists(apksDir))
             {
-                Process.Start("explorer.exe", apksDir);
+                Process.Start(new ProcessStartInfo("explorer.exe", $"\"{apksDir}\"") { UseShellExecute = true });
             }
         }
         catch (Exception ex)
@@ -467,12 +612,20 @@ public partial class MainWindow : Window
     {
         if (!string.IsNullOrEmpty(_serverPin) && _serverPin != "----")
         {
-            Clipboard.SetText(_serverPin);
-            MessageBox.Show($"PIN {_serverPin} copiado al portapapeles.", "Copiado", MessageBoxButton.OK, MessageBoxImage.Information);
+            try
+            {
+                Clipboard.SetText(_serverPin);
+                MessageBox.Show($"PIN {_serverPin} copiado al portapapeles.", "Copiado", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[AVISO] No se pudo copiar el PIN al portapapeles: {ex.Message}");
+                MessageBox.Show($"No se pudo acceder al portapapeles ({ex.Message}). PIN actual: {_serverPin}", "Portapapeles ocupado", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
     }
 
-    private async Task<string> RunCommandAsync(string fileName, string args)
+    private async Task<string> RunCommandAsync(string fileName, string args, int timeoutMs = 15000)
     {
         try
         {
@@ -493,7 +646,7 @@ public partial class MainWindow : Window
             var stdoutTask = p.StandardOutput.ReadToEndAsync();
             var stderrTask = p.StandardError.ReadToEndAsync();
 
-            using var cts = new CancellationTokenSource(10000);
+            using var cts = new CancellationTokenSource(timeoutMs);
             try
             {
                 await p.WaitForExitAsync(cts.Token);

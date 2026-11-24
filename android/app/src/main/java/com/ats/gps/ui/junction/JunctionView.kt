@@ -76,8 +76,8 @@ fun JunctionView(
             withFrameNanos { now ->
                 val dt = if (lastNanos == 0L) 0.016f else ((now - lastNanos) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
                 lastNanos = now
-                if (currentSpeed >= 2f) {
-                    val speedMps = currentSpeed / 3.6f
+                if (kotlin.math.abs(currentSpeed) >= 2f) {
+                    val speedMps = kotlin.math.abs(currentSpeed) / 3.6f
                     roadPhase = (roadPhase + speedMps * dt * 0.14f) % 1f
                 }
             }
@@ -108,7 +108,7 @@ fun JunctionView(
     Box(
         modifier = modifier
             .width(280.dp)
-            .height(178.dp)
+            .height(140.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFF0B1218))
             .border(1.dp, Color(0xFF22303C), RoundedCornerShape(12.dp))

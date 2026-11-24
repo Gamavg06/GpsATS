@@ -1,5 +1,6 @@
 package com.ats.gps.data.network
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import com.ats.gps.data.map.BinaryMapReader
@@ -17,7 +18,11 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
+import java.io.EOFException
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.BufferUnderflowException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -25,6 +30,13 @@ import java.util.concurrent.atomic.AtomicInteger
 class UnauthorizedException(message: String) : IOException(message)
 
 class RateLimitedException(message: String) : IOException(message)
+
+class MapBuildingException(message: String) : IOException(message)
+
+data class MapInfoResult(
+    val exists: Boolean,
+    val fileSizeBytes: Long
+)
 
 data class PairResult(
     val token: String,
@@ -182,7 +194,7 @@ class AtsNetworkClient {
         }
     }
 
-    suspend fun downloadMap(host: String, port: Int, token: String): Result<MapGraph> = withContext(Dispatchers.IO) {
+    suspend fun fetchMapInfo(host: String, port: Int, token: String): Result<MapInfoResult> = withContext(Dispatchers.IO) {
         if (!isAllowedPrivateAddress(host)) {
             return@withContext Result.failure(
                 SecurityException("Conexion rechazada: '$host' no es una IP privada permitida.")
@@ -191,6 +203,70 @@ class AtsNetworkClient {
         if (token.isBlank()) {
             return@withContext Result.failure(UnauthorizedException("Sesion expirada o no autorizada"))
         }
+        try {
+            val formattedHost = formatHostForUrl(host)
+            val url = "http://$formattedHost:$port/api/map/info"
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                when {
+                    response.isSuccessful -> {
+                        val bodyStr = response.body?.string() ?: "{}"
+                        val json = JSONObject(bodyStr)
+                        Result.success(
+                            MapInfoResult(
+                                exists = json.optBoolean("exists", false),
+                                fileSizeBytes = json.optLong("fileSizeBytes", 0L)
+                            )
+                        )
+                    }
+                    response.code == 401 -> Result.failure(UnauthorizedException("Sesion expirada o no autorizada"))
+                    response.code == 503 -> Result.failure(MapBuildingException("El servidor esta generando el mapa local"))
+                    else -> Result.failure(IOException("HTTP ${response.code}"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun downloadMap(context: Context, host: String, port: Int, token: String): Result<MapGraph> = withContext(Dispatchers.IO) {
+        if (!isAllowedPrivateAddress(host)) {
+            return@withContext Result.failure(
+                SecurityException("Conexion rechazada: '$host' no es una IP privada permitida.")
+            )
+        }
+        if (token.isBlank()) {
+            return@withContext Result.failure(UnauthorizedException("Sesion expirada o no autorizada"))
+        }
+
+        val mapFile = File(context.filesDir, "map_ats.bin")
+        val tmpFile = File(context.filesDir, "map_ats.bin.tmp")
+
+        // Consultar /api/map/info para aprovechar cache local atomica si el tamano coincide
+        val infoRes = fetchMapInfo(host, port, token)
+        if (infoRes.isFailure) {
+            val err = infoRes.exceptionOrNull()
+            if (err is UnauthorizedException || err is MapBuildingException) {
+                return@withContext Result.failure(err)
+            }
+        } else {
+            val info = infoRes.getOrNull()
+            if (info != null && info.exists && info.fileSizeBytes > 0L &&
+                mapFile.exists() && mapFile.length() == info.fileSizeBytes
+            ) {
+                val cachedGraph = runCatching { BinaryMapReader.read(mapFile) }
+                if (cachedGraph.isSuccess) {
+                    return@withContext cachedGraph
+                } else {
+                    mapFile.delete()
+                }
+            }
+        }
+
         try {
             val formattedHost = formatHostForUrl(host)
             val url = "http://$formattedHost:$port/api/map/download"
@@ -202,11 +278,56 @@ class AtsNetworkClient {
                 when {
                     response.isSuccessful -> {
                         val stream = response.body?.byteStream() ?: throw IOException("Cuerpo de respuesta vacio.")
-                        val graph = BinaryMapReader.read(stream)
-                        Result.success(graph)
+                        tmpFile.delete()
+                        try {
+                            stream.use { input ->
+                                FileOutputStream(tmpFile).use { output ->
+                                    val buffer = ByteArray(65536) // 64 KB
+                                    while (true) {
+                                        val read = input.read(buffer)
+                                        if (read == -1) break
+                                        output.write(buffer, 0, read)
+                                    }
+                                    output.flush()
+                                }
+                            }
+                            if (mapFile.exists()) mapFile.delete()
+                            if (!tmpFile.renameTo(mapFile)) {
+                                tmpFile.copyTo(mapFile, overwrite = true)
+                                tmpFile.delete()
+                            }
+                            val graph = try {
+                                BinaryMapReader.read(mapFile)
+                            } catch (e: Exception) {
+                                mapFile.delete()
+                                val detail = when (e) {
+                                    is BufferUnderflowException, is EOFException ->
+                                        "Mapa incompleto o corrupto en descarga. Reintenta."
+                                    else -> e.message ?: "Error leyendo mapa binario"
+                                }
+                                throw IOException(detail, e)
+                            }
+                            Result.success(graph)
+                        } catch (e: Exception) {
+                            tmpFile.delete()
+                            throw e
+                        }
                     }
                     response.code == 401 -> {
                         Result.failure(UnauthorizedException("Sesion expirada o no autorizada"))
+                    }
+                    response.code == 503 -> {
+                        Result.failure(MapBuildingException("El servidor esta generando el mapa local"))
+                    }
+                    response.code == 404 -> {
+                        val errBody = response.body?.string() ?: ""
+                        if (errBody.contains("no ha sido generado", ignoreCase = true) ||
+                            errBody.contains("generando", ignoreCase = true)
+                        ) {
+                            Result.failure(MapBuildingException("El servidor esta generando el mapa local"))
+                        } else {
+                            Result.failure(IOException("No se pudo descargar el mapa. Codigo: ${response.code}"))
+                        }
                     }
                     else -> {
                         Result.failure(IOException("No se pudo descargar el mapa. Codigo: ${response.code}"))
@@ -226,17 +347,36 @@ class AtsNetworkClient {
         onStatusChanged: (Boolean) -> Unit,
         onAuthExpired: () -> Unit = {}
     ) {
+        retryAttempt.set(0)
+        openWebSocketInternal(host, port, token, onTelemetry, onStatusChanged, onAuthExpired)
+    }
+
+    private fun openWebSocketInternal(
+        host: String,
+        port: Int,
+        token: String,
+        onTelemetry: (TelemetryData) -> Unit,
+        onStatusChanged: (Boolean) -> Unit,
+        onAuthExpired: () -> Unit
+    ) {
         isUserDisconnected.set(false)
-        reconnectJob?.cancel()
 
         if (!isAllowedPrivateAddress(host)) {
-            disconnectWebSocketInternal()
+            synchronized(wsLock) {
+                reconnectJob?.cancel()
+                reconnectJob = null
+                disconnectWebSocketInternal()
+            }
             postToMain { onStatusChanged(false) }
             return
         }
 
         if (token.isBlank()) {
-            disconnectWebSocketInternal()
+            synchronized(wsLock) {
+                reconnectJob?.cancel()
+                reconnectJob = null
+                disconnectWebSocketInternal()
+            }
             postToMain {
                 onStatusChanged(false)
                 onAuthExpired()
@@ -252,6 +392,8 @@ class AtsNetworkClient {
             .build()
 
         synchronized(wsLock) {
+            reconnectJob?.cancel()
+            reconnectJob = null
             disconnectWebSocketInternal()
             activeWebSocket = client.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -310,10 +452,10 @@ class AtsNetworkClient {
         synchronized(wsLock) {
             if (webSocket !== activeWebSocket) return
             activeWebSocket = null
+            reconnectJob?.cancel()
+            reconnectJob = null
         }
         isUserDisconnected.set(true)
-        reconnectJob?.cancel()
-        reconnectJob = null
         postToMain {
             onStatusChanged(false)
             onAuthExpired()
@@ -330,24 +472,30 @@ class AtsNetworkClient {
     ) {
         if (isUserDisconnected.get()) return
 
-        reconnectJob?.cancel()
-        reconnectJob = clientScope.launch {
-            val attempt = retryAttempt.incrementAndGet()
-            // Backoff exponencial: 1s, 2s, 4s, 8s, hasta max 15s
-            val delayMs = (1000L * (1L shl kotlin.math.min(attempt, 4))).coerceAtMost(15000L)
-            delay(delayMs)
+        synchronized(wsLock) {
+            if (isUserDisconnected.get()) return
+            reconnectJob?.cancel()
+            reconnectJob = clientScope.launch {
+                val attempt = retryAttempt.incrementAndGet()
+                // Backoff exponencial: 1s, 2s, 4s, 8s, hasta max 15s
+                val delayMs = (1000L * (1L shl kotlin.math.min(attempt, 4))).coerceAtMost(15000L)
+                delay(delayMs)
 
-            if (!isUserDisconnected.get()) {
-                connectWebSocket(host, port, token, onTelemetry, onStatusChanged, onAuthExpired)
+                if (!isUserDisconnected.get()) {
+                    openWebSocketInternal(host, port, token, onTelemetry, onStatusChanged, onAuthExpired)
+                }
             }
         }
     }
 
-    fun disconnectWebSocket() {
+    fun disconnectWebSocket(preserveSession: Boolean = false) {
         isUserDisconnected.set(true)
-        reconnectJob?.cancel()
         synchronized(wsLock) {
-            disconnectWebSocketInternal()
+            reconnectJob?.cancel()
+            reconnectJob = null
+            disconnectWebSocketInternal(
+                reason = if (preserveSession) "App en segundo plano" else "Cierre voluntario de la app"
+            )
         }
     }
 
@@ -357,10 +505,10 @@ class AtsNetworkClient {
         mainHandler.removeCallbacksAndMessages(null)
     }
 
-    private fun disconnectWebSocketInternal() {
+    private fun disconnectWebSocketInternal(reason: String = "Cierre voluntario de la app") {
         val old = activeWebSocket
         activeWebSocket = null
-        old?.close(1000, "Cierre voluntario de la app")
+        old?.close(1000, reason)
     }
 
     private fun parseTelemetry(json: JSONObject): TelemetryData {

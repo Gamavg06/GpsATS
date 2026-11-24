@@ -25,7 +25,9 @@ namespace AtsGpsServer
             IPAddress? listenAddress = null,
             string? fixedPin = null,
             Action<WebApplication>? configurePreSecurity = null,
-            bool suppressConsoleLogs = false)
+            bool suppressConsoleLogs = false,
+            string? atsDir = null,
+            MapManager? mapManager = null)
         {
             var builder = WebApplication.CreateBuilder(args ?? Array.Empty<string>());
 
@@ -39,6 +41,8 @@ namespace AtsGpsServer
                 options.Listen(listenAddress ?? IPAddress.Any, port);
             });
 
+            string? resolvedAtsDir = !string.IsNullOrWhiteSpace(atsDir) ? atsDir : ParseAtsDirArg(args);
+
             builder.Services.AddSingleton<ScsTelemetryReader>();
             if (fixedPin != null)
             {
@@ -48,7 +52,7 @@ namespace AtsGpsServer
             {
                 builder.Services.AddSingleton<AuthManager>();
             }
-            builder.Services.AddSingleton<MapManager>();
+            builder.Services.AddSingleton(mapManager ?? new MapManager(resolvedAtsDir));
             builder.Services.AddSingleton<DestinationResolver>();
             builder.Services.AddSingleton<TelemetryBroadcaster>();
             builder.Services.AddSingleton<VirtualInputController>();
@@ -77,16 +81,47 @@ namespace AtsGpsServer
             return app;
         }
 
+        internal static string? ParseAtsDirArg(string[]? args)
+        {
+            if (args == null || args.Length == 0)
+            {
+                return null;
+            }
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                string arg = args[i];
+                if (string.Equals(arg, "--ats-dir", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 < args.Length && !string.IsNullOrWhiteSpace(args[i + 1]))
+                    {
+                        return args[i + 1].Trim().Trim('"');
+                    }
+                }
+                else if (arg.StartsWith("--ats-dir=", StringComparison.OrdinalIgnoreCase))
+                {
+                    string value = arg.Substring("--ats-dir=".Length).Trim().Trim('"');
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        return value;
+                    }
+                }
+            }
+
+            return null;
+        }
+
         private static void ConfigureEndpoints(WebApplication app)
         {
             // 1. Estado del Servidor (publico en LAN: salud y version)
-            app.MapGet("/api/status", (ScsTelemetryReader reader, TelemetryBroadcaster broadcaster) =>
+            app.MapGet("/api/status", (ScsTelemetryReader reader, TelemetryBroadcaster broadcaster, MapManager mapManager) =>
             {
                 return Results.Ok(new
                 {
                     server = "ATS GPS Server v1.4.2 (.NET 10)",
-                    atsConnected = reader.IsGameConnected,
+                    atsConnected = reader.CheckConnectionStatus(),
                     connectedClients = broadcaster.ConnectedClientsCount,
+                    mapBuilding = mapManager.IsBuildingMap,
                     serverTime = DateTimeOffset.UtcNow
                 });
             });
@@ -205,6 +240,15 @@ namespace AtsGpsServer
                     return UnauthorizedJson();
                 }
 
+                if (mapManager.IsBuildingMap)
+                {
+                    return Results.Accepted(value: new
+                    {
+                        building = true,
+                        message = "La generacion del mapa ya esta en progreso."
+                    });
+                }
+
                 try
                 {
                     var graph = await mapManager.BuildMapAsync((step, cur, tot) =>
@@ -236,12 +280,48 @@ namespace AtsGpsServer
                     return UnauthorizedJson();
                 }
 
-                if (!mapManager.IsMapReady)
+                if (!mapManager.HasValidMap)
                 {
-                    return Results.NotFound(new { error = "El mapa aun no ha sido generado. Ejecute POST /api/map/build primero." });
+                    if (mapManager.IsBuildingMap)
+                    {
+                        return Results.Json(
+                            new
+                            {
+                                building = true,
+                                message = "Generando mapa local, reintenta en unos segundos."
+                            },
+                            statusCode: StatusCodes.Status503ServiceUnavailable);
+                    }
+
+                    return Results.NotFound(new { error = "El mapa aun no ha sido generado o no es valido. Ejecute POST /api/map/build primero." });
                 }
 
-                return Results.File(mapManager.MapFilePath, "application/octet-stream", "map_ats.bin");
+                try
+                {
+                    var stream = new FileStream(
+                        mapManager.MapFilePath,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete,
+                        bufferSize: 65536,
+                        useAsync: true);
+                    return Results.File(stream, "application/octet-stream", "map_ats.bin");
+                }
+                catch (FileNotFoundException)
+                {
+                    if (mapManager.IsBuildingMap)
+                    {
+                        return Results.Json(
+                            new
+                            {
+                                building = true,
+                                message = "Generando mapa local, reintenta en unos segundos."
+                            },
+                            statusCode: StatusCodes.Status503ServiceUnavailable);
+                    }
+
+                    return Results.NotFound(new { error = "El mapa aun no ha sido generado. Ejecute POST /api/map/build primero." });
+                }
             });
 
             // 8. Lista de destinos disponibles (requiere token valido)

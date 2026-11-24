@@ -46,21 +46,20 @@ namespace AtsGpsServer.Tests
                 _output.WriteLine($"Juego no activo en este instante ({ex.Message}), ejecutando validación matemática de las 4 direcciones cardinales.");
             }
 
-            _output.WriteLine("\n=== PRUEBA DEMOSTRATIVA DE LAS 4 DIRECCIONES CARDINALES ===");
+            _output.WriteLine("\n=== PRUEBA DEMOSTRATIVA DE LAS 4 DIRECCIONES CARDINALES (SCS CCW -> ANDROID CW) ===");
             var testCases = new (string Cardinal, double RevValue, double ExpectedDeg)[]
             {
                 ("NORTE (0°)", 0.00, 0.0),
-                ("ESTE (90°)", 0.25, 90.0),
-                ("SUR (180°)", 0.50, 180.0),
-                ("OESTE (270°)", 0.75, 270.0),
-                ("NORESTE (Nogales live: 51.54°)", 0.14316447, 51.54)
+                ("OESTE (270°, -X)", 0.25, 270.0),
+                ("SUR (180°, +Z)", 0.50, 180.0),
+                ("ESTE (90°, +X)", 0.75, 90.0),
+                ("NOROESTE (Nogales live: 51.54° CCW -> 308.46° CW)", 0.14316447, 308.46)
             };
 
             foreach (var tc in testCases)
             {
-                double deg = (tc.RevValue * 360.0) % 360.0;
-                if (deg < 0) deg += 360.0;
-                _output.WriteLine($"Dirección: {tc.Cardinal} | rotationX en 2224: {tc.RevValue:F6} rev | Grados calculados: {deg:F2}° (Esperado: {tc.ExpectedDeg:F2}°)");
+                double deg = ScsTelemetryReader.ConvertScsHeadingToCompassDegrees(tc.RevValue);
+                _output.WriteLine($"Direccion: {tc.Cardinal} | rotationX en 2224: {tc.RevValue:F6} rev | Grados brujula CW: {deg:F2}° (Esperado: {tc.ExpectedDeg:F2}°)");
                 Assert.Equal(tc.ExpectedDeg, deg, 0.01);
             }
         }

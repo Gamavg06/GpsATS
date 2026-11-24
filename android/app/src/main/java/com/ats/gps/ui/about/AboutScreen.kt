@@ -187,9 +187,10 @@ fun AboutScreen(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFF0C1013))
+            .displayCutoutPadding()
             .padding(top = 92.dp, bottom = 48.dp, start = 20.dp, end = 20.dp)
     ) {
-        val isLandscape = maxWidth > 800.dp
+        val isLandscape = maxWidth > 680.dp
 
         if (isLandscape) {
             Row(
@@ -339,7 +340,7 @@ private fun ProjectLicenseCard(
                 fontSize = 12.sp,
                 textDecoration = TextDecoration.Underline,
                 modifier = Modifier.clickable {
-                    uriHandler.openUri(PROJECT_GITHUB_URL)
+                    runCatching { uriHandler.openUri(PROJECT_GITHUB_URL) }
                 }
             )
         }
@@ -518,7 +519,7 @@ private fun NoticeItem(
                 fontSize = 11.sp,
                 textDecoration = TextDecoration.Underline,
                 modifier = Modifier.clickable {
-                    uriHandler.openUri(linkUrl)
+                    runCatching { uriHandler.openUri(linkUrl) }
                 }
             )
         }

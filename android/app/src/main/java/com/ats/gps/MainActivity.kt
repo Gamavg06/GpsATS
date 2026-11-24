@@ -2,6 +2,7 @@ package com.ats.gps
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,42 +19,50 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.ats.gps.data.map.AStarRouter
 import com.ats.gps.data.map.RouteResult
 import com.ats.gps.data.model.MapGraph
+import com.ats.gps.data.model.RouteTrackingState
 import com.ats.gps.data.model.TelemetryData
 import com.ats.gps.data.network.AtsNetworkClient
 import com.ats.gps.data.network.AuthTokenStore
+import com.ats.gps.data.network.MapBuildingException
 import com.ats.gps.data.network.UnauthorizedException
+import com.ats.gps.data.triplog.TripLogManager
+import com.ats.gps.data.triplog.TripRecord
 import com.ats.gps.ui.about.AboutScreen
 import com.ats.gps.ui.dashboard.DashboardScreen
 import com.ats.gps.ui.diagnostic.TelemetryDiagnosticScreen
 import com.ats.gps.ui.junction.JunctionView
 import com.ats.gps.ui.map.GpsMapCanvas
-import com.ats.gps.ui.map.MapViewMode
 import com.ats.gps.ui.map.MapThemeStyle
+import com.ats.gps.ui.map.MapViewMode
 import com.ats.gps.ui.navigation.ManeuverType
 import com.ats.gps.ui.navigation.NavigationInstructionCache
 import com.ats.gps.ui.navigation.TurnByTurnCard
 import com.ats.gps.ui.navigation.calculateNavigationInstruction
+import com.ats.gps.ui.triplog.TripLogScreen
 import com.ats.gps.ui.tts.NavigationVoiceAssistant
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
-
-import androidx.compose.ui.platform.LocalContext
-import com.ats.gps.data.model.RouteTrackingState
-import com.ats.gps.data.triplog.TripLogManager
-import com.ats.gps.data.triplog.TripRecord
-import com.ats.gps.ui.triplog.TripLogScreen
 
 enum class AppTab {
     MAPA,
@@ -63,6 +72,7 @@ enum class AppTab {
 }
 
 private data class RouteTrackingInput(
+    val simConnected: Boolean,
     val posX: Double,
     val posZ: Double,
     val headingDegrees: Double,
@@ -77,6 +87,36 @@ private data class RouteTrackingInput(
     val manualTargetNode: Int?,
     val manualDestName: String?
 )
+
+private fun sanitizeHostAndPort(rawHost: String, rawPort: String): Pair<String, Int?> {
+    var cleaned = rawHost.trim()
+        .replace(Regex("^(https?|wss?)://", RegexOption.IGNORE_CASE), "")
+        .replace(" ", "")
+        .substringBefore("/")
+        .substringBefore("?")
+        .substringBefore("#")
+
+    var extractedPort = ""
+    if (cleaned.startsWith("[")) {
+        val closeIdx = cleaned.indexOf(']')
+        if (closeIdx > 0) {
+            val hostPart = cleaned.substring(1, closeIdx)
+            val rest = cleaned.substring(closeIdx + 1)
+            if (rest.startsWith(":")) {
+                extractedPort = rest.substring(1).filter { it.isDigit() }
+            }
+            cleaned = hostPart
+        }
+    } else if (cleaned.count { it == ':' } == 1) {
+        val parts = cleaned.split(':', limit = 2)
+        cleaned = parts[0]
+        extractedPort = parts[1].filter { it.isDigit() }
+    }
+
+    val portStr = if (extractedPort.isNotEmpty()) extractedPort else rawPort.filter { it.isDigit() }
+    val portNum = portStr.toIntOrNull()?.takeIf { it in 1..65535 }
+    return Pair(cleaned, portNum)
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -107,12 +147,24 @@ fun AtsNavMainApp(
     networkClient: AtsNetworkClient,
     voiceAssistant: NavigationVoiceAssistant
 ) {
-    var serverIp by remember { mutableStateOf("127.0.0.1") }
+    val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val tripLogManager = remember { TripLogManager(context) }
+    val authTokenStore = remember(context) { AuthTokenStore(context) }
+
+    var serverIp by remember { mutableStateOf(authTokenStore.getSavedHost() ?: "127.0.0.1") }
     var serverPort by remember { mutableStateOf("35500") }
     var serverPin by remember { mutableStateOf("") }
+    var hasActiveSession by remember { mutableStateOf(false) }
     var isConnected by remember { mutableStateOf(false) }
     var isPairing by remember { mutableStateOf(false) }
     var pairError by remember { mutableStateOf<String?>(null) }
+    var pairStatus by remember { mutableStateOf<String?>(null) }
+
+    var activeHost by remember { mutableStateOf("") }
+    var activePort by remember { mutableIntStateOf(35500) }
+    var activeToken by remember { mutableStateOf("") }
+    var isAppInForeground by remember { mutableStateOf(true) }
 
     var telemetry by remember { mutableStateOf(TelemetryData()) }
     var mapGraph by remember { mutableStateOf<MapGraph?>(null) }
@@ -133,12 +185,70 @@ fun AtsNavMainApp(
     var panOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
     var isFollowingTruck by remember { mutableStateOf(true) }
 
-    val coroutineScope = rememberCoroutineScope()
-    val context = LocalContext.current
-    val tripLogManager = remember { TripLogManager(context) }
-    val authTokenStore = remember(context) { AuthTokenStore(context) }
     var loadedMapHost by remember { mutableStateOf<String?>(null) }
     var sessionRevision by remember { mutableIntStateOf(0) }
+    var tripLogVersion by remember { mutableIntStateOf(0) }
+
+    // Ciclo de vida real Android: pausar WS/audio en ON_STOP y reconectar automaticamente en ON_START
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    isAppInForeground = false
+                    voiceAssistant.stopSpeaking()
+                    if (hasActiveSession) {
+                        networkClient.disconnectWebSocket(preserveSession = true)
+                        isConnected = false
+                    }
+                }
+                Lifecycle.Event.ON_START -> {
+                    isAppInForeground = true
+                    if (hasActiveSession && activeHost.isNotEmpty()) {
+                        val tokenToUse = authTokenStore.getValidToken(activeHost) ?: activeToken
+                        if (tokenToUse.isNotBlank()) {
+                            activeToken = tokenToUse
+                            networkClient.connectWebSocket(
+                                host = activeHost,
+                                port = activePort,
+                                token = tokenToUse,
+                                onTelemetry = { telemetry = it },
+                                onStatusChanged = { connected -> isConnected = connected },
+                                onAuthExpired = {
+                                    authTokenStore.clearToken()
+                                    loadedMapHost = null
+                                    sessionRevision++
+                                    hasActiveSession = false
+                                    isConnected = false
+                                    activeToken = ""
+                                    pairError = "Sesion expirada o no autorizada. Ingresa el PIN actual del servidor PC."
+                                }
+                            )
+                        } else {
+                            hasActiveSession = false
+                            isConnected = false
+                            activeToken = ""
+                            pairError = "Sesion expirada o no autorizada. Ingresa el PIN actual del servidor PC."
+                        }
+                    }
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    // BackHandler: cerrar diagnostico -> volver a MAPA -> salir solo desde MAPA sin overlays
+    BackHandler(enabled = hasActiveSession && (showDiagnostics || selectedTab != AppTab.MAPA)) {
+        if (showDiagnostics) {
+            showDiagnostics = false
+        } else if (selectedTab != AppTab.MAPA) {
+            selectedTab = AppTab.MAPA
+        }
+    }
 
     // Alertas de Voz y Asistente Turn-by-Turn
     var lastSpeedWarningTime by remember { mutableLongStateOf(0L) }
@@ -154,6 +264,7 @@ fun AtsNavMainApp(
     var jobIncomeSnapshot by remember { mutableLongStateOf(0L) }
     var jobInitialDistSnapshot by remember { mutableFloatStateOf(0f) }
     var jobDrivenMeters by remember { mutableFloatStateOf(0f) }
+    var jobPeakCargoDamage by remember { mutableFloatStateOf(0f) }
     var jobLastNavDistMeters by remember { mutableFloatStateOf(Float.MAX_VALUE) }
     var jobStartTimeMs by remember { mutableLongStateOf(0L) }
     var lastJobPosX by remember { mutableDoubleStateOf(Double.NaN) }
@@ -175,15 +286,23 @@ fun AtsNavMainApp(
         } else null
     }
 
-    LaunchedEffect(currentInstruction?.distanceMeters, currentInstruction?.title) {
-        if (currentInstruction != null && isFollowingTruck && !telemetry.gamePaused) {
+    LaunchedEffect(currentInstruction?.distanceMeters, currentInstruction?.title, isAppInForeground) {
+        if (isAppInForeground && currentInstruction != null && isFollowingTruck && !telemetry.gamePaused) {
             voiceAssistant.updateNavigation(currentInstruction.distanceMeters, currentInstruction.title)
         }
     }
 
     // 2. Anuncio de Llegada a Destino
-    LaunchedEffect(telemetry.navDistanceMeters, activeRoute, telemetry.destinationCity) {
-        if (activeRoute != null && telemetry.destinationCity.isNotEmpty() &&
+    LaunchedEffect(telemetry.destinationCity) {
+        if (telemetry.destinationCity.isEmpty()) {
+            lastArrivalAnnouncedCity = ""
+        } else if (lastArrivalAnnouncedCity != telemetry.destinationCity && telemetry.navDistanceMeters > 200f) {
+            lastArrivalAnnouncedCity = ""
+        }
+    }
+
+    LaunchedEffect(telemetry.navDistanceMeters, activeRoute, telemetry.destinationCity, isAppInForeground) {
+        if (isAppInForeground && activeRoute != null && telemetry.destinationCity.isNotEmpty() &&
             telemetry.navDistanceMeters in 1f..45f &&
             lastArrivalAnnouncedCity != telemetry.destinationCity
         ) {
@@ -194,8 +313,8 @@ fun AtsNavMainApp(
 
     // 3. Alerta de Exceso de Velocidad
     val isSpeeding = telemetry.speedLimitKmh > 15f && telemetry.speedKmh > (telemetry.speedLimitKmh + 5f)
-    LaunchedEffect(isSpeeding) {
-        if (isSpeeding && !telemetry.gamePaused) {
+    LaunchedEffect(isSpeeding, isAppInForeground) {
+        if (isAppInForeground && isSpeeding && !telemetry.gamePaused) {
             val now = System.currentTimeMillis()
             if (now - lastSpeedWarningTime > 25000L) {
                 lastSpeedWarningTime = now
@@ -205,9 +324,9 @@ fun AtsNavMainApp(
     }
 
     // 4. Alerta Temprana de Combustible Crítico
-    val isFuelCritical = telemetry.fuelCapacity > 0f && (telemetry.fuel / telemetry.fuelCapacity) < 0.12f
-    LaunchedEffect(isFuelCritical) {
-        if (isFuelCritical && !telemetry.gamePaused) {
+    val isFuelCritical = telemetry.connected && telemetry.fuelCapacity > 0f && (telemetry.fuel / telemetry.fuelCapacity) < 0.12f
+    LaunchedEffect(isFuelCritical, isAppInForeground) {
+        if (isAppInForeground && isFuelCritical && !telemetry.gamePaused) {
             val now = System.currentTimeMillis()
             if (now - lastFuelWarningTime > 150000L) {
                 lastFuelWarningTime = now
@@ -216,10 +335,10 @@ fun AtsNavMainApp(
         }
     }
 
-    // 5. Alerta Temprana de Descanso y Fatiga
-    val isRestCritical = telemetry.restStopMinutes in 1..35
-    LaunchedEffect(isRestCritical) {
-        if (isRestCritical && !telemetry.gamePaused) {
+    // 5. Alerta Temprana de Descanso y Fatiga (incluye fatiga vencida <= 0)
+    val isRestCritical = telemetry.connected && telemetry.restStopMinutes <= 35
+    LaunchedEffect(isRestCritical, isAppInForeground) {
+        if (isAppInForeground && isRestCritical && !telemetry.gamePaused) {
             val now = System.currentTimeMillis()
             if (now - lastRestWarningTime > 150000L) {
                 lastRestWarningTime = now
@@ -237,15 +356,13 @@ fun AtsNavMainApp(
         telemetry.posZ,
         telemetry.destinationCity,
         telemetry.jobIncome,
-        telemetry.navDistanceMeters
+        telemetry.navDistanceMeters,
+        telemetry.cargoDamage
     ) {
         if (!isConnected || !telemetry.connected) {
-            // Desconexión de red o simulador: no emitir registros falsos; reiniciar seguimiento temporal si cae red
-            if (!isConnected) {
-                wasOnJob = false
-                lastJobPosX = Double.NaN
-                lastJobPosZ = Double.NaN
-            }
+            // Microcortes o desconexion temporal: conservar wasOnJob, jobDrivenMeters y snapshots
+            lastJobPosX = Double.NaN
+            lastJobPosZ = Double.NaN
             return@LaunchedEffect
         }
 
@@ -255,7 +372,9 @@ fun AtsNavMainApp(
                 wasOnJob = true
                 manualTargetNodeIndex = null
                 manualDestinationName = null
+                lastArrivalAnnouncedCity = ""
                 jobDrivenMeters = 0f
+                jobPeakCargoDamage = telemetry.cargoDamage
                 jobStartTimeMs = System.currentTimeMillis()
                 jobInitialDistSnapshot = telemetry.navDistanceMeters
                 jobLastNavDistMeters = if (telemetry.navDistanceMeters > 0f) telemetry.navDistanceMeters else Float.MAX_VALUE
@@ -270,8 +389,12 @@ fun AtsNavMainApp(
                 }
                 lastJobPosX = telemetry.posX
                 lastJobPosZ = telemetry.posZ
+            } else {
+                lastJobPosX = telemetry.posX
+                lastJobPosZ = telemetry.posZ
             }
 
+            if (telemetry.cargoDamage > jobPeakCargoDamage) jobPeakCargoDamage = telemetry.cargoDamage
             if (telemetry.sourceCity.isNotEmpty()) jobOriginSnapshot = telemetry.sourceCity
             if (telemetry.destinationCity.isNotEmpty()) jobDestSnapshot = telemetry.destinationCity
             if (telemetry.cargoName.isNotEmpty()) jobCargoSnapshot = telemetry.cargoName
@@ -282,7 +405,8 @@ fun AtsNavMainApp(
         } else if (wasOnJob) {
             wasOnJob = false
             val completedRealDelivery = jobDestSnapshot.isNotEmpty() &&
-                (jobLastNavDistMeters <= 350f || jobDrivenMeters >= 500f)
+                jobLastNavDistMeters < 2000f &&
+                jobDrivenMeters >= 500f
 
             if (completedRealDelivery) {
                 val drivenKm = when {
@@ -294,7 +418,7 @@ fun AtsNavMainApp(
                 val avgSpeed = if (drivenKm > 0.2f && elapsedHours > 0.005f) {
                     (drivenKm / elapsedHours).coerceIn(10f, 160f)
                 } else {
-                    telemetry.speedKmh.coerceAtLeast(0f)
+                    abs(telemetry.speedKmh)
                 }
 
                 tripLogManager.addTrip(
@@ -306,12 +430,16 @@ fun AtsNavMainApp(
                         incomeEarned = jobIncomeSnapshot,
                         distanceKm = drivenKm,
                         avgSpeedKmh = avgSpeed,
-                        damagePercent = telemetry.cargoDamage * 100f
+                        damagePercent = jobPeakCargoDamage * 100f
                     )
                 )
-                voiceAssistant.speak("Felicidades, trabajo de entrega completado con éxito")
+                tripLogVersion++
+                if (isAppInForeground) {
+                    voiceAssistant.speak("Felicidades, trabajo de entrega completado con éxito")
+                }
             }
 
+            lastArrivalAnnouncedCity = ""
             jobOriginSnapshot = ""
             jobDestSnapshot = ""
             jobCargoSnapshot = ""
@@ -319,6 +447,7 @@ fun AtsNavMainApp(
             jobIncomeSnapshot = 0L
             jobInitialDistSnapshot = 0f
             jobDrivenMeters = 0f
+            jobPeakCargoDamage = 0f
             jobLastNavDistMeters = Float.MAX_VALUE
             lastJobPosX = Double.NaN
             lastJobPosZ = Double.NaN
@@ -333,6 +462,11 @@ fun AtsNavMainApp(
     var isRecalculatingRoute by remember { mutableStateOf(false) }
     var latestTracking by remember { mutableStateOf<RouteTrackingState?>(null) }
     var lastTargetNodeIndex by remember { mutableIntStateOf(-1) }
+    var lastFailedTargetNode by remember { mutableIntStateOf(-1) }
+    var lastFailedCalcTime by remember { mutableLongStateOf(0L) }
+    var lastFailedPosX by remember { mutableFloatStateOf(0f) }
+    var lastFailedPosZ by remember { mutableFloatStateOf(0f) }
+    var routeCalcSeq by remember { mutableIntStateOf(0) }
     var lastWrongWayVoiceTime by remember { mutableLongStateOf(0L) }
     var offRouteCounter by remember { mutableIntStateOf(0) }
     var routeJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
@@ -346,6 +480,7 @@ fun AtsNavMainApp(
 
         snapshotFlow {
             RouteTrackingInput(
+                simConnected = telemetry.connected,
                 posX = telemetry.posX,
                 posZ = telemetry.posZ,
                 headingDegrees = telemetry.headingDegrees,
@@ -363,6 +498,21 @@ fun AtsNavMainApp(
         }
             .conflate()
             .collect { input ->
+                if (!input.simConnected) {
+                    routeCalcSeq++
+                    routeJob?.cancel()
+                    isRecalculatingRoute = false
+                    isWrongWay = false
+                    activeRoute = null
+                    latestTracking = null
+                    lastRoutedDestCity = ""
+                    lastRoutedDestComp = ""
+                    lastTargetNodeIndex = -1
+                    lastFailedTargetNode = -1
+                    offRouteCounter = 0
+                    return@collect
+                }
+
                 val hasValidPos = input.posX != 0.0 || input.posZ != 0.0
                 if (!hasValidPos) return@collect
 
@@ -382,7 +532,9 @@ fun AtsNavMainApp(
                         manualTargetNodeIndex = null
                         manualDestinationName = null
                         effectiveManualNode = null
-                        voiceAssistant.announceArrival(arrivedName)
+                        if (isAppInForeground) {
+                            voiceAssistant.announceArrival(arrivedName)
+                        }
                     }
                 }
 
@@ -402,11 +554,15 @@ fun AtsNavMainApp(
                 if (tracking != null) {
                     latestTracking = tracking
                     isWrongWay = tracking.isWrongWay
-                    if (tracking.isWrongWay && now - lastWrongWayVoiceTime > 9000L) {
+                    if (tracking.isWrongWay && isAppInForeground && now - lastWrongWayVoiceTime > 9000L) {
                         lastWrongWayVoiceTime = now
                         voiceAssistant.speak("Precaución, sentido contrario")
                     }
-                    if (tracking.isOffRoute) offRouteCounter++ else offRouteCounter = 0
+                    if (input.speedKmh > 5f && tracking.isOffRoute) {
+                        offRouteCounter++
+                    } else if (!tracking.isOffRoute) {
+                        offRouteCounter = 0
+                    }
                 }
 
                 // Autodetección: 1) Destino manual independiente, 2) Nodo enviado por servidor, 3) Ciudad/empresa de trabajo
@@ -470,14 +626,24 @@ fun AtsNavMainApp(
                     val isNewDestination = effectiveDestLabel != lastRoutedDestCity ||
                         input.destinationCompany != lastRoutedDestComp ||
                         targetNode != lastTargetNodeIndex
-                    val isConfirmedOffRoute = tracking != null &&
+                    val isConfirmedOffRoute = input.speedKmh > 5f &&
+                        tracking != null &&
                         (tracking.distanceToRouteMeters > 35f || offRouteCounter >= 2) &&
                         (now - lastRouteCalcTime > 1200L)
-                    val shouldCompute = activeRoute == null || isNewDestination || isConfirmedOffRoute
+
+                    val movedFromFailSq = (curX - lastFailedPosX) * (curX - lastFailedPosX) +
+                        (curZ - lastFailedPosZ) * (curZ - lastFailedPosZ)
+                    val inFailBackoff = (targetNode == lastFailedTargetNode) &&
+                        (now - lastFailedCalcTime < 8000L) &&
+                        (movedFromFailSq <= 14400f)
+
+                    val shouldCompute = isNewDestination || ((activeRoute == null || isConfirmedOffRoute) && !inFailBackoff)
 
                     if (shouldCompute) {
                         if (isNewDestination) {
                             routeJob?.cancel()
+                            activeRoute = null
+                            lastFailedTargetNode = -1
                         }
                         if (isNewDestination || routeJob == null || !routeJob!!.isActive) {
                             val snap = if (isConfirmedOffRoute) {
@@ -499,6 +665,8 @@ fun AtsNavMainApp(
                             lastRoutedDestComp = input.destinationCompany
                             lastTargetNodeIndex = targetNode
 
+                            val mySeq = ++routeCalcSeq
+
                             if (targetNode == startNode) {
                                 activeRoute = if (leadEdge != null && startNode == leadEdge.toNodeIndex) {
                                     RouteResult(
@@ -510,10 +678,10 @@ fun AtsNavMainApp(
                                     RouteResult(listOf(startNode), emptyList(), 0f)
                                 }
                                 lastRouteCalcTime = System.currentTimeMillis()
+                                lastFailedTargetNode = -1
                                 offRouteCounter = 0
                                 isRecalculatingRoute = false
                             } else {
-                                val navDistSnapshot = input.navDistanceMeters
                                 if (isConfirmedOffRoute) {
                                     isRecalculatingRoute = true
                                 }
@@ -525,12 +693,15 @@ fun AtsNavMainApp(
                                                 startNode = startNode,
                                                 targetNode = targetNode,
                                                 headingDeg = curHeading,
-                                                initialEdge = leadEdge
+                                                initialEdge = leadEdge,
+                                                isCancelled = { !isActive || mySeq != routeCalcSeq }
                                             )
                                         }
+                                        if (!isActive || mySeq != routeCalcSeq) return@launch
                                         lastRouteCalcTime = System.currentTimeMillis()
                                         offRouteCounter = 0
                                         if (route != null) {
+                                            lastFailedTargetNode = -1
                                             val finalRoute = if (
                                                 leadEdge != null &&
                                                 startNode == leadEdge.toNodeIndex &&
@@ -546,25 +717,30 @@ fun AtsNavMainApp(
                                                 route
                                             }
                                             activeRoute = finalRoute
-                                            if (navDistSnapshot > 0f) {
-                                                val destText = if (effectiveDestLabel.isNotEmpty()) effectiveDestLabel else "tu destino"
-                                                voiceAssistant.updateNavigation(navDistSnapshot, "hacia $destText")
-                                            }
+                                        } else {
+                                            lastFailedTargetNode = targetNode
+                                            lastFailedCalcTime = System.currentTimeMillis()
+                                            lastFailedPosX = curX
+                                            lastFailedPosZ = curZ
                                         }
                                     } finally {
-                                        isRecalculatingRoute = false
+                                        if (mySeq == routeCalcSeq) {
+                                            isRecalculatingRoute = false
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 } else {
+                    routeCalcSeq++
                     routeJob?.cancel()
                     isRecalculatingRoute = false
                     activeRoute = null
                     lastRoutedDestCity = ""
                     lastRoutedDestComp = ""
                     lastTargetNodeIndex = -1
+                    lastFailedTargetNode = -1
                     offRouteCounter = 0
                 }
             }
@@ -580,7 +756,7 @@ fun AtsNavMainApp(
         )
     ) {
         Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0F172A))) {
-            if (!isConnected) {
+            if (!hasActiveSession) {
                 // ==========================================
                 // PANTALLA DE EMPAREJAMIENTO CON LA PC
                 // ==========================================
@@ -595,92 +771,128 @@ fun AtsNavMainApp(
                     pin = serverPin,
                     onPinChange = { serverPin = it },
                     isLoading = isPairing,
+                    statusMessage = pairStatus,
                     errorMessage = pairError,
                     onClearSavedSession = {
+                        networkClient.disconnectWebSocket()
                         authTokenStore.clearToken()
                         loadedMapHost = null
+                        hasActiveSession = false
+                        isConnected = false
+                        activeToken = ""
                         serverPin = ""
                         pairError = null
+                        pairStatus = null
                         sessionRevision++
                     },
                     onConnect = { targetHost ->
-                        val cleanHost = targetHost.trim()
+                        val (cleanHost, portNum) = sanitizeHostAndPort(targetHost, serverPort)
                         if (cleanHost.isEmpty()) {
                             pairError = "Ingresa la IP del servidor PC."
                             return@PairingScreen
                         }
+                        if (portNum == null) {
+                            pairError = "Ingresa un puerto valido entre 1 y 65535."
+                            return@PairingScreen
+                        }
+                        serverIp = cleanHost
+                        serverPort = portNum.toString()
+
                         isPairing = true
                         pairError = null
+                        pairStatus = null
                         coroutineScope.launch {
-                            val portNum = serverPort.toIntOrNull() ?: 35500
-                            val enteredPin = serverPin.trim()
-                            val savedToken = if (enteredPin.isEmpty()) authTokenStore.getValidToken(cleanHost) else null
+                            try {
+                                val enteredPin = serverPin.trim()
+                                val savedToken = if (enteredPin.isEmpty()) authTokenStore.getValidToken(cleanHost) else null
 
-                            val activeToken: String? = if (savedToken != null) {
-                                savedToken
-                            } else {
-                                if (enteredPin.length != 6) {
-                                    pairError = "Ingresa el PIN de 6 digitos del servidor PC."
-                                    isPairing = false
-                                    return@launch
-                                }
-                                val pairResult = networkClient.pairWithServer(cleanHost, portNum, enteredPin)
-                                if (pairResult.isSuccess) {
-                                    val paired = pairResult.getOrThrow()
-                                    authTokenStore.saveToken(cleanHost, paired.token, paired.expiresInHours)
-                                    sessionRevision++
-                                    serverPin = ""
-                                    paired.token
+                                val resolvedToken: String? = if (savedToken != null) {
+                                    savedToken
                                 } else {
-                                    pairError = pairResult.exceptionOrNull()?.message ?: "Error de conexion"
-                                    isPairing = false
-                                    return@launch
-                                }
-                            }
-
-                            if (activeToken != null) {
-                                val needsMapDownload = mapGraph == null || loadedMapHost != cleanHost
-                                val mapOk = if (needsMapDownload) {
-                                    val mapResult = networkClient.downloadMap(cleanHost, portNum, activeToken)
-                                    if (mapResult.isSuccess) {
-                                        mapGraph = mapResult.getOrThrow()
-                                        loadedMapHost = cleanHost
-                                        true
-                                    } else {
-                                        val err = mapResult.exceptionOrNull()
-                                        if (err is UnauthorizedException) {
-                                            authTokenStore.clearToken()
-                                            loadedMapHost = null
-                                            sessionRevision++
-                                            pairError = "Sesion expirada o no autorizada. Ingresa el PIN actual del servidor PC."
-                                        } else {
-                                            pairError = "Error descargando mapa vial: " + (err?.message ?: "Codigo de error del servidor")
-                                        }
-                                        false
+                                    if (enteredPin.length != 6) {
+                                        pairError = "Ingresa el PIN de 6 digitos del servidor PC."
+                                        isPairing = false
+                                        return@launch
                                     }
-                                } else {
-                                    true
+                                    val pairResult = networkClient.pairWithServer(cleanHost, portNum, enteredPin)
+                                    if (pairResult.isSuccess) {
+                                        val paired = pairResult.getOrThrow()
+                                        authTokenStore.saveToken(cleanHost, paired.token, paired.expiresInHours)
+                                        sessionRevision++
+                                        serverPin = ""
+                                        paired.token
+                                    } else {
+                                        pairError = pairResult.exceptionOrNull()?.message ?: "Error de conexion"
+                                        isPairing = false
+                                        return@launch
+                                    }
                                 }
 
-                                if (mapOk) {
-                                    networkClient.connectWebSocket(
-                                        host = cleanHost,
-                                        port = portNum,
-                                        token = activeToken,
-                                        onTelemetry = { telemetry = it },
-                                        onStatusChanged = { connected -> isConnected = connected },
-                                        onAuthExpired = {
-                                            authTokenStore.clearToken()
-                                            loadedMapHost = null
-                                            sessionRevision++
-                                            isConnected = false
-                                            pairError = "Sesion expirada o no autorizada. Ingresa el PIN actual del servidor PC."
+                                if (resolvedToken != null) {
+                                    val needsMapDownload = mapGraph == null || loadedMapHost != cleanHost
+                                    var mapOk = !needsMapDownload
+                                    if (needsMapDownload) {
+                                        val maxAttempts = 30
+                                        for (attempt in 1..maxAttempts) {
+                                            if (!isActive) break
+                                            val mapResult = networkClient.downloadMap(context, cleanHost, portNum, resolvedToken)
+                                            if (mapResult.isSuccess) {
+                                                mapGraph = mapResult.getOrThrow()
+                                                loadedMapHost = cleanHost
+                                                pairStatus = null
+                                                mapOk = true
+                                                break
+                                            } else {
+                                                val err = mapResult.exceptionOrNull()
+                                                if (err is UnauthorizedException) {
+                                                    authTokenStore.clearToken()
+                                                    loadedMapHost = null
+                                                    sessionRevision++
+                                                    pairStatus = null
+                                                    pairError = "Sesion expirada o no autorizada. Ingresa el PIN actual del servidor PC."
+                                                    break
+                                                } else if (err is MapBuildingException && attempt < maxAttempts) {
+                                                    pairStatus = "El servidor esta generando el mapa local, reintentando... ($attempt/$maxAttempts)"
+                                                    delay(4000L)
+                                                } else {
+                                                    pairStatus = null
+                                                    pairError = "Error descargando mapa vial: " + (err?.message ?: "Codigo de error del servidor")
+                                                    break
+                                                }
+                                            }
                                         }
-                                    )
-                                    isConnected = true
+                                    }
+
+                                    if (mapOk) {
+                                        authTokenStore.saveLastHost(cleanHost)
+                                        activeHost = cleanHost
+                                        activePort = portNum
+                                        activeToken = resolvedToken
+                                        hasActiveSession = true
+                                        pairStatus = null
+                                        networkClient.connectWebSocket(
+                                            host = cleanHost,
+                                            port = portNum,
+                                            token = resolvedToken,
+                                            onTelemetry = { telemetry = it },
+                                            onStatusChanged = { connected -> isConnected = connected },
+                                            onAuthExpired = {
+                                                authTokenStore.clearToken()
+                                                loadedMapHost = null
+                                                sessionRevision++
+                                                hasActiveSession = false
+                                                isConnected = false
+                                                activeToken = ""
+                                                pairError = "Sesion expirada o no autorizada. Ingresa el PIN actual del servidor PC."
+                                            }
+                                        )
+                                    }
                                 }
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } finally {
+                                isPairing = false
                             }
-                            isPairing = false
                         }
                     }
                 )
@@ -745,21 +957,24 @@ fun AtsNavMainApp(
                                 modifier = Modifier.fillMaxSize()
                             )
 
-                            // 1.5. Tarjeta de Navegación Giro a Giro con Guía de Carriles táctica (Turn-By-Turn)
-                            if (activeRoute != null && isFollowingTruck) {
+                            // 1.5. Tarjeta de Navegación Giro a Giro + Cancelar ruta manual (siempre visible si hay ruta manual)
+                            if ((activeRoute != null && isFollowingTruck) || manualTargetNodeIndex != null) {
                                 Column(
                                     modifier = Modifier
                                         .align(Alignment.TopStart)
+                                        .displayCutoutPadding()
                                         .padding(top = 80.dp, start = 14.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    TurnByTurnCard(
-                                        truckX = telemetry.posX.toFloat(),
-                                        truckZ = telemetry.posZ.toFloat(),
-                                        activeRoute = activeRoute,
-                                        destinationCity = effectiveDestinationName,
-                                        instructionOverride = currentInstruction
-                                    )
+                                    if (activeRoute != null && isFollowingTruck) {
+                                        TurnByTurnCard(
+                                            truckX = telemetry.posX.toFloat(),
+                                            truckZ = telemetry.posZ.toFloat(),
+                                            activeRoute = activeRoute,
+                                            destinationCity = effectiveDestinationName,
+                                            instructionOverride = currentInstruction
+                                        )
+                                    }
                                     if (manualTargetNodeIndex != null) {
                                         Row(
                                             modifier = Modifier
@@ -769,6 +984,7 @@ fun AtsNavMainApp(
                                                 .clickable {
                                                     manualTargetNodeIndex = null
                                                     manualDestinationName = null
+                                                    lastArrivalAnnouncedCity = ""
                                                 }
                                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                                             verticalAlignment = Alignment.CenterVertically,
@@ -778,7 +994,10 @@ fun AtsNavMainApp(
                                                 text = "Ruta manual: ${manualDestinationName ?: "Destino"}",
                                                 color = Color.White,
                                                 fontSize = 11.sp,
-                                                fontWeight = FontWeight.SemiBold
+                                                fontWeight = FontWeight.SemiBold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.widthIn(max = 180.dp)
                                             )
                                             Text(
                                                 text = "Cancelar",
@@ -800,8 +1019,9 @@ fun AtsNavMainApp(
                                 Column(
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
-                                        .padding(top = 80.dp, end = 74.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        .displayCutoutPadding()
+                                        .padding(top = 80.dp, end = 66.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
                                     horizontalAlignment = Alignment.End
                                 ) {
                                     if (hasJob) {
@@ -811,7 +1031,7 @@ fun AtsNavMainApp(
                                             shape = RoundedCornerShape(14.dp),
                                             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222D35))
                                         ) {
-                                            Column(modifier = Modifier.padding(12.dp)) {
+                                            Column(modifier = Modifier.padding(10.dp)) {
                                                 Row(
                                                     modifier = Modifier.fillMaxWidth(),
                                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -827,7 +1047,7 @@ fun AtsNavMainApp(
                                                     if (telemetry.speedLimitKmh > 5f) {
                                                         Box(
                                                             modifier = Modifier
-                                                                .size(24.dp)
+                                                                .size(22.dp)
                                                                 .clip(CircleShape)
                                                                 .background(Color.White)
                                                                 .border(2.dp, Color(0xFFDC2626), CircleShape),
@@ -837,13 +1057,13 @@ fun AtsNavMainApp(
                                                                 "${telemetry.speedLimitKmh.roundToInt()}",
                                                                 color = Color.Black,
                                                                 fontWeight = FontWeight.Black,
-                                                                fontSize = 10.sp
+                                                                fontSize = 9.sp
                                                             )
                                                         }
                                                     }
                                                 }
 
-                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Spacer(modifier = Modifier.height(3.dp))
 
                                                 val dest = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "Destino"
                                                 val comp = if (telemetry.destinationCompany.isNotEmpty()) " (${telemetry.destinationCompany})" else ""
@@ -852,7 +1072,8 @@ fun AtsNavMainApp(
                                                     color = Color(0xFFF3F6F7),
                                                     fontWeight = FontWeight.Bold,
                                                     fontSize = 13.sp,
-                                                    maxLines = 1
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
 
                                                 val cargo = if (telemetry.cargoName.isNotEmpty()) telemetry.cargoName else "Carga general"
@@ -861,10 +1082,11 @@ fun AtsNavMainApp(
                                                     "$cargo$tons",
                                                     color = Color(0xFF94A3B8),
                                                     fontSize = 11.sp,
-                                                    maxLines = 1
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
                                                 )
 
-                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Spacer(modifier = Modifier.height(3.dp))
 
                                                 Row(
                                                     modifier = Modifier.fillMaxWidth(),
@@ -909,7 +1131,7 @@ fun AtsNavMainApp(
                             }
 
                             // 2. Alertas Superior Central (Sentido Contrario / Recalculando / Parada de Descanso)
-                            val isRestStopRelevant = telemetry.restStopMinutes in 1..45
+                            val isRestStopRelevant = telemetry.connected && telemetry.restStopMinutes <= 45
                             val currentMapGraph = mapGraph
                             val mapRestStop = remember(telemetry.posX, telemetry.posZ, currentMapGraph, isRestStopRelevant) {
                                 if (isRestStopRelevant && currentMapGraph != null) {
@@ -920,8 +1142,10 @@ fun AtsNavMainApp(
                                 Column(
                                     modifier = Modifier
                                         .align(Alignment.TopCenter)
-                                        .padding(top = 80.dp, start = 16.dp, end = 16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        .displayCutoutPadding()
+                                        .padding(top = 80.dp, start = 16.dp, end = 16.dp)
+                                        .widthIn(max = 320.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
                                     if (isWrongWay) {
@@ -930,13 +1154,14 @@ fun AtsNavMainApp(
                                                 .clip(RoundedCornerShape(14.dp))
                                                 .background(Color(0xEEB91C1C))
                                                 .border(2.dp, Color(0xFFFCA5A5), RoundedCornerShape(14.dp))
-                                                .padding(horizontal = 18.dp, vertical = 10.dp)
+                                                .padding(horizontal = 14.dp, vertical = 8.dp)
                                         ) {
                                             Text(
-                                                text = "ALERTA: SENTIDO CONTRARIO - RECALCULANDO RUTA",
+                                                text = "ALERTA: SENTIDO CONTRARIO - RECALCULANDO",
                                                 color = Color.White,
                                                 fontWeight = FontWeight.Black,
-                                                fontSize = 14.sp
+                                                fontSize = 12.sp,
+                                                maxLines = 2
                                             )
                                         }
                                     } else if (isRecalculatingRoute) {
@@ -945,43 +1170,57 @@ fun AtsNavMainApp(
                                                 .clip(RoundedCornerShape(14.dp))
                                                 .background(Color(0xEE0F172A))
                                                 .border(1.5.dp, Color(0xFF38BDF8), RoundedCornerShape(14.dp))
-                                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                                .padding(horizontal = 14.dp, vertical = 7.dp)
                                         ) {
                                             Text(
                                                 text = "Recalculando ruta...",
                                                 color = Color(0xFFE0F2FE),
                                                 fontWeight = FontWeight.Bold,
-                                                fontSize = 13.sp
+                                                fontSize = 12.sp
                                             )
                                         }
                                     }
 
                                     if (isRestStopRelevant && mapRestStop != null) {
+                                        val isRestExpired = telemetry.restStopMinutes <= 0
+                                        val restBorder = if (isRestExpired) Color(0xFFEF4444) else Color(0xFFF59E0B)
                                         Box(
                                             modifier = Modifier
                                                 .clip(RoundedCornerShape(10.dp))
                                                 .background(Color(0xF0111827))
-                                                .border(1.5.dp, Color(0xFFF59E0B), RoundedCornerShape(10.dp))
-                                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                                .border(1.5.dp, restBorder, RoundedCornerShape(10.dp))
+                                                .padding(horizontal = 10.dp, vertical = 6.dp)
                                         ) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
                                                 Box(
                                                     modifier = Modifier
                                                         .clip(RoundedCornerShape(4.dp))
-                                                        .background(Color(0x33F59E0B))
-                                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                                        .background(restBorder.copy(alpha = 0.22f))
+                                                        .padding(horizontal = 5.dp, vertical = 2.dp)
                                                 ) {
-                                                    Text("DESCANSO", color = Color(0xFFF59E0B), fontSize = 9.sp, fontWeight = FontWeight.Black)
+                                                    Text(
+                                                        text = if (isRestExpired) "DESCANSO VENCIDO" else "DESCANSO",
+                                                        color = restBorder,
+                                                        fontSize = 9.sp,
+                                                        fontWeight = FontWeight.Black
+                                                    )
                                                 }
                                                 Column(modifier = Modifier.weight(1f)) {
+                                                    val restDetail = if (isRestExpired) {
+                                                        "Descanso vencido"
+                                                    } else {
+                                                        "Descanso en ${telemetry.restStopMinutes}m"
+                                                    }
                                                     Text(
-                                                        text = "Descanso en ${telemetry.restStopMinutes}m • ${mapRestStop.first.name.ifEmpty { "Área de Servicio" }} (~${mapRestStop.second.roundToInt()} km)",
-                                                        color = Color(0xFFFDE68A),
+                                                        text = "$restDetail • ${mapRestStop.first.name.ifEmpty { "Área de Servicio" }} (~${mapRestStop.second.roundToInt()} km)",
+                                                        color = if (isRestExpired) Color(0xFFFECACA) else Color(0xFFFDE68A),
                                                         fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold
+                                                        fontWeight = FontWeight.Bold,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis
                                                     )
                                                 }
                                                 Button(
@@ -992,12 +1231,12 @@ fun AtsNavMainApp(
                                                             manualDestinationName = mapRestStop.first.name.ifEmpty { "Área de Descanso" }
                                                         }
                                                     },
-                                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF59E0B)),
-                                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                                                    colors = ButtonDefaults.buttonColors(containerColor = restBorder),
+                                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                                     shape = RoundedCornerShape(6.dp),
-                                                    modifier = Modifier.height(28.dp)
+                                                    modifier = Modifier.height(26.dp)
                                                 ) {
-                                                    Text("Desviar", color = Color(0xFF1E1B4B), fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                                    Text("Desviar", color = Color(0xFF0F172A), fontSize = 10.sp, fontWeight = FontWeight.Black)
                                                 }
                                             }
                                         }
@@ -1005,22 +1244,24 @@ fun AtsNavMainApp(
                                 }
                             }
 
-                            // 3. Botones Flotantes de Control (G8: muestra el modo al que CAMBIARÁ)
+                            // 3. Botones Flotantes de Control compactos (sin CFG duplicado)
                             Column(
                                 modifier = Modifier
                                     .align(Alignment.CenterEnd)
-                                    .padding(end = 16.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    .displayCutoutPadding()
+                                    .padding(end = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 // Selector explícito y visual de Modo de Cámara: 3D Perspectiva vs 2D Aéreo
                                 Card(
                                     colors = CardDefaults.cardColors(containerColor = Color(0xF0111827)),
-                                    shape = RoundedCornerShape(26.dp),
+                                    shape = RoundedCornerShape(22.dp),
                                     border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF334155))
                                 ) {
                                     Column(
-                                        modifier = Modifier.padding(3.dp),
-                                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                                        modifier = Modifier.padding(2.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         val is3D = viewMode == MapViewMode.MODE_3D_PERSPECTIVE
@@ -1029,8 +1270,8 @@ fun AtsNavMainApp(
                                         // Pastilla 3D
                                         Box(
                                             modifier = Modifier
-                                                .size(width = 46.dp, height = 34.dp)
-                                                .clip(RoundedCornerShape(20.dp))
+                                                .size(width = 42.dp, height = 28.dp)
+                                                .clip(RoundedCornerShape(16.dp))
                                                 .background(if (is3D) Color(0xFF0284C7) else Color.Transparent)
                                                 .clickable {
                                                     viewMode = MapViewMode.MODE_3D_PERSPECTIVE
@@ -1042,7 +1283,7 @@ fun AtsNavMainApp(
                                             Text(
                                                 "3D",
                                                 fontWeight = FontWeight.Black,
-                                                fontSize = 12.sp,
+                                                fontSize = 11.sp,
                                                 color = if (is3D) Color.White else Color(0xFF94A3B8)
                                             )
                                         }
@@ -1050,8 +1291,8 @@ fun AtsNavMainApp(
                                         // Pastilla 2D
                                         Box(
                                             modifier = Modifier
-                                                .size(width = 46.dp, height = 34.dp)
-                                                .clip(RoundedCornerShape(20.dp))
+                                                .size(width = 42.dp, height = 28.dp)
+                                                .clip(RoundedCornerShape(16.dp))
                                                 .background(if (is2D) Color(0xFF0284C7) else Color.Transparent)
                                                 .clickable {
                                                     viewMode = MapViewMode.MODE_2D_TOP_DOWN
@@ -1063,7 +1304,7 @@ fun AtsNavMainApp(
                                             Text(
                                                 "2D",
                                                 fontWeight = FontWeight.Black,
-                                                fontSize = 12.sp,
+                                                fontSize = 11.sp,
                                                 color = if (is2D) Color.White else Color(0xFF94A3B8)
                                             )
                                         }
@@ -1078,9 +1319,9 @@ fun AtsNavMainApp(
                                     containerColor = Color(0xFF1E293B),
                                     contentColor = Color.White,
                                     shape = CircleShape,
-                                    modifier = Modifier.size(50.dp)
+                                    modifier = Modifier.size(44.dp)
                                 ) {
-                                    Text("+", fontWeight = FontWeight.Black, fontSize = 24.sp)
+                                    Text("+", fontWeight = FontWeight.Black, fontSize = 20.sp)
                                 }
 
                                 // Botón Zoom -
@@ -1091,9 +1332,9 @@ fun AtsNavMainApp(
                                     containerColor = Color(0xFF1E293B),
                                     contentColor = Color.White,
                                     shape = CircleShape,
-                                    modifier = Modifier.size(50.dp)
+                                    modifier = Modifier.size(44.dp)
                                 ) {
-                                    Text("−", fontWeight = FontWeight.Black, fontSize = 24.sp)
+                                    Text("−", fontWeight = FontWeight.Black, fontSize = 20.sp)
                                 }
 
                                 // Botón Re-centrar en el Camión
@@ -1106,20 +1347,9 @@ fun AtsNavMainApp(
                                     containerColor = if (!isFollowingTruck) Color(0xFF0284C7) else Color(0xFF1E293B),
                                     contentColor = if (!isFollowingTruck) Color.White else Color(0xFF38BDF8),
                                     shape = CircleShape,
-                                    modifier = Modifier.size(50.dp)
+                                    modifier = Modifier.size(44.dp)
                                 ) {
-                                    Text("CTR", fontSize = 12.sp, fontWeight = FontWeight.Black)
-                                }
-
-                                // Botón de Diagnóstico Rápido G1
-                                FloatingActionButton(
-                                    onClick = { showDiagnostics = true },
-                                    containerColor = Color(0xFF1E293B),
-                                    contentColor = Color(0xFF38BDF8),
-                                    shape = CircleShape,
-                                    modifier = Modifier.size(50.dp)
-                                ) {
-                                    Text("CFG", fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                    Text("CTR", fontSize = 11.sp, fontWeight = FontWeight.Black)
                                 }
 
                                 // Botón de Estilo de Mapa
@@ -1134,9 +1364,9 @@ fun AtsNavMainApp(
                                     containerColor = Color(0xFF1E293B),
                                     contentColor = Color(0xFFC7F36B),
                                     shape = CircleShape,
-                                    modifier = Modifier.size(50.dp)
+                                    modifier = Modifier.size(44.dp)
                                 ) {
-                                    Text("STY", fontSize = 12.sp, fontWeight = FontWeight.Black)
+                                    Text("STY", fontSize = 11.sp, fontWeight = FontWeight.Black)
                                 }
                             }
 
@@ -1171,16 +1401,18 @@ fun AtsNavMainApp(
                             onRouteToRestStop = { poi ->
                                 val nearestNode = mapGraph?.findNearestNode(poi.x, poi.z)
                                 if (nearestNode != null && mapGraph?.nodes?.indices?.contains(nearestNode) == true) {
-                                    manualTargetNodeIndex = nearestNode
+                                    manualTargetNodeIndex = nodeOrNull(nearestNode)
                                     manualDestinationName = poi.name.ifEmpty { "Área de Descanso" }
                                     selectedTab = AppTab.MAPA
                                 }
-                            }
+                            },
+                            isAppInForeground = isAppInForeground
                         )
                     }
                     AppTab.BITACORA -> {
                         TripLogScreen(
-                            tripLogManager = tripLogManager
+                            tripLogManager = tripLogManager,
+                            tripLogVersion = tripLogVersion
                         )
                     }
                     AppTab.ACERCA_DE -> {
@@ -1193,6 +1425,7 @@ fun AtsNavMainApp(
                     selectedTab = selectedTab,
                     onTabSelected = { selectedTab = it },
                     telemetry = telemetry,
+                    isSocketConnected = isConnected,
                     onOpenDiagnostics = { showDiagnostics = true }
                 )
 
@@ -1206,13 +1439,30 @@ fun AtsNavMainApp(
                 if (showDiagnostics) {
                     TelemetryDiagnosticScreen(
                         telemetry = telemetry,
-                        onClose = { showDiagnostics = false }
+                        onClose = { showDiagnostics = false },
+                        mapGraph = mapGraph,
+                        serverHost = activeHost,
+                        isSocketConnected = isConnected,
+                        onDisconnect = {
+                            networkClient.disconnectWebSocket()
+                            hasActiveSession = false
+                            isConnected = false
+                            showDiagnostics = false
+                            activeToken = ""
+                            activeRoute = null
+                            isWrongWay = false
+                            isRecalculatingRoute = false
+                            pairError = null
+                            pairStatus = null
+                        }
                     )
                 }
             }
         }
     }
 }
+
+private fun nodeOrNull(node: Int): Int? = if (node >= 0) node else null
 
 // =====================================================================
 // COMPONENTES UI: NAVEGACIÓN, PESTAÑAS Y DIÁLOGOS (SISTEMA VISUAL DARK)
@@ -1223,43 +1473,50 @@ fun TopNavigationBar(
     selectedTab: AppTab,
     onTabSelected: (AppTab) -> Unit,
     telemetry: TelemetryData,
+    isSocketConnected: Boolean,
     onOpenDiagnostics: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color(0xF50C1013))
+            .displayCutoutPadding()
             .statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         // Branding + Status Badge
         Row(
+            modifier = Modifier.weight(1f, fill = false),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 text = "Telemetría GPS",
                 color = Color(0xFFF3F6F7),
                 fontWeight = FontWeight.Black,
-                fontSize = 16.sp
+                fontSize = 15.sp,
+                maxLines = 1
             )
 
             // Connection / Game status pill
             val isPaused = telemetry.gamePaused
-            val isLive = telemetry.connected && !isPaused
+            val isLive = isSocketConnected && telemetry.connected && !isPaused
             val badgeBg = when {
+                !isSocketConnected -> Color(0x33F59E0B)
                 isPaused -> Color(0x33F7C948)
                 isLive -> Color(0x33C7F36B)
                 else -> Color(0x33EF4444)
             }
             val badgeBorder = when {
+                !isSocketConnected -> Color(0xFFF59E0B)
                 isPaused -> Color(0xFFF7C948)
                 isLive -> Color(0xFFC7F36B)
                 else -> Color(0xFFEF4444)
             }
             val badgeText = when {
+                !isSocketConnected -> "Reconectando..."
                 isPaused -> "JUEGO EN PAUSA"
                 isLive -> "SIMULADOR CONECTADO"
                 else -> "DESCONECTADO"
@@ -1287,20 +1544,22 @@ fun TopNavigationBar(
                         color = badgeBorder,
                         fontWeight = FontWeight.Bold,
                         fontSize = 9.sp,
-                        letterSpacing = 0.5.sp
+                        letterSpacing = 0.5.sp,
+                        maxLines = 1
                     )
                 }
             }
         }
 
-        // Segmented Tabs: [ Mapa ] [ Telemetría ] [ Acerca de ]
+        // Segmented Tabs: [ Mapa ] [ Telemetría ] [ Bitácora ] [ Acerca de ]
         Row(
             modifier = Modifier
+                .padding(horizontal = 6.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(Color(0xFF151C21))
                 .border(1.dp, Color(0xFF222D35), RoundedCornerShape(10.dp))
                 .padding(3.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             NavigationTabButton("Mapa", selectedTab == AppTab.MAPA) { onTabSelected(AppTab.MAPA) }
@@ -1336,14 +1595,15 @@ fun NavigationTabButton(text: String, isSelected: Boolean, onClick: () -> Unit) 
                 RoundedCornerShape(7.dp)
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 6.dp),
+            .padding(horizontal = 10.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
             color = if (isSelected) Color(0xFFC7F36B) else Color(0xFF94A3B8),
             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-            fontSize = 12.sp
+            fontSize = 12.sp,
+            maxLines = 1
         )
     }
 }
@@ -1354,6 +1614,7 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
         modifier = modifier
             .fillMaxWidth()
             .background(Color(0xF50C1013))
+            .displayCutoutPadding()
             .navigationBarsPadding()
             .padding(horizontal = 20.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1386,10 +1647,10 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
                 )
             }
 
-            // Speed
+            // Speed (valor absoluto para no mostrar negativo en reversa)
             Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    text = "${telemetry.speedKmh.roundToInt()}",
+                    text = "${abs(telemetry.speedKmh).roundToInt()}",
                     color = Color(0xFFF3F6F7),
                     fontWeight = FontWeight.Black,
                     fontSize = 20.sp
@@ -1420,13 +1681,13 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
 
             // Fuel
             val fuelPct = if (telemetry.fuelCapacity > 0f) {
-                ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt()
+                ((telemetry.fuel / telemetry.fuelCapacity) * 100f).roundToInt().coerceIn(0, 100)
             } else 0
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 Text("FUEL", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF94A3B8))
                 Text(
                     text = "${telemetry.fuel.roundToInt()} L ($fuelPct%)",
-                    color = if (fuelPct < 15) Color(0xFFEF4444) else Color(0xFF94A3B8),
+                    color = if (telemetry.fuelCapacity > 0f && fuelPct < 15) Color(0xFFEF4444) else Color(0xFF94A3B8),
                     fontWeight = FontWeight.Medium,
                     fontSize = 12.sp
                 )
@@ -1471,14 +1732,16 @@ fun PairingScreen(
     pin: String,
     onPinChange: (String) -> Unit,
     isLoading: Boolean,
+    statusMessage: String?,
     errorMessage: String?,
     onClearSavedSession: () -> Unit,
     onConnect: (String) -> Unit
 ) {
     // Autodeteccion silenciosa de servidor activo; solo reconecta directo si ya hay sesion valida (< 48 h)
     var autoProbing by remember { mutableStateOf(errorMessage == null) }
-    val hasSavedSession = remember(ip, sessionRevision) {
-        authTokenStore.getValidToken(ip.trim()) != null
+    val cleanProbeHost = remember(ip) { sanitizeHostAndPort(ip, port).first }
+    val hasSavedSession = remember(cleanProbeHost, sessionRevision) {
+        authTokenStore.getValidToken(cleanProbeHost) != null
     }
 
     LaunchedEffect(Unit) {
@@ -1486,9 +1749,10 @@ fun PairingScreen(
             autoProbing = false
             return@LaunchedEffect
         }
-        val portNum = port.toIntOrNull() ?: 35500
-        val candidates = listOf("127.0.0.1", "192.168.42.129", "192.168.42.1", ip)
-            .map { it.trim() }
+        val portNum = port.filter { it.isDigit() }.toIntOrNull()?.takeIf { it in 1..65535 } ?: 35500
+        val savedHost = authTokenStore.getSavedHost()
+        val candidates = listOfNotNull(savedHost, "127.0.0.1", "192.168.42.129", "192.168.42.1", ip)
+            .map { sanitizeHostAndPort(it, port).first }
             .filter { it.isNotEmpty() }
             .distinct()
         for (host in candidates) {
@@ -1521,8 +1785,12 @@ fun PairingScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .displayCutoutPadding()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .imePadding()
             .verticalScroll(rememberScrollState())
-            .padding(32.dp),
+            .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
@@ -1534,12 +1802,12 @@ fun PairingScreen(
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 if (autoProbing || isLoading) {
-                    "Buscando servidor..."
+                    statusMessage ?: "Buscando servidor..."
                 } else {
                     "El PIN de 6 digitos del servidor PC se requiere en modo Wi-Fi y USB. La sesion se guarda durante 48 horas."
                 },
                 fontSize = 13.sp,
-                color = Color(0xFF94A3B8)
+                color = if (statusMessage != null) Color(0xFF38BDF8) else Color(0xFF94A3B8)
             )
             Spacer(modifier = Modifier.height(20.dp))
 
@@ -1589,7 +1857,9 @@ fun PairingScreen(
 
                 OutlinedTextField(
                     value = port,
-                    onValueChange = onPortChange,
+                    onValueChange = { raw ->
+                        onPortChange(raw.filter { it.isDigit() }.take(5))
+                    },
                     label = { Text("Puerto", color = Color(0xFF94A3B8)) },
                     modifier = Modifier.fillMaxWidth(),
                     textStyle = inputStyle,

@@ -362,35 +362,71 @@ fun calculateNavigationInstruction(
         }
     }
 
-    // 1. Encontrar el tramo actual más cercano: búsqueda con ventana adaptativa O(1)
+    // 1. Encontrar el tramo actual más cercano proyectando ortogonalmente sobre los segmentos
     var currentEdgeIdx = 0
     var minDistSq = Float.MAX_VALUE
+    var remainingOnCurrentEdge = edges[0].length
+
+    fun projectOntoEdge(edge: MapEdge): Pair<Float, Float> {
+        val poly = edge.polyline
+        if (poly.isEmpty()) return Pair(Float.MAX_VALUE, edge.length)
+        if (poly.size == 1) {
+            val pt = poly[0]
+            val dSq = (pt.x - truckX) * (pt.x - truckX) + (pt.z - truckZ) * (pt.z - truckZ)
+            return Pair(dSq, edge.length)
+        }
+        var bestSq = Float.MAX_VALUE
+        var bestTraveled = 0f
+        var accLen = 0f
+        for (pIdx in 0 until poly.size - 1) {
+            val p1 = poly[pIdx]
+            val p2 = poly[pIdx + 1]
+            val vx = p2.x - p1.x
+            val vz = p2.z - p1.z
+            val lenSq = vx * vx + vz * vz
+            val segLen = sqrt(lenSq)
+            val t = if (lenSq > 0.0001f) {
+                (((truckX - p1.x) * vx + (truckZ - p1.z) * vz) / lenSq).coerceIn(0f, 1f)
+            } else 0f
+            val px = p1.x + t * vx
+            val pz = p1.z + t * vz
+            val dSq = (truckX - px) * (truckX - px) + (truckZ - pz) * (truckZ - pz)
+            if (dSq < bestSq) {
+                bestSq = dSq
+                bestTraveled = accLen + t * segLen
+            }
+            accLen += segLen
+        }
+        val remaining = if (accLen > 0.1f) {
+            val fracRemaining = (1f - bestTraveled / accLen).coerceIn(0f, 1f)
+            edge.length * fracRemaining
+        } else {
+            edge.length
+        }
+        return Pair(bestSq, remaining)
+    }
 
     val isSameRoute = (cache != null && cache.lastRoute === route)
     val startSearch = if (isSameRoute) (cache!!.lastEdgeIdx - 2).coerceAtLeast(0) else 0
     val endSearch = if (isSameRoute) (cache!!.lastEdgeIdx + 8).coerceAtMost(edges.size - 1) else edges.size - 1
 
     for (i in startSearch..endSearch) {
-        val edge = edges[i]
-        for (pt in edge.polyline) {
-            val dSq = (pt.x - truckX) * (pt.x - truckX) + (pt.z - truckZ) * (pt.z - truckZ)
-            if (dSq < minDistSq) {
-                minDistSq = dSq
-                currentEdgeIdx = i
-            }
+        val (dSq, rem) = projectOntoEdge(edges[i])
+        if (dSq < minDistSq) {
+            minDistSq = dSq
+            currentEdgeIdx = i
+            remainingOnCurrentEdge = rem
         }
     }
 
     // Si la búsqueda local no encontró ningún tramo cercano (< 60m), hacer búsqueda global
     if (minDistSq > 3600f && (startSearch > 0 || endSearch < edges.size - 1)) {
         for (i in edges.indices) {
-            val edge = edges[i]
-            for (pt in edge.polyline) {
-                val dSq = (pt.x - truckX) * (pt.x - truckX) + (pt.z - truckZ) * (pt.z - truckZ)
-                if (dSq < minDistSq) {
-                    minDistSq = dSq
-                    currentEdgeIdx = i
-                }
+            val (dSq, rem) = projectOntoEdge(edges[i])
+            if (dSq < minDistSq) {
+                minDistSq = dSq
+                currentEdgeIdx = i
+                remainingOnCurrentEdge = rem
             }
         }
     }
@@ -417,7 +453,7 @@ fun calculateNavigationInstruction(
     for (i in currentEdgeIdx until edges.size - 1) {
         val eCurr = edges[i]
         val eNext = edges[i + 1]
-        distAcc += eCurr.length
+        distAcc += if (i == currentEdgeIdx) remainingOnCurrentEdge else eCurr.length
 
         if (eCurr.polyline.size >= 2 && eNext.polyline.size >= 2) {
             val p1 = eCurr.polyline[eCurr.polyline.size - 2]
@@ -440,12 +476,24 @@ fun calculateNavigationInstruction(
             while (diffDeg < -180.0) diffDeg += 360.0
 
             val isRamp = eNext.roadType.toInt() == 3
+            val isShortPrefab = (eCurr.roadType.toInt() == 3 && eCurr.length <= 38f) ||
+                (eNext.roadType.toInt() == 3 && eNext.length <= 38f)
             if (abs(diffDeg) >= 20.0 || isRamp) {
                 var matched = true
                 when {
-                    diffDeg > 120.0 || diffDeg < -120.0 -> {
+                    (diffDeg > 120.0 || diffDeg < -120.0) && !isShortPrefab -> {
                         nextManeuver = ManeuverType.U_TURN
                         maneuverTitle = "Cambio de sentido en U"
+                        targetLane = 0
+                    }
+                    isShortPrefab && diffDeg > 120.0 -> {
+                        nextManeuver = ManeuverType.SHARP_RIGHT
+                        maneuverTitle = "Gira a la derecha"
+                        targetLane = totalLanes - 1
+                    }
+                    isShortPrefab && diffDeg < -120.0 -> {
+                        nextManeuver = ManeuverType.SHARP_LEFT
+                        maneuverTitle = "Gira a la izquierda"
                         targetLane = 0
                     }
                     diffDeg > 55.0 -> {
@@ -489,11 +537,17 @@ fun calculateNavigationInstruction(
     }
 
     val isCurrentHidden = currentEdge.isHidden
+    if (nextManeuver == ManeuverType.STRAIGHT) {
+        distAcc += if (currentEdgeIdx == edges.size - 1) {
+            remainingOnCurrentEdge
+        } else {
+            edges.last().length
+        }
+    }
     if (isCurrentHidden && nextManeuver == ManeuverType.STRAIGHT) {
         maneuverTitle = "Camino Oculto / Atajo"
         maneuverSubtitle = "Tramo secreto no cartografiado"
     } else if (nextManeuver == ManeuverType.STRAIGHT) {
-        distAcc += edges.last().length
         maneuverTitle = "Continúa recto"
         targetLane = if (totalLanes > 2) totalLanes - 2 else totalLanes - 1 // Carril central/derecho
     }

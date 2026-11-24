@@ -29,6 +29,9 @@ Todas las modificaciones notables, correcciones de errores y nuevas funcionalida
 - **Correccion Geometrica de Prefabs 3D y Estabilidad:**
   - Eliminacion de picos triangulares y artefactos de proyeccion en prefabs dentro del renderizador 3D (`GpsMapCanvas.kt`).
   - Unificacion de version **v1.4.2 (Build 17)**, deteccion dinamica de Steam/ATS (`detect-ats.ps1`), fijacion de destinos manuales, persistencia de bitacora y gestion de memoria de audio (TTS) en Android.
+- **Correcciones Integrales Post-Auditoria (Servidor, Android, Lanzador e Instalador):**
+  - **Servidor (`server/`):** Conversion de rumbo SCS SDK antihorario a brujula horaria (`headingDegrees` CCW -> CW), correccion de offsets MMF (`TrailerAttached` en `6080`, `CruiseControlSpeed` en `988`, saneamiento `NaN`/`Infinity` en `ReadSnapshot`), deteccion real de `IsGameConnected`, soporte `--ats-dir` y descarga segura `503` durante generacion de mapa, y filtrado de interfaces virtuales/APIPA.
+  - **App Android (`android/`), Lanzador (`AtsGpsLauncher`) e Instalador (`AtsGpsInstaller`):** Cache en disco en streaming de `map_ats.bin`, gestion de ciclo de vida (`ON_STOP`/`ON_START`) con reconexion en ruta sin destruir navegacion, calculo metro a metro en `TurnByTurnCard`, ajustes de `TripLogScreen` y pantallas responsivas, correccion de deteccion de plugin/IP LAN en `AtsGpsLauncher`, verificacion de runtimes `.NET 10` y firewall `private,domain` en `AtsGpsInstaller`, y suite xUnit ampliada a `123/123` pruebas.
 
 ---
 

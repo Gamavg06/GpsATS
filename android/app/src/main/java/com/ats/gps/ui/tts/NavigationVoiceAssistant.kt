@@ -50,10 +50,10 @@ class NavigationVoiceAssistant(context: Context) : TextToSpeech.OnInitListener {
         if (milestone != null && milestone != lastAnnouncedDistance) {
             lastAnnouncedDistance = milestone
             val text = when (milestone) {
-                1000 -> "En un kilometro, $nextManeuver"
+                1000 -> "En un kilómetro, $nextManeuver"
                 500 -> "En 500 metros, $nextManeuver"
                 200 -> "En 200 metros, $nextManeuver"
-                50 -> "Atencion, $nextManeuver"
+                50 -> "Atención, $nextManeuver"
                 else -> nextManeuver
             }
             speak(text)
@@ -68,6 +68,10 @@ class NavigationVoiceAssistant(context: Context) : TextToSpeech.OnInitListener {
         if (isInitialized) {
             tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "NavGuidance")
         }
+    }
+
+    fun stopSpeaking() {
+        tts?.stop()
     }
 
     fun shutdown() {

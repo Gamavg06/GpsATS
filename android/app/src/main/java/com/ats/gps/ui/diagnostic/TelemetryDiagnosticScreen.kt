@@ -1,19 +1,24 @@
 package com.ats.gps.ui.diagnostic
 
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ats.gps.data.model.MapGraph
 import com.ats.gps.data.model.TelemetryData
 import kotlin.math.roundToInt
 
@@ -21,12 +26,40 @@ import kotlin.math.roundToInt
 fun TelemetryDiagnosticScreen(
     telemetry: TelemetryData,
     onClose: () -> Unit,
+    mapGraph: MapGraph? = null,
+    serverHost: String = "",
+    isSocketConnected: Boolean = false,
+    onDisconnect: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val versionInfo = remember(context) {
+        runCatching {
+            val pkgInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    PackageManager.PackageInfoFlags.of(0)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, 0)
+            }
+            val name = pkgInfo.versionName ?: "1.4.2"
+            val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pkgInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                pkgInfo.versionCode.toLong()
+            }
+            name to code
+        }.getOrDefault("1.4.2" to 17L)
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFF070B14))
+            .displayCutoutPadding()
             .systemBarsPadding()
             .padding(16.dp)
     ) {
@@ -37,25 +70,39 @@ fun TelemetryDiagnosticScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
                         text = "DIAGNÓSTICO DE TELEMETRÍA (G1)",
                         color = Color.White,
                         fontSize = 18.sp,
-                        fontWeight = FontWeight.Black
+                        fontWeight = FontWeight.Black,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "Canales crudos del SDK de SCS Software",
                         color = Color(0xFF94A3B8),
-                        fontSize = 12.sp
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
 
-                Button(
-                    onClick = onClose,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
-                ) {
-                    Text("Cerrar", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (onDisconnect != null) {
+                        Button(
+                            onClick = onDisconnect,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7F1D1D))
+                        ) {
+                            Text("Desconectar", color = Color(0xFFFCA5A5), fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Button(
+                        onClick = onClose,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B))
+                    ) {
+                        Text("Cerrar", color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
+                    }
                 }
             }
 
@@ -67,11 +114,40 @@ fun TelemetryDiagnosticScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 item {
-                    DiagnosticCard(title = "0. VERSIONES Y COMPATIBILIDAD DEL SISTEMA (H0)") {
-                        DiagRow("App Android", "v1.4.2 (Build 17)", Color(0xFF38BDF8))
-                        DiagRow("Servidor PC", "v1.4.2", Color(0xFF22C55E))
-                        DiagRow("Mapa Binario", "map_ats.bin (v1.4.2)", Color(0xFF22C55E))
-                        DiagRow("Compatibilidad", "OK COMPATIBLE (Sin discrepancias)", Color(0xFF22C55E))
+                    DiagnosticCard(title = "0. VERSIONES Y ESTADO DEL SISTEMA (H0)") {
+                        DiagRow(
+                            "App Android",
+                            "v${versionInfo.first} (Build ${versionInfo.second})",
+                            Color(0xFF38BDF8)
+                        )
+                        val hostLabel = serverHost.ifEmpty { "Desconocido" }
+                        DiagRow(
+                            "Servidor PC",
+                            if (isSocketConnected) "$hostLabel (WS Activo)" else "$hostLabel (Reconectando)",
+                            if (isSocketConnected) Color(0xFF22C55E) else Color(0xFFF59E0B)
+                        )
+                        DiagRow(
+                            "Mapa Binario (map_ats.bin)",
+                            if (mapGraph != null) {
+                                "${mapGraph.nodes.size} nodos • ${mapGraph.edges.size} aristas"
+                            } else {
+                                "No cargado"
+                            },
+                            if (mapGraph != null) Color(0xFF22C55E) else Color(0xFFEF4444)
+                        )
+                        DiagRow(
+                            "Estado Operativo",
+                            when {
+                                mapGraph != null && isSocketConnected && telemetry.connected -> "OK OPERATIVO"
+                                mapGraph != null && isSocketConnected -> "ESPERANDO SIMULADOR"
+                                else -> "RECONECTANDO"
+                            },
+                            when {
+                                mapGraph != null && isSocketConnected && telemetry.connected -> Color(0xFF22C55E)
+                                mapGraph != null && isSocketConnected -> Color(0xFFF59E0B)
+                                else -> Color(0xFFEF4444)
+                            }
+                        )
                     }
                 }
 
@@ -134,7 +210,7 @@ fun TelemetryDiagnosticScreen(
                         DiagRow("Y Mundial / Altitud (truckY)", String.format("%.2f m", telemetry.posY), Color(0xFF38BDF8))
                         DiagRow("Z Mundial (truckZ)", String.format("%.2f", telemetry.posZ))
                         DiagRow("Heading SCS", String.format("%.4f (%.1f°)", telemetry.heading, telemetry.headingDegrees))
-                        DiagRow("Pitch / Roll", String.format("%.2f° / %.2f°", Math.toDegrees(telemetry.pitch), Math.toDegrees(telemetry.roll)))
+                        DiagRow("Pitch / Roll", String.format("%.2f° / %.2f°", telemetry.pitch * 360.0, telemetry.roll * 360.0))
                     }
                 }
 
@@ -188,13 +264,24 @@ private fun DiagRow(label: String, value: String, valueColor: Color = Color.Whit
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = label, color = Color(0xFF94A3B8), fontSize = 12.sp)
+        Text(
+            text = label,
+            color = Color(0xFF94A3B8),
+            fontSize = 12.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 10.dp)
+        )
         Text(
             text = value,
             color = valueColor,
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }

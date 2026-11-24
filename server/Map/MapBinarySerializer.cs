@@ -5,6 +5,18 @@ using System.Text;
 
 namespace AtsGpsServer.Map
 {
+    public readonly record struct MapHeaderInfo(
+        uint Version,
+        uint NodeCount,
+        uint EdgeCount,
+        uint CityCount,
+        uint CompanyCount,
+        uint PoiCount,
+        float MinX,
+        float MaxX,
+        float MinZ,
+        float MaxZ);
+
     public static class MapBinarySerializer
     {
         private static readonly byte[] Magic = Encoding.ASCII.GetBytes("ATSMAP03");
@@ -27,7 +39,7 @@ namespace AtsGpsServer.Map
                 }
 
                 Span<byte> header = stackalloc byte[12];
-                using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 int totalRead = 0;
                 while (totalRead < header.Length)
                 {
@@ -46,6 +58,62 @@ namespace AtsGpsServer.Map
 
                 uint version = BitConverter.ToUInt32(header.Slice(8, 4));
                 return version == expectedVersion;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static bool TryReadHeader(string filePath, out MapHeaderInfo headerInfo)
+        {
+            headerInfo = default;
+            if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var info = new FileInfo(filePath);
+                if (info.Length < 44)
+                {
+                    return false;
+                }
+
+                using var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new BinaryReader(fs, Encoding.UTF8, leaveOpen: false);
+
+                byte[] magic = reader.ReadBytes(8);
+                if (magic.Length < 8)
+                {
+                    return false;
+                }
+
+                string magicStr = Encoding.ASCII.GetString(magic);
+                if (magicStr != "ATSMAP03" && magicStr != "ATSMAP02")
+                {
+                    return false;
+                }
+
+                uint version = reader.ReadUInt32();
+                if (version < 1 || version > 3)
+                {
+                    return false;
+                }
+
+                uint nodeCount = reader.ReadUInt32();
+                uint edgeCount = reader.ReadUInt32();
+                uint cityCount = reader.ReadUInt32();
+                uint companyCount = reader.ReadUInt32();
+                uint poiCount = magicStr == "ATSMAP03" ? reader.ReadUInt32() : 0;
+                float minX = reader.ReadSingle();
+                float maxX = reader.ReadSingle();
+                float minZ = reader.ReadSingle();
+                float maxZ = reader.ReadSingle();
+
+                headerInfo = new MapHeaderInfo(version, nodeCount, edgeCount, cityCount, companyCount, poiCount, minX, maxX, minZ, maxZ);
+                return true;
             }
             catch
             {

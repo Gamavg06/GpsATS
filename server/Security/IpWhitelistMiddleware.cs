@@ -61,8 +61,8 @@ namespace AtsGpsServer.Security
                 // 192.168.0.0/16
                 if (b0 == 192 && b1 == 168) return true;
 
-                // 169.254.0.0/16 (Link-Local)
-                if (b0 == 169 && b1 == 254) return true;
+                // 169.254.0.0/16 (APIPA / Link-Local) rechazado por consistencia con RequestSecurityMiddleware
+                if (b0 == 169 && b1 == 254) return false;
             }
             else if (ip.AddressFamily == AddressFamily.InterNetworkV6)
             {

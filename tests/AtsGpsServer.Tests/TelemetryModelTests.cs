@@ -17,8 +17,8 @@ namespace AtsGpsServer.Tests
                 PosX = -104000.5,
                 PosY = 45.2,
                 PosZ = -53000.1,
-                Heading = 0.25, // Oeste (-X)
-                HeadingDegrees = 90.0,
+                Heading = 0.25, // Oeste (-X) en SCS -> 270.0° CW en brujula Android
+                HeadingDegrees = 270.0,
                 Pitch = 0.01,
                 Roll = 0.0,
                 SpeedKmh = 88.5f,

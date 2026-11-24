@@ -20,7 +20,8 @@ object AStarRouter {
         startNode: Int,
         targetNode: Int,
         headingDeg: Float = Float.NaN,
-        initialEdge: MapEdge? = null
+        initialEdge: MapEdge? = null,
+        isCancelled: () -> Boolean = { false }
     ): RouteResult? {
         val nodeCount = graph.nodes.size
         if (nodeCount == 0 || startNode !in 0 until nodeCount || targetNode !in 0 until nodeCount) {
@@ -29,18 +30,22 @@ object AStarRouter {
         if (startNode == targetNode) {
             return RouteResult(listOf(startNode), emptyList(), 0f)
         }
+        if (isCancelled()) return null
 
-        val route = executeAStar(graph, startNode, targetNode, nodeCount, headingDeg, initialEdge)
+        val route = executeAStar(graph, startNode, targetNode, nodeCount, headingDeg, initialEdge, isCancelled)
         if (route != null) return route
+        if (isCancelled()) return null
 
         // Si el nodo exacto esta desconectado o en sentido contrario, buscar un nodo adyacente conectado
         val candidateStarts = graph.adjacency[startNode]?.map { it.toNodeIndex }?.take(4) ?: emptyList()
         for (cand in candidateStarts) {
+            if (isCancelled()) return null
             if (cand in 0 until nodeCount && cand != targetNode) {
-                val altRoute = executeAStar(graph, cand, targetNode, nodeCount, headingDeg, initialEdge)
+                val altRoute = executeAStar(graph, cand, targetNode, nodeCount, headingDeg, initialEdge, isCancelled)
                 if (altRoute != null) return altRoute
             }
         }
+        if (isCancelled()) return null
 
         // Busqueda de respaldo conservando headingDeg e initialEdge (evitando giros atras)
         val startPt = graph.nodes[startNode]
@@ -54,12 +59,14 @@ object AStarRouter {
                 } else Float.MAX_VALUE
             }
         for (edge in nearbyStartEdges.take(6)) {
+            if (isCancelled()) return null
             val cand = edge.fromNodeIndex
             if (cand in 0 until nodeCount && cand != startNode && cand != targetNode) {
-                val altRoute = executeAStar(graph, cand, targetNode, nodeCount, headingDeg, initialEdge)
+                val altRoute = executeAStar(graph, cand, targetNode, nodeCount, headingDeg, initialEdge, isCancelled)
                 if (altRoute != null) return altRoute
             }
         }
+        if (isCancelled()) return null
 
         // Busqueda de respaldo: aristas cercanas a targetNode (< 350m)
         val targetPt = graph.nodes[targetNode]
@@ -73,22 +80,25 @@ object AStarRouter {
                 } else Float.MAX_VALUE
             }
         for (edge in nearbyTargetEdges.take(6)) {
+            if (isCancelled()) return null
             val candTarget = edge.toNodeIndex
             if (candTarget in 0 until nodeCount && candTarget != targetNode && candTarget != startNode) {
-                val altRoute = executeAStar(graph, startNode, candTarget, nodeCount, headingDeg, initialEdge)
+                val altRoute = executeAStar(graph, startNode, candTarget, nodeCount, headingDeg, initialEdge, isCancelled)
                 if (altRoute != null) return altRoute
             }
         }
+        if (isCancelled()) return null
 
         // Ultimo recurso si no existe ruta hacia adelante (callejon sin salida): relajar headingDeg
         if (!headingDeg.isNaN() || initialEdge != null) {
-            val fallbackDirect = executeAStar(graph, startNode, targetNode, nodeCount, Float.NaN, null)
+            val fallbackDirect = executeAStar(graph, startNode, targetNode, nodeCount, Float.NaN, null, isCancelled)
             if (fallbackDirect != null) return fallbackDirect
 
             for (edge in nearbyStartEdges.take(6)) {
+                if (isCancelled()) return null
                 val cand = edge.fromNodeIndex
                 if (cand in 0 until nodeCount && cand != startNode && cand != targetNode) {
-                    val altRoute = executeAStar(graph, cand, targetNode, nodeCount, Float.NaN, null)
+                    val altRoute = executeAStar(graph, cand, targetNode, nodeCount, Float.NaN, null, isCancelled)
                     if (altRoute != null) return altRoute
                 }
             }
@@ -103,7 +113,8 @@ object AStarRouter {
         targetNode: Int,
         nodeCount: Int,
         headingDeg: Float,
-        initialEdge: MapEdge?
+        initialEdge: MapEdge?,
+        isCancelled: () -> Boolean
     ): RouteResult? {
         val adjacency = graph.adjacency
         val nodes = graph.nodes
@@ -134,6 +145,7 @@ object AStarRouter {
         var steps = 0
 
         while (!openSet.isEmpty() && steps++ < maxSteps) {
+            if ((steps and 511) == 0 && isCancelled()) return null
             val currentScore = openSet.poll() ?: break
             val current = currentScore.nodeIndex
 
