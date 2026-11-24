@@ -46,11 +46,135 @@ private const val MIT_PERMISSION_TEXT =
     "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE " +
     "SOFTWARE."
 
-private val RENCLOUD_MIT_NOTICE =
-    "Copyright (c) 2018-2024 RenCloud / scs-sdk-plugin contributors\n\n$MIT_PERMISSION_TEXT"
+private val RENCLOUD_MIT_NOTICE = """
+The MIT License (MIT)
 
-private val SCS_SDK_MIT_NOTICE =
-    "SCS SDK\nCopyright (C) 2016 SCS Software\n\n$MIT_PERMISSION_TEXT"
+Copyright (c) 2014 Hans
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+""".trimIndent()
+
+private val SCS_SDK_LICENSE_NOTICE = """
+SCS SDK
+Copyright (C) 2016 SCS Software
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+""".trimIndent()
+
+private val GISDEFLATE_LICENSE_NOTICE = """
+MIT License
+
+Copyright (c) 2024 skzk
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+===
+
+MIT License
+
+Copyright (c) Microsoft Corporation.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE
+
+===
+
+Copyright 2016 Eric Biggers
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation files
+(the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+SPDX-FileCopyrightText: Copyright (c) 2020, 2021, 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+""".trimIndent()
 
 private val APP_MIT_NOTICE =
     "Copyright (c) 2026 Gamaliel Velazquez Galicia (SGNIA)\n\n$MIT_PERMISSION_TEXT"
@@ -265,54 +389,73 @@ private fun ThirdPartyNoticesCard(
 
         NoticeItem(
             title = "RenCloud scs-sdk-plugin (scs-telemetry.dll)",
-            license = "Licencia MIT",
-            description = "Copyright (c) 2018-2024 RenCloud / scs-sdk-plugin contributors. Plugin nativo instalado en el simulador para publicar telemetria en memoria compartida.",
+            license = "The MIT License (MIT)",
+            description = "The MIT License (MIT) - Copyright (c) 2014 Hans. Plugin nativo instalado en el simulador para publicar telemetria en memoria compartida.",
             fullLicenseText = RENCLOUD_MIT_NOTICE,
             initiallyExpanded = true
         )
 
         NoticeItem(
             title = "SCS Software Telemetry SDK",
-            license = "Licencia MIT",
-            description = "Copyright (C) 2016 SCS Software. SDK y encabezados oficiales de referencia de memoria compartida para American Truck Simulator y ETS2.",
-            fullLicenseText = SCS_SDK_MIT_NOTICE
+            license = "SCS SDK",
+            description = "SCS SDK - Copyright (C) 2016 SCS Software. SDK y encabezados oficiales de referencia de memoria compartida para American Truck Simulator y ETS2.",
+            fullLicenseText = SCS_SDK_LICENSE_NOTICE
         )
 
         NoticeItem(
             title = "TruckLib (sk-zk)",
-            license = "GNU GPL-2.0 (solo servidor PC)",
-            description = "Biblioteca de lectura de archivos .scs y extraccion cartografica utilizada exclusivamente en el servidor PC (AtsGpsServer). No se incluye en la app Android. Codigo fuente completo disponible en GitHub.",
+            license = "GNU General Public License v2.0 (solo servidor PC)",
+            description = "Copyright (C) 1989, 1991 Free Software Foundation, Inc. Biblioteca de lectura de archivos .scs y extraccion cartografica utilizada exclusivamente en el servidor PC (AtsGpsServer). No se incluye en la app Android. Fuente en $PROJECT_GITHUB_URL.",
             linkLabel = "Ver codigo fuente del proyecto en GitHub ($PROJECT_GITHUB_URL)",
             linkUrl = PROJECT_GITHUB_URL
         )
 
         NoticeItem(
-            title = "RBush / Sprache / GisDeflate / System.IO.Hashing",
-            license = "Licencia MIT (servidor PC)",
-            description = "Bibliotecas auxiliares de indice espacial, analisis sintactico, descompresion y hash utilizadas por el servidor PC AtsGpsServer y TruckLib bajo licencia MIT."
+            title = "RBush (4.0.0)",
+            license = "MIT (servidor PC)",
+            description = "Copyright (c) 2017 viceroypenguin / Copyright © 2017-2024 Turning Code, LLC (and others). Indice espacial R-tree utilizado exclusivamente en el servidor PC AtsGpsServer."
+        )
+
+        NoticeItem(
+            title = "Sprache (2.3.1)",
+            license = "MIT (servidor PC)",
+            description = "Copyright (c) 2011 Nicholas Blumhardt / Copyright Sprache Contributors 2017. Biblioteca de analisis sintactico utilizada exclusivamente en el servidor PC AtsGpsServer."
+        )
+
+        NoticeItem(
+            title = "GisDeflate (1.0.2)",
+            license = "MIT / Apache-2.0 (servidor PC)",
+            description = "Copyright (c) 2024 skzk (MIT); Copyright (c) Microsoft Corporation. (MIT); Copyright 2016 Eric Biggers (MIT); Copyright (c) 2020, 2021, 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved. (Apache-2.0). Descompresion utilizada exclusivamente en el servidor PC AtsGpsServer.",
+            fullLicenseText = GISDEFLATE_LICENSE_NOTICE
+        )
+
+        NoticeItem(
+            title = "System.IO.Hashing",
+            license = "MIT (servidor PC)",
+            description = "Copyright (c) .NET Foundation and Contributors / © Microsoft Corporation. All rights reserved. Calculo de hashes utilizado exclusivamente en el servidor PC AtsGpsServer."
         )
 
         NoticeItem(
             title = "AndroidX & Jetpack Compose (Google / AOSP)",
-            license = "Apache 2.0",
+            license = "Apache-2.0",
             description = "Copyright (C) The Android Open Source Project. Kit de interfaz declarativa, componentes Material 3 y ciclo de vida para Android."
         )
 
         NoticeItem(
             title = "OkHttp & Okio (Square, Inc.)",
-            license = "Apache 2.0",
-            description = "Copyright 2013-2019 Square, Inc. Cliente HTTP/HTTPS, WebSocket y manejo de flujos I/O para telemetria en tiempo real."
+            license = "Apache-2.0",
+            description = "OkHttp: Copyright 2019 Square, Inc. (Apache-2.0). Okio: Copyright 2013 Square, Inc. (Apache-2.0). Cliente HTTP/HTTPS, WebSocket y manejo de flujos I/O para telemetria en tiempo real."
         )
 
         NoticeItem(
             title = "Kotlin & Coroutines (JetBrains)",
-            license = "Apache 2.0",
-            description = "Copyright 2010-2024 JetBrains s.r.o. Biblioteca estandar de Kotlin y concurrencia asincrona estructurada."
+            license = "Apache-2.0",
+            description = "Copyright 2010-2024 JetBrains s.r.o. and Kotlin Programming Language contributors. Biblioteca estandar de Kotlin y concurrencia asincrona estructurada."
         )
 
         NoticeItem(
             title = "Android SDK Platform-Tools (adb)",
-            license = "Apache 2.0 (opcional)",
+            license = "Apache-2.0 (opcional)",
             description = "Copyright (C) Google LLC. Componente externo opcional en PC para tunel USB mediante adb reverse sin red Wi-Fi."
         )
     }

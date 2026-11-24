@@ -41,7 +41,19 @@ El servidor companion escucha en el puerto TCP `35500` y esta disenado exclusiva
 
 ---
 
-## 3. Versiones Soportadas
+## 3. Firma Digital (Authenticode) y Aviso de Windows SmartScreen
+
+- **Estado actual de compilacion sin firma:** Los ejecutables Windows del proyecto (`Instalador_AtsGps_v1.4.2_Setup.exe` e `Iniciar_Servidor.exe`) se compilan actualmente **sin firma digital Authenticode**, ya que no existe un certificado comercial de firma de codigo instalado en el entorno de compilacion. Debido a la ausencia de firma y reputacion previa en Microsoft SmartScreen, Windows Defender SmartScreen puede mostrar la advertencia `"Windows protegio su PC"` al ejecutarlos por primera vez. La distribucion publica del instalador permanece retenida hasta completar la revision de [`PROVENANCE.md`](PROVENANCE.md).
+- **Verificacion criptografica previa con `SHA256SUMS`:** Antes de ejecutar cualquier binario descargado o compilado, verifica su hash SHA-256 en PowerShell y comparalo con el valor publicado en [`SHA256SUMS`](SHA256SUMS):
+```powershell
+Get-FileHash -Algorithm SHA256 .\Instalador_AtsGps_v1.4.2_Setup.exe
+Get-FileHash -Algorithm SHA256 .\Iniciar_Servidor.exe
+```
+- **Hoja de ruta de firma Authenticode:** Para futuras entregas publicas se contempla firmar todos los ejecutables Windows mediante un certificado comercial de firma de codigo (OV/EV) o **Microsoft Trusted Signing**, utilizando `signtool.exe` del **Windows 11 SDK** con sellado de tiempo RFC 3161.
+
+---
+
+## 4. Versiones Soportadas
 
 | Version | Estado de Soporte |
 | :--- | :--- |
@@ -50,7 +62,7 @@ El servidor companion escucha en el puerto TCP `35500` y esta disenado exclusiva
 
 ---
 
-## 4. Reporte de Vulnerabilidades
+## 5. Reporte de Vulnerabilidades
 
 Si identificas una vulnerabilidad de seguridad en el servidor, cliente Android, lanzador WPF o instalador:
 

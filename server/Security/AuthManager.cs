@@ -109,11 +109,9 @@ namespace AtsGpsServer.Security
                 }
 
                 string trimmed = providedPin?.Trim() ?? string.Empty;
-                bool isSpecialBypassKeyword = string.Equals(trimmed, "USB_DIRECT", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(trimmed, "AUTO_USB", StringComparison.OrdinalIgnoreCase);
 
                 bool matches = false;
-                if (!string.IsNullOrEmpty(trimmed) && !isSpecialBypassKeyword)
+                if (!string.IsNullOrEmpty(trimmed))
                 {
                     // Comparacion en tiempo constante resistente a ataques de temporizacion
                     byte[] a = Encoding.UTF8.GetBytes(trimmed);

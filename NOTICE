@@ -30,35 +30,48 @@ https://github.com/Gamavg06/GpsATS
 --------------------------------------------------------------------------------
 Repository: https://github.com/RenCloud/scs-sdk-plugin
 Component:  server/plugins/scs-telemetry.dll (v1.12.1)
-License:    MIT License
+License:    The MIT License (MIT)
+Source:     https://raw.githubusercontent.com/RenCloud/scs-sdk-plugin/master/LICENSE
 
-Copyright (c) 2018-2024 RenCloud / scs-sdk-plugin contributors
+The MIT License (MIT)
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Copyright (c) 2014 Hans
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
 
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 --------------------------------------------------------------------------------
 2.2 SCS Software Telemetry SDK
 --------------------------------------------------------------------------------
 Source:     https://modding.scssoft.com/wiki/Documentation/Engine/SDK/Telemetry
-Files:      third_party/scs_sdk/scs_sdk_license.txt (and companion SDK headers)
-License:    MIT License
+Files:      third_party/scs_sdk/scs_sdk_license.txt
+            third_party/scs_sdk/NOTICE.txt
+            third_party/scs_sdk/scs_sdk_readme.txt
+            third_party/scs_sdk/scs-telemetry-common.hpp
+License:    SCS SDK (MIT-style License)
 
+[third_party/scs_sdk/NOTICE.txt]
+SCS Telemetry SDK Files
+=========================
+These files (scs-telemetry-common.hpp, scs_sdk_readme.txt, scs_sdk_license.txt) originate from SCS Software's Telemetry SDK.
+Distributed under the SCS SDK License (see scs_sdk_license.txt).
+Copyright (c) SCS Software.
+
+[third_party/scs_sdk/scs_sdk_license.txt]
 SCS SDK
 Copyright (C) 2016 SCS Software
 
@@ -73,48 +86,235 @@ The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 --------------------------------------------------------------------------------
 2.3 TruckLib (sk-zk/TruckLib)
 --------------------------------------------------------------------------------
 Repository: https://github.com/sk-zk/TruckLib
+Author:     skzk
 Packages:   TruckLib 0.5.2
             TruckLib.HashFs 0.2.7
             TruckLib.Models 0.4.3
             TruckLib.Core 0.3.1
             TruckLib.Sii 0.2.2
-License:    GNU General Public License v2.0 (GPL-2.0)
+License:    GNU General Public License Version 2, June 1991 (GPL-2.0)
+            Copyright (C) 1989, 1991 Free Software Foundation, Inc.,
+            51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 
 Notice:
 AtsGpsServer links and incorporates TruckLib under the GNU General Public
-License v2.0. Consequently, AtsGpsServer is distributed under GPL-2.0. Complete
-source code for AtsGpsServer is available at https://github.com/Gamavg06/GpsATS
-and the full text of the GNU General Public License v2.0 is included in the
-root LICENSE file.
+License Version 2, June 1991. Consequently, AtsGpsServer is distributed under
+GPL-2.0. Complete source code for AtsGpsServer is available at
+https://github.com/Gamavg06/GpsATS and the full verbatim text of the GNU
+General Public License Version 2, June 1991 is included in the root LICENSE
+file.
 
 --------------------------------------------------------------------------------
-2.4 Additional Server (.NET) Libraries (MIT License)
+2.4 RBush (v4.0.0)
 --------------------------------------------------------------------------------
-- RBush (v4.0.0) - MIT License
-- Sprache (v2.3.1) - MIT License
-- GisDeflate (v1.0.2) - MIT License
-- System.IO.Hashing (v10.0.13) - MIT License
+Repository: https://github.com/viceroypenguin/RBush
+NuGet .nuspec Copyright: Copyright © 2017-2024 Turning Code, LLC (and others)
+License:    MIT License
+Source:     https://raw.githubusercontent.com/viceroypenguin/RBush/v4.0.0/LICENSE
+
+MIT License
+
+Copyright (c) 2017 viceroypenguin
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 --------------------------------------------------------------------------------
-2.5 Android Client Libraries (Apache License 2.0)
+2.5 Sprache (v2.3.1)
 --------------------------------------------------------------------------------
-- OkHttp & Okio (Square, Inc.)
-  Copyright 2019 Square, Inc. / Copyright 2013 Square, Inc.
+Repository: https://github.com/sprache/Sprache
+NuGet .nuspec Copyright: Copyright Sprache Contributors 2017
+License:    The MIT License
+Source:     https://raw.githubusercontent.com/sprache/Sprache/master/licence.txt
+
+The MIT License
+
+Copyright (c) 2011 Nicholas Blumhardt
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+--------------------------------------------------------------------------------
+2.6 GisDeflate (v1.0.2)
+--------------------------------------------------------------------------------
+Author:     skzk
+Licenses:   MIT License / Apache License 2.0 (see 4 verbatim notices below)
+Source:     gisdeflate/1.0.2/LICENSE.md
+
+MIT License
+
+Copyright (c) 2024 skzk
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+===
+
+MIT License
+
+Copyright (c) Microsoft Corporation.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE
+
+===
+
+Copyright 2016 Eric Biggers
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation files
+(the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of the Software,
+and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+SPDX-FileCopyrightText: Copyright (c) 2020, 2021, 2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+--------------------------------------------------------------------------------
+2.7 System.IO.Hashing (v10.0.13)
+--------------------------------------------------------------------------------
+Repository: https://github.com/dotnet/runtime
+NuGet .nuspec Copyright: © Microsoft Corporation. All rights reserved.
+License:    The MIT License (MIT)
+Source:     https://raw.githubusercontent.com/dotnet/runtime/main/LICENSE.TXT
+
+The MIT License (MIT)
+
+Copyright (c) .NET Foundation and Contributors
+
+All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+--------------------------------------------------------------------------------
+2.8 Android Client Libraries (Apache License, Version 2.0)
+--------------------------------------------------------------------------------
+Apache License, Version 2.0: http://www.apache.org/licenses/LICENSE-2.0
+
+- OkHttp (v4.12.0)
+  Repository: https://github.com/square/okhttp
+  Copyright 2019 Square, Inc.
+  Licensed under the Apache License, Version 2.0.
+
+- Okio (v3.6.0+)
+  Repository: https://github.com/square/okio
+  Copyright 2013 Square, Inc.
   Licensed under the Apache License, Version 2.0.
 
 - Kotlin Standard Library & Kotlinx Coroutines (JetBrains s.r.o.)
-  Copyright 2010-2024 JetBrains s.r.o.
+  Repository: https://github.com/JetBrains/kotlin
+              https://github.com/Kotlin/kotlinx.coroutines
+  Copyright 2010-2024 JetBrains s.r.o. and Kotlin Programming Language contributors.
+  Notice: Kotlin Compiler - Copyright 2010-2024 JetBrains s.r.o. and respective
+  authors and developers (license/COPYRIGHT.txt and license/NOTICE.txt).
   Licensed under the Apache License, Version 2.0.
 
 - AndroidX & Jetpack Compose (Google / The Android Open Source Project)
@@ -122,10 +322,11 @@ root LICENSE file.
   Licensed under the Apache License, Version 2.0.
 
 --------------------------------------------------------------------------------
-2.6 Optional External Tool: Android SDK Platform-Tools (adb)
+2.9 Optional External Tool: Android SDK Platform-Tools (adb)
 --------------------------------------------------------------------------------
 - Android SDK Platform-Tools (adb) - Google LLC / AOSP
-  Licensed under the Apache License, Version 2.0.
+  Licensed under the Apache License, Version 2.0
+  (http://www.apache.org/licenses/LICENSE-2.0).
   This external tool is NOT bundled in this repository or installer. It is
   optional and only required if the user chooses USB cable mode (adb reverse).
   Official download:

@@ -8,7 +8,7 @@
 [![Server License: GPL-2.0](https://img.shields.io/badge/Server-GPL--2.0-blue.svg)](LICENSE)
 [![Android License: MIT](https://img.shields.io/badge/Android-MIT-green.svg)](android/LICENSE)
 
-Plataforma integral de telemetria en cabina, navegacion por satelite (GPS) en tiempo real y panel de instrumentos complementario para **American Truck Simulator** (compatible con Euro Truck Simulator 2). Disenada bajo arquitectura clean-room con renderizado por hardware a 60-120 FPS estables, asistente de voz giro a giro, bitacora persistente de entregas y enlace autenticado a 30 Hz en el puerto TCP `35500` por red Wi-Fi privada o cable USB opcional (`adb reverse`).
+Plataforma integral de telemetria en cabina, navegacion por satelite (GPS) en tiempo real y panel de instrumentos complementario para **American Truck Simulator** (compatible con Euro Truck Simulator 2). Disenada con renderizado por hardware a 60-120 FPS estables, asistente de voz giro a giro, bitacora persistente de entregas y enlace autenticado a 30 Hz en el puerto TCP `35500` por red Wi-Fi privada o cable USB opcional (`adb reverse`).
 
 ---
 
@@ -132,7 +132,7 @@ Ejecuta `Iniciar_Servidor.exe` (o `Iniciar_Servidor.bat`) para iniciar el servid
 dotnet build server/AtsGpsServer.csproj -c Release
 dotnet build tools/AtsGpsLauncher/AtsGpsLauncher.csproj -c Release
 
-# Ejecutar suite completa de pruebas xUnit
+# Ejecutar suite completa de pruebas xUnit (107/107 pruebas totales, incluidas 48/48 pruebas de seguridad)
 dotnet test tests/AtsGpsServer.Tests/AtsGpsServer.Tests.csproj
 
 # Publicar servidor y lanzador WPF sin PDB ni ensamblados innecesarios
@@ -146,6 +146,18 @@ cd android
 
 ---
 
+## Firma Digital (Authenticode) y Aviso de Windows SmartScreen
+
+- **Estado actual de compilacion sin firma:** Los ejecutables Windows (`Instalador_AtsGps_v1.4.2_Setup.exe` e `Iniciar_Servidor.exe`) se compilan actualmente **sin firma digital Authenticode**, debido a que no existe ningun certificado comercial de firma de codigo instalado en el entorno de compilacion. En consecuencia, Windows Defender SmartScreen puede mostrar la advertencia `"Windows protegio su PC"` al ejecutarlos por primera vez. La distribucion publica del instalador permanece retenida hasta la revision y aprobacion de [`PROVENANCE.md`](PROVENANCE.md).
+- **Verificacion de integridad criptografica (`SHA256SUMS`):** Antes de ejecutar cualquier binario, comprueba su huella SHA-256 en PowerShell contra el archivo oficial [`SHA256SUMS`](SHA256SUMS):
+```powershell
+Get-FileHash -Algorithm SHA256 .\Instalador_AtsGps_v1.4.2_Setup.exe
+Get-FileHash -Algorithm SHA256 .\Iniciar_Servidor.exe
+```
+- **Hoja de ruta de firma Authenticode:** Para futuras entregas publicas se planifica firmar todos los binarios Windows con un certificado comercial de firma de codigo (OV/EV) o **Microsoft Trusted Signing**, empleando `signtool.exe` del **Windows 11 SDK** con sellado de tiempo RFC 3161.
+
+---
+
 ## Estructura del Repositorio
 
 ```text
@@ -155,9 +167,10 @@ Telemetriagps/
 ├── CHANGELOG.md                       # Historial de versiones
 ├── LICENSE                            # Licencia GNU GPL-2.0 (Servidor)
 ├── LICENSES.md                        # Autoria y registro legal de dependencias de terceros
-├── NOTICE                             # Avisos consolidados UTF-8 y textos de licencia de terceros
+├── NOTICE                             # Avisos consolidados UTF-8 y textos verbatim de terceros
+├── PROVENANCE.md                      # Auditoria de procedencia, camara 3D e inventario del cliente
 ├── README.md                          # Documentacion principal del repositorio
-├── SECURITY.md                        # Politica de seguridad y arquitectura de acceso local
+├── SECURITY.md                        # Politica de seguridad, SmartScreen y acceso local
 ├── SHA256SUMS                         # Sumas SHA-256 de verificacion de artefactos de distribucion
 ├── docs/
 │   └── screenshots/                   # Capturas oficiales v1.4.2 (1080x2200)
@@ -203,7 +216,8 @@ Telemetriagps/
 
 ## Documentacion Adicional y Aspectos Legales
 
-- **Seguridad:** Consulta [SECURITY.md](SECURITY.md) para detalles sobre autenticacion, aislamiento en red local y reporte de vulnerabilidades.
+- **Seguridad y SmartScreen:** Consulta [SECURITY.md](SECURITY.md) para detalles sobre autenticacion, aislamiento en red local, verificacion Authenticode/SmartScreen y reporte de vulnerabilidades.
+- **Procedencia y Auditoria:** Consulta [PROVENANCE.md](PROVENANCE.md) para la trazabilidad de constantes de camara 3D, inventario completo del cliente Android y estado de retencion de distribucion.
 - **Historial de Cambios:** Consulta [CHANGELOG.md](CHANGELOG.md).
 - **Licencias, Avisos y Verificacion:** Consulta [NOTICE](NOTICE), [LICENSES.md](LICENSES.md), [LICENSE](LICENSE), [android/LICENSE](android/LICENSE) y [SHA256SUMS](SHA256SUMS).
 - **Aviso de Marcas:** *American Truck Simulator* y *Euro Truck Simulator 2* son marcas registradas de **SCS Software s.r.o.**. Este es un proyecto independiente sin afiliacion comercial con SCS Software.

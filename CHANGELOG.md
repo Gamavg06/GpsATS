@@ -171,6 +171,6 @@ Todas las modificaciones notables, correcciones de errores y nuevas funcionalida
 ---
 
 ## [v1.0.0] - 2026-11-05
-### Lanzamiento Inicial Clean-Room
+### Lanzamiento Inicial
 - Servidor .NET 10 con lector MMF `Local\SCSTelemetry` y WebSocket a 30 Hz.
 - Extractor de mapas `TruckLib` y app Android en Jetpack Compose con Junction View, tablero de desgaste y asistente TTS.
