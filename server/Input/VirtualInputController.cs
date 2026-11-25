@@ -18,6 +18,17 @@ namespace AtsGpsServer.Input
         private const uint WM_KEYUP = 0x0101;
 
         [StructLayout(LayoutKind.Sequential)]
+        private struct MOUSEINPUT
+        {
+            public int dx;
+            public int dy;
+            public uint mouseData;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private struct KEYBDINPUT
         {
             public ushort wVk;
@@ -27,14 +38,33 @@ namespace AtsGpsServer.Input
             public IntPtr dwExtraInfo;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct HARDWAREINPUT
+        {
+            public uint uMsg;
+            public ushort wParamL;
+            public ushort wParamH;
+        }
+
         [StructLayout(LayoutKind.Explicit)]
-        private struct INPUT
+        private struct InputUnion
         {
             [FieldOffset(0)]
-            public int type;
-            [FieldOffset(8)]
+            public MOUSEINPUT mi;
+            [FieldOffset(0)]
             public KEYBDINPUT ki;
+            [FieldOffset(0)]
+            public HARDWAREINPUT hi;
         }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct INPUT
+        {
+            public int type;
+            public InputUnion u;
+        }
+
+        internal static int GetInputStructSize() => Marshal.SizeOf<INPUT>();
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
@@ -143,10 +173,16 @@ namespace AtsGpsServer.Input
                 // Con KEYEVENTF_SCANCODE, wVk DEBE ser 0 estrictamente para evitar descarte por DirectInput
                 INPUT[] down = new INPUT[1];
                 down[0].type = INPUT_KEYBOARD;
-                down[0].ki.wVk = 0;
-                down[0].ki.wScan = scan;
-                down[0].ki.dwFlags = KEYEVENTF_SCANCODE;
-                SendInput(1, down, Marshal.SizeOf(typeof(INPUT)));
+                down[0].u.ki.wVk = 0;
+                down[0].u.ki.wScan = scan;
+                down[0].u.ki.dwFlags = KEYEVENTF_SCANCODE;
+                uint sentDown = SendInput(1, down, Marshal.SizeOf<INPUT>());
+                if (sentDown == 0)
+                {
+                    int win32Error = Marshal.GetLastWin32Error();
+                    Console.WriteLine($"[CONTROL REMOTO] SendInput (key down) fallo con error Win32 {win32Error} para '{action}'.");
+                    return false;
+                }
 
                 // 2. PostMessage directo a la ventana de ATS como redundancia
                 IntPtr downLParam = (IntPtr)((scan << 16) | 1);
@@ -160,10 +196,15 @@ namespace AtsGpsServer.Input
                         await Task.Delay(85);
                         INPUT[] up = new INPUT[1];
                         up[0].type = INPUT_KEYBOARD;
-                        up[0].ki.wVk = 0;
-                        up[0].ki.wScan = scan;
-                        up[0].ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-                        SendInput(1, up, Marshal.SizeOf(typeof(INPUT)));
+                        up[0].u.ki.wVk = 0;
+                        up[0].u.ki.wScan = scan;
+                        up[0].u.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+                        uint sentUp = SendInput(1, up, Marshal.SizeOf<INPUT>());
+                        if (sentUp == 0)
+                        {
+                            int win32Error = Marshal.GetLastWin32Error();
+                            Console.WriteLine($"[CONTROL REMOTO] SendInput (key up) fallo con error Win32 {win32Error} para '{action}'.");
+                        }
 
                         IntPtr upLParam = (IntPtr)(0xC0000001L | ((long)scan << 16));
                         PostMessage(atsHwnd, WM_KEYUP, (IntPtr)binding.Vk, upLParam);
@@ -192,11 +233,24 @@ namespace AtsGpsServer.Input
                 var currentFg = GetForegroundWindow();
                 if (atsHwnd != currentFg)
                 {
-                    uint fgThread = GetWindowThreadProcessId(currentFg, out _);
+                    uint fgThread = currentFg != IntPtr.Zero ? GetWindowThreadProcessId(currentFg, out _) : 0;
                     uint currentThread = GetCurrentThreadId();
-                    AttachThreadInput(currentThread, fgThread, true);
-                    SetForegroundWindow(atsHwnd);
-                    AttachThreadInput(currentThread, fgThread, false);
+                    bool attached = false;
+                    if (fgThread != 0 && fgThread != currentThread)
+                    {
+                        attached = AttachThreadInput(currentThread, fgThread, true);
+                    }
+                    try
+                    {
+                        SetForegroundWindow(atsHwnd);
+                    }
+                    finally
+                    {
+                        if (attached)
+                        {
+                            AttachThreadInput(currentThread, fgThread, false);
+                        }
+                    }
                 }
             }
             catch { }

@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ats.gps.ui.navigation.ManeuverType
@@ -44,6 +45,8 @@ fun JunctionView(
     destinationName: String,
     distanceMeters: Float,
     speedLimitKmh: Int,
+    width: Dp = 280.dp,
+    height: Dp = 140.dp,
     modifier: Modifier = Modifier
 ) {
     val laneCount = totalLanes.coerceIn(2, 4)
@@ -77,8 +80,8 @@ fun JunctionView(
                 val dt = if (lastNanos == 0L) 0.016f else ((now - lastNanos) / 1_000_000_000f).coerceIn(0.001f, 0.05f)
                 lastNanos = now
                 if (kotlin.math.abs(currentSpeed) >= 2f) {
-                    val speedMps = kotlin.math.abs(currentSpeed) / 3.6f
-                    roadPhase = (roadPhase + speedMps * dt * 0.14f) % 1f
+                    val speedMps = currentSpeed / 3.6f
+                    roadPhase = (((roadPhase + speedMps * dt * 0.14f) % 1f) + 1f) % 1f
                 }
             }
         }
@@ -105,10 +108,11 @@ fun JunctionView(
     )
     val blinkerVisible = blinkerBlink > 0.42f
 
+    val isCompactHeight = height < 125.dp
     Box(
         modifier = modifier
-            .width(280.dp)
-            .height(140.dp)
+            .width(width)
+            .height(height)
             .clip(RoundedCornerShape(12.dp))
             .background(Color(0xFF0B1218))
             .border(1.dp, Color(0xFF22303C), RoundedCornerShape(12.dp))
@@ -117,7 +121,7 @@ fun JunctionView(
             val w = size.width
             val h = size.height
 
-            val horizonY = h * 0.34f
+            val horizonY = h * 0.39f
             val roadTopLeft = w * 0.18f
             val roadTopRight = w * 0.82f
             val roadBottomLeft = w * 0.02f
@@ -223,15 +227,16 @@ fun JunctionView(
             }
 
             // 5. Flecha dinamica de guia de maniobra en la parte superior del carril recomendado
+            val markerScale = (h / (140f * density)).coerceIn(0.72f, 1.0f)
             val guideCenterFrac = (safeRecLane + 0.5f) / laneCount.toFloat()
-            val guideYTop = horizonY + (h - horizonY) * 0.14f
-            val guideYBot = horizonY + (h - horizonY) * 0.44f
+            val guideYTop = horizonY + (h - horizonY) * 0.10f
+            val guideYBot = horizonY + (h - horizonY) * 0.36f
             val guideYMid = (guideYTop + guideYBot) * 0.5f
             val guideT = (guideYMid - horizonY) / (h - horizonY)
             val roadLAtGuide = roadTopLeft + (roadBottomLeft - roadTopLeft) * guideT
             val roadRAtGuide = roadTopRight + (roadBottomRight - roadTopRight) * guideT
             val guideCx = roadLAtGuide + (roadRAtGuide - roadLAtGuide) * guideCenterFrac
-            val guideSize = 18f * density
+            val guideSize = 15f * density * markerScale
 
             drawGuideManeuverArrow(
                 cx = guideCx,
@@ -242,7 +247,7 @@ fun JunctionView(
             )
 
             // 6. Marcador dinamico del camion (posicion lateral real + rotacion + intermitentes reales)
-            val truckY = h * 0.76f
+            val truckY = h * 0.67f
             val truckT = (truckY - horizonY) / (h - horizonY)
             val roadLAtTruck = roadTopLeft + (roadBottomLeft - roadTopLeft) * truckT
             val roadRAtTruck = roadTopRight + (roadBottomRight - roadTopRight) * truckT
@@ -254,7 +259,8 @@ fun JunctionView(
                 tiltDeg = animatedTiltDeg,
                 isInRecommended = isInRecommendedLane,
                 blinkerLeftActive = blinkerLeft && blinkerVisible,
-                blinkerRightActive = blinkerRight && blinkerVisible
+                blinkerRightActive = blinkerRight && blinkerVisible,
+                markerScale = markerScale
             )
         }
 
@@ -262,11 +268,11 @@ fun JunctionView(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(8.dp)
+                .padding(if (isCompactHeight) 5.dp else 8.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(0xFF14532D))
                 .border(1.dp, Color(0xFF22C55E).copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                .padding(horizontal = 8.dp, vertical = 5.dp),
+                .padding(horizontal = if (isCompactHeight) 6.dp else 8.dp, vertical = if (isCompactHeight) 3.dp else 5.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -346,7 +352,7 @@ fun JunctionView(
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .background(Color(0xD9090E14))
-                .padding(horizontal = 10.dp, vertical = 5.dp),
+                .padding(horizontal = if (isCompactHeight) 8.dp else 10.dp, vertical = if (isCompactHeight) 3.dp else 5.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -446,10 +452,11 @@ private fun DrawScope.drawDynamicTruckMarker(
     tiltDeg: Float,
     isInRecommended: Boolean,
     blinkerLeftActive: Boolean,
-    blinkerRightActive: Boolean
+    blinkerRightActive: Boolean,
+    markerScale: Float = 1.0f
 ) {
     val accent = if (isInRecommended) Color(0xFFC7F36B) else Color(0xFFFBBF24)
-    val s = density
+    val s = density * markerScale
 
     rotate(tiltDeg, pivot = Offset(cx, cy)) {
         // Sombra de contacto

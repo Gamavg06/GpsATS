@@ -1,9 +1,11 @@
 package com.ats.gps
 
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -125,6 +127,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
         // Mantener la pantalla encendida mientras la app de navegación está activa
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
@@ -188,6 +195,7 @@ fun AtsNavMainApp(
     var loadedMapHost by remember { mutableStateOf<String?>(null) }
     var sessionRevision by remember { mutableIntStateOf(0) }
     var tripLogVersion by remember { mutableIntStateOf(0) }
+    var skipAutoProbeOnce by remember { mutableStateOf(false) }
 
     // Ciclo de vida real Android: pausar WS/audio en ON_STOP y reconectar automaticamente en ON_START
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -205,8 +213,8 @@ fun AtsNavMainApp(
                 Lifecycle.Event.ON_START -> {
                     isAppInForeground = true
                     if (hasActiveSession && activeHost.isNotEmpty()) {
-                        val tokenToUse = authTokenStore.getValidToken(activeHost) ?: activeToken
-                        if (tokenToUse.isNotBlank()) {
+                        val tokenToUse = authTokenStore.getValidToken(activeHost)
+                        if (!tokenToUse.isNullOrBlank()) {
                             activeToken = tokenToUse
                             networkClient.connectWebSocket(
                                 host = activeHost,
@@ -274,21 +282,50 @@ fun AtsNavMainApp(
     val navInstructionCache = remember { NavigationInstructionCache() }
 
     // 1. Asistente de Giro a Giro por Voz continuo
-    val currentInstruction = remember(telemetry.posX, telemetry.posZ, activeRoute, effectiveDestinationName) {
+    val currentInstruction = remember(
+        telemetry.posX,
+        telemetry.posY,
+        telemetry.posZ,
+        telemetry.headingDegrees,
+        activeRoute,
+        effectiveDestinationName
+    ) {
         if (activeRoute != null && (telemetry.posX != 0.0 || telemetry.posZ != 0.0)) {
             calculateNavigationInstruction(
                 truckX = telemetry.posX.toFloat(),
                 truckZ = telemetry.posZ.toFloat(),
                 route = activeRoute!!,
                 destinationCity = effectiveDestinationName,
-                cache = navInstructionCache
+                cache = navInstructionCache,
+                truckY = telemetry.posY.toFloat(),
+                headingDeg = telemetry.headingDegrees.toFloat()
             )
         } else null
     }
 
-    LaunchedEffect(currentInstruction?.distanceMeters, currentInstruction?.title, isAppInForeground) {
-        if (isAppInForeground && currentInstruction != null && isFollowingTruck && !telemetry.gamePaused) {
-            voiceAssistant.updateNavigation(currentInstruction.distanceMeters, currentInstruction.title)
+    LaunchedEffect(telemetry.gamePaused) {
+        if (telemetry.gamePaused) {
+            voiceAssistant.stopSpeaking()
+        }
+    }
+
+    LaunchedEffect(
+        currentInstruction?.distanceMeters,
+        currentInstruction?.title,
+        currentInstruction?.maneuver,
+        isAppInForeground,
+        isConnected,
+        telemetry.gamePaused
+    ) {
+        if (isConnected && isAppInForeground && currentInstruction != null &&
+            currentInstruction.maneuver != ManeuverType.STRAIGHT &&
+            isFollowingTruck && !telemetry.gamePaused
+        ) {
+            voiceAssistant.updateNavigation(
+                distanceMeters = currentInstruction.distanceMeters,
+                nextManeuver = currentInstruction.title,
+                maneuverType = currentInstruction.maneuver
+            )
         }
     }
 
@@ -301,8 +338,16 @@ fun AtsNavMainApp(
         }
     }
 
-    LaunchedEffect(telemetry.navDistanceMeters, activeRoute, telemetry.destinationCity, isAppInForeground) {
-        if (isAppInForeground && activeRoute != null && telemetry.destinationCity.isNotEmpty() &&
+    LaunchedEffect(
+        telemetry.navDistanceMeters,
+        activeRoute,
+        telemetry.destinationCity,
+        isAppInForeground,
+        isConnected,
+        telemetry.gamePaused
+    ) {
+        if (isConnected && isAppInForeground && !telemetry.gamePaused &&
+            activeRoute != null && telemetry.destinationCity.isNotEmpty() &&
             telemetry.navDistanceMeters in 1f..45f &&
             lastArrivalAnnouncedCity != telemetry.destinationCity
         ) {
@@ -312,9 +357,10 @@ fun AtsNavMainApp(
     }
 
     // 3. Alerta de Exceso de Velocidad
-    val isSpeeding = telemetry.speedLimitKmh > 15f && telemetry.speedKmh > (telemetry.speedLimitKmh + 5f)
-    LaunchedEffect(isSpeeding, isAppInForeground) {
-        if (isAppInForeground && isSpeeding && !telemetry.gamePaused) {
+    val isSpeeding = isConnected && telemetry.connected &&
+        telemetry.speedLimitKmh > 15f && telemetry.speedKmh > (telemetry.speedLimitKmh + 5f)
+    LaunchedEffect(isSpeeding, isAppInForeground, isConnected, telemetry.gamePaused) {
+        if (isConnected && isAppInForeground && isSpeeding && !telemetry.gamePaused) {
             val now = System.currentTimeMillis()
             if (now - lastSpeedWarningTime > 25000L) {
                 lastSpeedWarningTime = now
@@ -324,25 +370,32 @@ fun AtsNavMainApp(
     }
 
     // 4. Alerta Temprana de Combustible Crítico
-    val isFuelCritical = telemetry.connected && telemetry.fuelCapacity > 0f && (telemetry.fuel / telemetry.fuelCapacity) < 0.12f
-    LaunchedEffect(isFuelCritical, isAppInForeground) {
-        if (isAppInForeground && isFuelCritical && !telemetry.gamePaused) {
+    val isFuelCritical = isConnected && telemetry.connected &&
+        telemetry.fuelCapacity > 0f && (telemetry.fuel / telemetry.fuelCapacity) < 0.12f
+    LaunchedEffect(isFuelCritical, isAppInForeground, isConnected, telemetry.gamePaused) {
+        if (isConnected && isAppInForeground && isFuelCritical && !telemetry.gamePaused) {
             val now = System.currentTimeMillis()
             if (now - lastFuelWarningTime > 150000L) {
                 lastFuelWarningTime = now
-                voiceAssistant.speak("Combustible bajo, busca una gasolinera próxima")
+                voiceAssistant.speak(
+                    "Combustible bajo, busca una gasolinera próxima",
+                    TextToSpeech.QUEUE_ADD
+                )
             }
         }
     }
 
     // 5. Alerta Temprana de Descanso y Fatiga (incluye fatiga vencida <= 0)
-    val isRestCritical = telemetry.connected && telemetry.restStopMinutes <= 35
-    LaunchedEffect(isRestCritical, isAppInForeground) {
-        if (isAppInForeground && isRestCritical && !telemetry.gamePaused) {
+    val isRestCritical = isConnected && telemetry.connected && telemetry.restStopMinutes <= 35
+    LaunchedEffect(isRestCritical, isAppInForeground, isConnected, telemetry.gamePaused) {
+        if (isConnected && isAppInForeground && isRestCritical && !telemetry.gamePaused) {
             val now = System.currentTimeMillis()
             if (now - lastRestWarningTime > 150000L) {
                 lastRestWarningTime = now
-                voiceAssistant.speak("Conductor fatigado, planifica una parada en la siguiente zona de descanso")
+                voiceAssistant.speak(
+                    "Conductor fatigado, planifica una parada en la siguiente zona de descanso",
+                    TextToSpeech.QUEUE_ADD
+                )
             }
         }
     }
@@ -384,11 +437,13 @@ fun AtsNavMainApp(
                 val dx = telemetry.posX - lastJobPosX
                 val dz = telemetry.posZ - lastJobPosZ
                 val stepMeters = sqrt(dx * dx + dz * dz).toFloat()
-                if (stepMeters in 0.05f..250f) {
-                    jobDrivenMeters += stepMeters
+                if (stepMeters >= 0.05f) {
+                    if (stepMeters <= 250f) {
+                        jobDrivenMeters += stepMeters
+                    }
+                    lastJobPosX = telemetry.posX
+                    lastJobPosZ = telemetry.posZ
                 }
-                lastJobPosX = telemetry.posX
-                lastJobPosZ = telemetry.posZ
             } else {
                 lastJobPosX = telemetry.posX
                 lastJobPosZ = telemetry.posZ
@@ -434,8 +489,11 @@ fun AtsNavMainApp(
                     )
                 )
                 tripLogVersion++
-                if (isAppInForeground) {
-                    voiceAssistant.speak("Felicidades, trabajo de entrega completado con éxito")
+                if (isConnected && isAppInForeground && !telemetry.gamePaused) {
+                    voiceAssistant.speak(
+                        "Felicidades, trabajo de entrega completado con éxito",
+                        TextToSpeech.QUEUE_ADD
+                    )
                 }
             }
 
@@ -532,7 +590,7 @@ fun AtsNavMainApp(
                         manualTargetNodeIndex = null
                         manualDestinationName = null
                         effectiveManualNode = null
-                        if (isAppInForeground) {
+                        if (isConnected && isAppInForeground && !telemetry.gamePaused) {
                             voiceAssistant.announceArrival(arrivedName)
                         }
                     }
@@ -554,9 +612,11 @@ fun AtsNavMainApp(
                 if (tracking != null) {
                     latestTracking = tracking
                     isWrongWay = tracking.isWrongWay
-                    if (tracking.isWrongWay && isAppInForeground && now - lastWrongWayVoiceTime > 9000L) {
+                    if (tracking.isWrongWay && isConnected && isAppInForeground && !telemetry.gamePaused &&
+                        now - lastWrongWayVoiceTime > 9000L
+                    ) {
                         lastWrongWayVoiceTime = now
-                        voiceAssistant.speak("Precaución, sentido contrario")
+                        voiceAssistant.speak("Precaución, sentido contrario", TextToSpeech.QUEUE_ADD)
                     }
                     if (input.speedKmh > 5f && tracking.isOffRoute) {
                         offRouteCounter++
@@ -576,7 +636,12 @@ fun AtsNavMainApp(
                     val destCompany = input.destinationCompany.trim()
                     val destCompanyId = input.destinationCompanyId.trim()
 
-                    fun norm(s: String): String = s.lowercase().replace("_", "").replace(" ", "").replace("-", "")
+                    fun norm(s: String): String = s.lowercase()
+                        .replace("_", "")
+                        .replace(" ", "")
+                        .replace("-", "")
+                        .replace(".", "")
+                        .replace("'", "")
 
                     val normCity = norm(destCity)
                     val normCityId = norm(destCityId)
@@ -764,6 +829,8 @@ fun AtsNavMainApp(
                     networkClient = networkClient,
                     authTokenStore = authTokenStore,
                     sessionRevision = sessionRevision,
+                    skipAutoProbe = skipAutoProbeOnce,
+                    onConsumeSkipAutoProbe = { skipAutoProbeOnce = false },
                     ip = serverIp,
                     onIpChange = { serverIp = it },
                     port = serverPort,
@@ -902,7 +969,27 @@ fun AtsNavMainApp(
                 // ==========================================
                 when (selectedTab) {
                     AppTab.MAPA -> {
-                        Box(modifier = Modifier.fillMaxSize()) {
+                        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                            val isCompactHeight = maxHeight < 420.dp
+                            val hudTopPad = if (isCompactHeight) 58.dp else 80.dp
+                            val tbtWidth = if (isCompactHeight) 220.dp else 260.dp
+                            val jvWidth = if (isCompactHeight) 230.dp else 280.dp
+                            val jvHeight = if (isCompactHeight) 112.dp else 140.dp
+                            val topCenterMaxWidth = (maxWidth - 490.dp).coerceAtLeast(180.dp)
+                            val fabSize = if (isCompactHeight) 36.dp else 44.dp
+                            val fabSpacing = if (isCompactHeight) 4.dp else 6.dp
+                            val controlsModifier = if (isCompactHeight) {
+                                Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .displayCutoutPadding()
+                                    .padding(top = 56.dp, bottom = 48.dp, end = 12.dp)
+                            } else {
+                                Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .displayCutoutPadding()
+                                    .padding(end = 12.dp)
+                            }
+
                             // 1. Renderizador del Mapa en Canvas 2D/3D con Zoom y Pan interactivo
                             GpsMapCanvas(
                                 graph = mapGraph,
@@ -963,8 +1050,8 @@ fun AtsNavMainApp(
                                     modifier = Modifier
                                         .align(Alignment.TopStart)
                                         .displayCutoutPadding()
-                                        .padding(top = 80.dp, start = 14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        .padding(top = hudTopPad, start = 14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(if (isCompactHeight) 4.dp else 8.dp)
                                 ) {
                                     if (activeRoute != null && isFollowingTruck) {
                                         TurnByTurnCard(
@@ -972,7 +1059,10 @@ fun AtsNavMainApp(
                                             truckZ = telemetry.posZ.toFloat(),
                                             activeRoute = activeRoute,
                                             destinationCity = effectiveDestinationName,
-                                            instructionOverride = currentInstruction
+                                            instructionOverride = currentInstruction,
+                                            truckY = telemetry.posY.toFloat(),
+                                            headingDeg = telemetry.headingDegrees.toFloat(),
+                                            cardWidth = tbtWidth
                                         )
                                     }
                                     if (manualTargetNodeIndex != null) {
@@ -997,7 +1087,7 @@ fun AtsNavMainApp(
                                                 fontWeight = FontWeight.SemiBold,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.widthIn(max = 180.dp)
+                                                modifier = Modifier.widthIn(max = if (isCompactHeight) 140.dp else 180.dp)
                                             )
                                             Text(
                                                 text = "Cancelar",
@@ -1020,18 +1110,18 @@ fun AtsNavMainApp(
                                     modifier = Modifier
                                         .align(Alignment.TopEnd)
                                         .displayCutoutPadding()
-                                        .padding(top = 80.dp, end = 66.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                                        .padding(top = hudTopPad, end = if (isCompactHeight) 56.dp else 66.dp),
+                                    verticalArrangement = Arrangement.spacedBy(if (isCompactHeight) 4.dp else 6.dp),
                                     horizontalAlignment = Alignment.End
                                 ) {
                                     if (hasJob) {
                                         Card(
-                                            modifier = Modifier.widthIn(max = 280.dp),
+                                            modifier = Modifier.widthIn(max = if (isCompactHeight) 230.dp else 280.dp),
                                             colors = CardDefaults.cardColors(containerColor = Color(0xF2151C21)),
                                             shape = RoundedCornerShape(14.dp),
                                             border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF222D35))
                                         ) {
-                                            Column(modifier = Modifier.padding(10.dp)) {
+                                            Column(modifier = Modifier.padding(if (isCompactHeight) 7.dp else 10.dp)) {
                                                 Row(
                                                     modifier = Modifier.fillMaxWidth(),
                                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1063,7 +1153,7 @@ fun AtsNavMainApp(
                                                     }
                                                 }
 
-                                                Spacer(modifier = Modifier.height(3.dp))
+                                                Spacer(modifier = Modifier.height(if (isCompactHeight) 2.dp else 3.dp))
 
                                                 val dest = if (telemetry.destinationCity.isNotEmpty()) telemetry.destinationCity else "Destino"
                                                 val comp = if (telemetry.destinationCompany.isNotEmpty()) " (${telemetry.destinationCompany})" else ""
@@ -1071,7 +1161,7 @@ fun AtsNavMainApp(
                                                     "$dest$comp",
                                                     color = Color(0xFFF3F6F7),
                                                     fontWeight = FontWeight.Bold,
-                                                    fontSize = 13.sp,
+                                                    fontSize = if (isCompactHeight) 12.sp else 13.sp,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
@@ -1081,12 +1171,12 @@ fun AtsNavMainApp(
                                                 Text(
                                                     "$cargo$tons",
                                                     color = Color(0xFF94A3B8),
-                                                    fontSize = 11.sp,
+                                                    fontSize = if (isCompactHeight) 10.sp else 11.sp,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis
                                                 )
 
-                                                Spacer(modifier = Modifier.height(3.dp))
+                                                Spacer(modifier = Modifier.height(if (isCompactHeight) 2.dp else 3.dp))
 
                                                 Row(
                                                     modifier = Modifier.fillMaxWidth(),
@@ -1118,13 +1208,15 @@ fun AtsNavMainApp(
                                             recommendedLaneIndex = junctionInstr.activeLaneIndex,
                                             signedLateralMeters = latestTracking?.signedLateralMeters ?: 0f,
                                             headingDeltaDeg = latestTracking?.headingDeltaDeg ?: 0f,
-                                            speedKmh = telemetry.speedKmh,
+                                            speedKmh = if (telemetry.gamePaused) 0f else telemetry.speedKmh,
                                             blinkerLeft = telemetry.blinkerLeft || telemetry.lightsHazard,
                                             blinkerRight = telemetry.blinkerRight || telemetry.lightsHazard,
                                             exitName = junctionInstr.title,
                                             destinationName = effectiveDestinationName.ifEmpty { "DESTINO" },
                                             distanceMeters = junctionInstr.distanceMeters,
-                                            speedLimitKmh = telemetry.speedLimitKmh.roundToInt()
+                                            speedLimitKmh = telemetry.speedLimitKmh.roundToInt(),
+                                            width = jvWidth,
+                                            height = jvHeight
                                         )
                                     }
                                 }
@@ -1143,8 +1235,8 @@ fun AtsNavMainApp(
                                     modifier = Modifier
                                         .align(Alignment.TopCenter)
                                         .displayCutoutPadding()
-                                        .padding(top = 80.dp, start = 16.dp, end = 16.dp)
-                                        .widthIn(max = 320.dp),
+                                        .padding(top = hudTopPad, start = 16.dp, end = 16.dp)
+                                        .widthIn(max = topCenterMaxWidth),
                                     verticalArrangement = Arrangement.spacedBy(6.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
@@ -1246,11 +1338,8 @@ fun AtsNavMainApp(
 
                             // 3. Botones Flotantes de Control compactos (sin CFG duplicado)
                             Column(
-                                modifier = Modifier
-                                    .align(Alignment.CenterEnd)
-                                    .displayCutoutPadding()
-                                    .padding(end = 12.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = controlsModifier,
+                                verticalArrangement = Arrangement.spacedBy(fabSpacing),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 // Selector explícito y visual de Modo de Cámara: 3D Perspectiva vs 2D Aéreo
@@ -1266,11 +1355,13 @@ fun AtsNavMainApp(
                                     ) {
                                         val is3D = viewMode == MapViewMode.MODE_3D_PERSPECTIVE
                                         val is2D = viewMode == MapViewMode.MODE_2D_TOP_DOWN
+                                        val pillW = if (isCompactHeight) 36.dp else 42.dp
+                                        val pillH = if (isCompactHeight) 22.dp else 28.dp
 
                                         // Pastilla 3D
                                         Box(
                                             modifier = Modifier
-                                                .size(width = 42.dp, height = 28.dp)
+                                                .size(width = pillW, height = pillH)
                                                 .clip(RoundedCornerShape(16.dp))
                                                 .background(if (is3D) Color(0xFF0284C7) else Color.Transparent)
                                                 .clickable {
@@ -1283,7 +1374,7 @@ fun AtsNavMainApp(
                                             Text(
                                                 "3D",
                                                 fontWeight = FontWeight.Black,
-                                                fontSize = 11.sp,
+                                                fontSize = if (isCompactHeight) 10.sp else 11.sp,
                                                 color = if (is3D) Color.White else Color(0xFF94A3B8)
                                             )
                                         }
@@ -1291,7 +1382,7 @@ fun AtsNavMainApp(
                                         // Pastilla 2D
                                         Box(
                                             modifier = Modifier
-                                                .size(width = 42.dp, height = 28.dp)
+                                                .size(width = pillW, height = pillH)
                                                 .clip(RoundedCornerShape(16.dp))
                                                 .background(if (is2D) Color(0xFF0284C7) else Color.Transparent)
                                                 .clickable {
@@ -1304,7 +1395,7 @@ fun AtsNavMainApp(
                                             Text(
                                                 "2D",
                                                 fontWeight = FontWeight.Black,
-                                                fontSize = 11.sp,
+                                                fontSize = if (isCompactHeight) 10.sp else 11.sp,
                                                 color = if (is2D) Color.White else Color(0xFF94A3B8)
                                             )
                                         }
@@ -1319,9 +1410,9 @@ fun AtsNavMainApp(
                                     containerColor = Color(0xFF1E293B),
                                     contentColor = Color.White,
                                     shape = CircleShape,
-                                    modifier = Modifier.size(44.dp)
+                                    modifier = Modifier.size(fabSize)
                                 ) {
-                                    Text("+", fontWeight = FontWeight.Black, fontSize = 20.sp)
+                                    Text("+", fontWeight = FontWeight.Black, fontSize = if (isCompactHeight) 17.sp else 20.sp)
                                 }
 
                                 // Botón Zoom -
@@ -1332,9 +1423,9 @@ fun AtsNavMainApp(
                                     containerColor = Color(0xFF1E293B),
                                     contentColor = Color.White,
                                     shape = CircleShape,
-                                    modifier = Modifier.size(44.dp)
+                                    modifier = Modifier.size(fabSize)
                                 ) {
-                                    Text("−", fontWeight = FontWeight.Black, fontSize = 20.sp)
+                                    Text("−", fontWeight = FontWeight.Black, fontSize = if (isCompactHeight) 17.sp else 20.sp)
                                 }
 
                                 // Botón Re-centrar en el Camión
@@ -1347,9 +1438,9 @@ fun AtsNavMainApp(
                                     containerColor = if (!isFollowingTruck) Color(0xFF0284C7) else Color(0xFF1E293B),
                                     contentColor = if (!isFollowingTruck) Color.White else Color(0xFF38BDF8),
                                     shape = CircleShape,
-                                    modifier = Modifier.size(44.dp)
+                                    modifier = Modifier.size(fabSize)
                                 ) {
-                                    Text("CTR", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    Text("CTR", fontSize = if (isCompactHeight) 9.sp else 11.sp, fontWeight = FontWeight.Black)
                                 }
 
                                 // Botón de Estilo de Mapa
@@ -1364,9 +1455,9 @@ fun AtsNavMainApp(
                                     containerColor = Color(0xFF1E293B),
                                     contentColor = Color(0xFFC7F36B),
                                     shape = CircleShape,
-                                    modifier = Modifier.size(44.dp)
+                                    modifier = Modifier.size(fabSize)
                                 ) {
-                                    Text("STY", fontSize = 11.sp, fontWeight = FontWeight.Black)
+                                    Text("STY", fontSize = if (isCompactHeight) 9.sp else 11.sp, fontWeight = FontWeight.Black)
                                 }
                             }
 
@@ -1395,9 +1486,13 @@ fun AtsNavMainApp(
                         }
                     }
                     AppTab.TELEMETRIA -> {
+                        val currentGraph = mapGraph
+                        val nearestRestStop = remember(telemetry.posX, telemetry.posZ, currentGraph) {
+                            currentGraph?.findNearestRestStop(telemetry.posX.toFloat(), telemetry.posZ.toFloat())
+                        }
                         DashboardScreen(
                             telemetry = telemetry,
-                            nearestRestStop = mapGraph?.findNearestRestStop(telemetry.posX.toFloat(), telemetry.posZ.toFloat()),
+                            nearestRestStop = nearestRestStop,
                             onRouteToRestStop = { poi ->
                                 val nearestNode = mapGraph?.findNearestNode(poi.x, poi.z)
                                 if (nearestNode != null && mapGraph?.nodes?.indices?.contains(nearestNode) == true) {
@@ -1432,6 +1527,7 @@ fun AtsNavMainApp(
                 // Barra Inferior de Estado
                 BottomTelemetryBar(
                     telemetry = telemetry,
+                    isSocketConnected = isConnected,
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
 
@@ -1445,11 +1541,17 @@ fun AtsNavMainApp(
                         isSocketConnected = isConnected,
                         onDisconnect = {
                             networkClient.disconnectWebSocket()
+                            skipAutoProbeOnce = true
                             hasActiveSession = false
                             isConnected = false
                             showDiagnostics = false
                             activeToken = ""
                             activeRoute = null
+                            telemetry = TelemetryData()
+                            manualTargetNodeIndex = null
+                            manualDestinationName = null
+                            lastArrivalAnnouncedCity = ""
+                            wasOnJob = false
                             isWrongWay = false
                             isRecalculatingRoute = false
                             pairError = null
@@ -1609,7 +1711,11 @@ fun NavigationTabButton(text: String, isSelected: Boolean, onClick: () -> Unit) 
 }
 
 @Composable
-fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) {
+fun BottomTelemetryBar(
+    telemetry: TelemetryData,
+    isSocketConnected: Boolean,
+    modifier: Modifier = Modifier
+) {
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -1697,6 +1803,7 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
         // Simulator connectivity text
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             val statusColor = when {
+                !isSocketConnected -> Color(0xFFF59E0B)
                 telemetry.gamePaused -> Color(0xFFF7C948)
                 telemetry.connected -> Color(0xFFC7F36B)
                 else -> Color(0xFFEF4444)
@@ -1709,6 +1816,7 @@ fun BottomTelemetryBar(telemetry: TelemetryData, modifier: Modifier = Modifier) 
             )
             Text(
                 text = when {
+                    !isSocketConnected -> "Reconectando"
                     telemetry.gamePaused -> "Pausa"
                     telemetry.connected -> "Simulador Activo"
                     else -> "Sin Conexión"
@@ -1725,6 +1833,8 @@ fun PairingScreen(
     networkClient: AtsNetworkClient,
     authTokenStore: AuthTokenStore,
     sessionRevision: Int,
+    skipAutoProbe: Boolean,
+    onConsumeSkipAutoProbe: () -> Unit,
     ip: String,
     onIpChange: (String) -> Unit,
     port: String,
@@ -1738,14 +1848,15 @@ fun PairingScreen(
     onConnect: (String) -> Unit
 ) {
     // Autodeteccion silenciosa de servidor activo; solo reconecta directo si ya hay sesion valida (< 48 h)
-    var autoProbing by remember { mutableStateOf(errorMessage == null) }
+    var autoProbing by remember { mutableStateOf(errorMessage == null && !skipAutoProbe) }
     val cleanProbeHost = remember(ip) { sanitizeHostAndPort(ip, port).first }
     val hasSavedSession = remember(cleanProbeHost, sessionRevision) {
         authTokenStore.getValidToken(cleanProbeHost) != null
     }
 
     LaunchedEffect(Unit) {
-        if (errorMessage != null) {
+        if (errorMessage != null || skipAutoProbe) {
+            onConsumeSkipAutoProbe()
             autoProbing = false
             return@LaunchedEffect
         }

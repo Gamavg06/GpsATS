@@ -209,6 +209,8 @@ public partial class MainWindow : Window
         {
             StopServer();
             _isStoppingServer = false;
+            _serverPin = "----";
+            PinText.Text = "----";
 
             string serverExe = Path.Combine(_rootDir, @"server\publish\AtsGpsServer.exe");
             if (!File.Exists(serverExe))
@@ -452,7 +454,7 @@ public partial class MainWindow : Window
         AppendLog($"[USB] Verificando conexion de cable USB (ADB: {_adbPath})...");
         try
         {
-            string devicesOutput = await RunCommandAsync(_adbPath, "devices -l");
+            var (_, devicesOutput) = await RunCommandAsync(_adbPath, "devices -l");
             if (!string.IsNullOrWhiteSpace(devicesOutput))
             {
                 AppendLog(devicesOutput.Trim());
@@ -464,12 +466,29 @@ public partial class MainWindow : Window
 
             if (hasDevice)
             {
-                _ = await RunCommandAsync(_adbPath, "reverse tcp:35500 tcp:35500");
-                UsbStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
-                UsbStatusText.Text = "CONECTADO • REVERSE ACTIVO";
-                UsbStatusText.Foreground = UsbStatusLed.Fill;
-                UsbDeviceText.Text = "Celular detectado y enlazado via USB";
-                AppendLog("[USB] Puerto 35500 enlazado correctamente al celular (adb reverse). Ingresa el PIN de 6 digitos en la app Android.");
+                var (revExitCode, revOutput) = await RunCommandAsync(_adbPath, "reverse tcp:35500 tcp:35500");
+                if (!string.IsNullOrWhiteSpace(revOutput))
+                {
+                    AppendLog($"[USB] adb reverse: {revOutput.Trim()}");
+                }
+
+                if (revExitCode == 0)
+                {
+                    UsbStatusLed.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
+                    UsbStatusText.Text = "CONECTADO • REVERSE ACTIVO";
+                    UsbStatusText.Foreground = UsbStatusLed.Fill;
+                    UsbDeviceText.Text = "Celular detectado y enlazado via USB";
+                    AppendLog("[USB] Puerto 35500 enlazado correctamente al celular (adb reverse). Ingresa el PIN de 6 digitos en la app Android.");
+                }
+                else
+                {
+                    var errorBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF5252"));
+                    UsbStatusLed.Fill = errorBrush;
+                    UsbStatusText.Text = "ERROR ADB REVERSE";
+                    UsbStatusText.Foreground = errorBrush;
+                    UsbDeviceText.Text = "No se pudo enlazar puerto 35500 (revisa logs)";
+                    AppendLog($"[USB] Fallo 'adb reverse tcp:35500 tcp:35500' (codigo {revExitCode}).");
+                }
             }
             else
             {
@@ -557,9 +576,12 @@ public partial class MainWindow : Window
 
         try
         {
-            string result = await RunCommandAsync(_adbPath, $"install -r \"{apkPath}\"", 60000);
-            AppendLog(result.Trim());
-            if (result.Contains("Success"))
+            var (installExitCode, result) = await RunCommandAsync(_adbPath, $"install -r \"{apkPath}\"", 60000);
+            if (!string.IsNullOrWhiteSpace(result))
+            {
+                AppendLog(result.Trim());
+            }
+            if (installExitCode == 0 && result.Contains("Success"))
             {
                 TxtFooterStatus.Text = "APK instalada con exito en el celular.";
                 TxtFooterStatus.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C7F36B"));
@@ -625,7 +647,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task<string> RunCommandAsync(string fileName, string args, int timeoutMs = 15000)
+    private async Task<(int ExitCode, string Output)> RunCommandAsync(string fileName, string args, int timeoutMs = 15000)
     {
         try
         {
@@ -641,7 +663,7 @@ public partial class MainWindow : Window
                 CreateNoWindow = true
             };
             using var p = Process.Start(psi);
-            if (p == null) return "No se pudo iniciar el proceso.";
+            if (p == null) return (-1, "No se pudo iniciar el proceso.");
 
             var stdoutTask = p.StandardOutput.ReadToEndAsync();
             var stderrTask = p.StandardError.ReadToEndAsync();
@@ -654,16 +676,17 @@ public partial class MainWindow : Window
             catch (OperationCanceledException)
             {
                 try { p.Kill(true); } catch { }
-                return "Tiempo de espera agotado ejecutando el comando.";
+                return (-1, "Tiempo de espera agotado ejecutando el comando.");
             }
 
             string output = await stdoutTask;
             string error = await stderrTask;
-            return output + (string.IsNullOrEmpty(error) ? "" : "\n" + error);
+            string combined = output + (string.IsNullOrEmpty(error) ? "" : "\n" + error);
+            return (p.ExitCode, combined);
         }
         catch (Exception ex)
         {
-            return "Error: " + ex.Message;
+            return (-1, "Error: " + ex.Message);
         }
     }
 

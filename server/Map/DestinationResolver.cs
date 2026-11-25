@@ -26,7 +26,7 @@ namespace AtsGpsServer.Map
             string cleanCity = cityDst.Trim();
             string? cleanComp = compDst?.Trim();
 
-            static string Norm(string s) => s.ToLowerInvariant().Replace("_", "").Replace(" ", "").Replace("-", "");
+            static string Norm(string s) => s.ToLowerInvariant().Replace("_", "").Replace(" ", "").Replace("-", "").Replace(".", "").Replace("'", "");
 
             string normCity = Norm(cleanCity);
             if (string.IsNullOrEmpty(normCity))

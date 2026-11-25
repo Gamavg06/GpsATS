@@ -13,7 +13,7 @@ El servidor companion escucha en el puerto TCP `35500` y esta disenado exclusiva
 - **Validacion Estricta del Encabezado `Host` (`RequestSecurityMiddleware`):** Se analiza el `Host` (sin puerto y normalizando IPv6) y se permiten unicamente `localhost`, direcciones loopback (`127.0.0.0/8`, `::1`), direcciones IPv4 privadas RFC 1918 (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) e IPv6 link-local (`fe80::/10`) o ULA (`fc00::/7`). Cualquier otro valor (dominios externos, IPs publicas, `169.254.x.x` o `Host` vacio/invalido) recibe **`403 Forbidden`**.
 - **Middleware de IP de Origen (`IpWhitelistMiddleware`):** Todas las conexiones entrantes con IP publica o fuera de redes locales permitidas reciben **`403 Forbidden`**.
 - **Validacion en Cliente Android (`AtsNetworkClient`):** El cliente movil verifica mediante `isAllowedPrivateAddress` que el host destino pertenezca exclusivamente a direcciones loopback, locales de sitio o link-local antes de establecer conexiones HTTP o WebSocket.
-- **Regla de Firewall en Instalador:** El instalador oficial (`tools/AtsGpsInstaller/Program.cs`) configura la regla entrante para el puerto TCP `35500` restringida a perfil privado y subred local (`profile=private remoteip=LocalSubnet`).
+- **Regla de Firewall en Instalador:** El instalador oficial (`tools/AtsGpsInstaller/Program.cs`) configura la regla entrante para el puerto TCP `35500` restringida a perfil privado y subred local (`profile=private,domain remoteip=LocalSubnet`).
 
 ### Autenticacion Obligatoria por PIN, Bloqueo por IP y Token Bearer
 - **Generacion Criptografica del PIN:** Al iniciar el servidor, `AuthManager` genera un PIN aleatorio de 6 digitos mediante `RandomNumberGenerator.GetInt32`.

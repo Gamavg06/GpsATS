@@ -4,8 +4,12 @@ import android.graphics.Typeface
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroidSize
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -18,6 +22,7 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import com.ats.gps.data.map.RouteResult
 import com.ats.gps.data.model.MapEdge
 import com.ats.gps.data.model.MapGraph
@@ -54,6 +59,7 @@ private class SnapCache {
 private class Viewport2DCache {
     var cachedGraph: MapGraph? = null
     var cachedRoute: RouteResult? = null
+    var hasCache: Boolean = false
     var edges: List<MapEdge> = emptyList()
     var lastX: Float = Float.NaN
     var lastZ: Float = Float.NaN
@@ -79,6 +85,7 @@ private class RoadSeg3D(
 private class Viewport3DCache {
     var cachedGraph: MapGraph? = null
     var cachedRoute: RouteResult? = null
+    var hasCache: Boolean = false
     var edges: List<MapEdge> = emptyList()
     var lastX: Float = Float.NaN
     var lastZ: Float = Float.NaN
@@ -88,10 +95,32 @@ private class Viewport3DCache {
 private class RouteRenderCache {
     var cachedRoute: RouteResult? = null
     var fullSmoothedPoints: List<Point3D> = emptyList()
+    var cumDistances: FloatArray = FloatArray(0)
     var lastTruckX: Float = Float.NaN
     var lastTruckZ: Float = Float.NaN
-    var trimmedPoints: List<Point3D> = emptyList()
     var lastTrimIdx: Int = 0
+    var trimProjPoint: Point3D? = null
+}
+
+private class RenderScratchCache {
+    var theme: MapThemeStyle? = null
+    var height3D: Float = -1f
+    var skyBrush: Brush? = null
+    var horizonGlowBrush: Brush? = null
+    var groundBrush: Brush? = null
+
+    var headlightHeight: Float = -1f
+    var headlightDensity: Float = -1f
+    var headlightBrush: Brush? = null
+
+    var lastDashZoom: Float = -1f
+    var dashEffect: PathEffect? = null
+
+    // Coordenadas de proyeccion reutilizables (cero boxing Pair/Offset)
+    var projX1: Float = 0f
+    var projY1: Float = 0f
+    var projX2: Float = 0f
+    var projY2: Float = 0f
 }
 
 private class ReusableRoadSeg(
@@ -106,7 +135,7 @@ private class ReusableRoadSeg(
     var isHidden: Boolean = false
 )
 
-private class RoadSegPool3D(capacity: Int = 5000) {
+private class RoadSegPool3D(capacity: Int = 8192) {
     val pool = Array(capacity) { ReusableRoadSeg() }
     val indices = IntArray(capacity) { it }
     var count = 0
@@ -176,7 +205,7 @@ private class ReusableRouteSeg(
     var rWidth: Float = 0f
 )
 
-private class RouteSegPool3D(capacity: Int = 2000) {
+private class RouteSegPool3D(capacity: Int = 4096) {
     val pool = Array(capacity) { ReusableRouteSeg() }
     var count = 0
 
@@ -229,29 +258,29 @@ fun GpsMapCanvas(
     val currentPan by rememberUpdatedState(panOffset)
     val currentViewMode by rememberUpdatedState(viewMode)
     val currentFollowing by rememberUpdatedState(isFollowingTruck)
-    val currentSpeedKmh by rememberUpdatedState(telemetry.speedKmh)
+    val currentSpeedKmh by rememberUpdatedState(if (telemetry.speedKmh.isFinite()) telemetry.speedKmh else 0f)
     val currentOnZoom by rememberUpdatedState(onZoomChange)
     val currentOnPan by rememberUpdatedState(onPanChange)
     val currentOnMapTapped by rememberUpdatedState(onMapTapped)
 
     // Coordenadas objetivo en tiempo real (rememberUpdatedState para evitar capturas estáticas)
-    val targetX by rememberUpdatedState(if (telemetry.posX.isNaN()) 0f else telemetry.posX.toFloat())
-    val targetY by rememberUpdatedState(if (telemetry.posY.isNaN()) 0f else telemetry.posY.toFloat())
-    val targetZ by rememberUpdatedState(if (telemetry.posZ.isNaN()) 0f else telemetry.posZ.toFloat())
-    val targetHeading by rememberUpdatedState(if (telemetry.headingDegrees.isNaN()) 0f else telemetry.headingDegrees.toFloat())
+    val targetX by rememberUpdatedState(if (telemetry.posX.isFinite()) telemetry.posX.toFloat() else 0f)
+    val targetY by rememberUpdatedState(if (telemetry.posY.isFinite()) telemetry.posY.toFloat() else 0f)
+    val targetZ by rememberUpdatedState(if (telemetry.posZ.isFinite()) telemetry.posZ.toFloat() else 0f)
+    val targetHeading by rememberUpdatedState(if (telemetry.headingDegrees.isFinite()) telemetry.headingDegrees.toFloat() else 0f)
 
     // Estados suavizados para renderizado continuo e interpolado (60-120 Hz)
     var smoothTruckX by remember { mutableFloatStateOf(targetX) }
     var smoothTruckY by remember { mutableFloatStateOf(targetY) }
     var smoothTruckZ by remember { mutableFloatStateOf(targetZ) }
-    var smoothHeading by remember { mutableFloatStateOf(targetHeading) }
+    var smoothHeading by remember { mutableFloatStateOf(((targetHeading % 360f) + 360f) % 360f) }
 
     LaunchedEffect(telemetry.posX, telemetry.posZ) {
         if (abs(smoothTruckX) < 0.001f && abs(smoothTruckZ) < 0.001f && (abs(targetX) > 0.001f || abs(targetZ) > 0.001f)) {
             smoothTruckX = targetX
             smoothTruckY = targetY
             smoothTruckZ = targetZ
-            smoothHeading = targetHeading
+            smoothHeading = ((targetHeading % 360f) + 360f) % 360f
         }
     }
 
@@ -279,14 +308,14 @@ fun GpsMapCanvas(
                     smoothTruckX = tx
                     smoothTruckY = ty
                     smoothTruckZ = tz
-                    smoothHeading = th
+                    smoothHeading = ((th % 360f) + 360f) % 360f
                 } else {
                     smoothTruckX += dx * lerpFactor
                     smoothTruckY += dy * lerpFactor
                     smoothTruckZ += dz * lerpFactor
 
-                    val headingDiff = ((th - smoothHeading + 540f) % 360f) - 180f
-                    smoothHeading += headingDiff * lerpFactor
+                    val headingDiff = ((th - smoothHeading) % 360f + 540f) % 360f - 180f
+                    smoothHeading = (((smoothHeading + headingDiff * lerpFactor) % 360f) + 360f) % 360f
                 }
             }
         }
@@ -297,6 +326,7 @@ fun GpsMapCanvas(
     val cache2D = remember { Viewport2DCache() }
     val cache3D = remember { Viewport3DCache() }
     val routeCache = remember { RouteRenderCache() }
+    val scratchCache = remember { RenderScratchCache() }
     val roadSegPool = remember { RoadSegPool3D() }
     val routeSegPool = remember { RouteSegPool3D() }
     val reusablePaths = remember { ReusableCanvasPaths() }
@@ -404,26 +434,61 @@ fun GpsMapCanvas(
                 }
             }
             .pointerInput(Unit) {
-                var pendingPan = Offset.Zero
-                detectTransformGestures { _, pan, zoom, _ ->
-                    val newZoom = (currentZoom * zoom).coerceIn(0.10f, 4.5f)
-                    currentOnZoom(newZoom)
-                    if (currentViewMode == MapViewMode.MODE_2D_TOP_DOWN) {
-                        val isPinchZoom = abs(zoom - 1f) >= 0.03f
-                        if (isPinchZoom) {
-                            pendingPan = Offset.Zero
-                        } else if (pan.x != 0f || pan.y != 0f) {
-                            if (!currentFollowing) {
-                                currentOnPan(currentPan + pan)
-                            } else {
-                                pendingPan += pan
-                                if (pendingPan.getDistance() > 8f) {
-                                    currentOnPan(currentPan + pendingPan)
-                                    pendingPan = Offset.Zero
+                awaitEachGesture {
+                    var zoomAcc = 1f
+                    var panAcc = Offset.Zero
+                    var pastTouchSlop = false
+                    val touchSlop = viewConfiguration.touchSlop
+                    var pendingPan = Offset.Zero
+
+                    awaitFirstDown(requireUnconsumed = false)
+                    do {
+                        val event = awaitPointerEvent()
+                        val canceled = event.changes.any { it.isConsumed }
+                        if (!canceled) {
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            if (!pastTouchSlop) {
+                                zoomAcc *= zoomChange
+                                panAcc += panChange
+                                val centroidSize = event.calculateCentroidSize(useCurrent = false)
+                                val zoomMotion = abs(1f - zoomAcc) * centroidSize
+                                val panMotion = panAcc.getDistance()
+                                if (zoomMotion > touchSlop || panMotion > touchSlop) {
+                                    pastTouchSlop = true
+                                }
+                            }
+                            if (pastTouchSlop) {
+                                val newZoom = if (currentViewMode == MapViewMode.MODE_3D_PERSPECTIVE) {
+                                    (currentZoom * zoomChange).coerceIn(0.55f, 2.1f)
+                                } else {
+                                    (currentZoom * zoomChange).coerceIn(0.10f, 4.5f)
+                                }
+                                if (zoomChange != 1f) {
+                                    currentOnZoom(newZoom)
+                                }
+                                if (currentViewMode == MapViewMode.MODE_2D_TOP_DOWN) {
+                                    val isPinchZoom = abs(zoomChange - 1f) >= 0.03f
+                                    if (isPinchZoom) {
+                                        pendingPan = Offset.Zero
+                                    } else if (panChange.x != 0f || panChange.y != 0f) {
+                                        if (!currentFollowing) {
+                                            currentOnPan(currentPan + panChange)
+                                        } else {
+                                            pendingPan += panChange
+                                            if (pendingPan.getDistance() > 8f) {
+                                                currentOnPan(currentPan + pendingPan)
+                                                pendingPan = Offset.Zero
+                                            }
+                                        }
+                                    }
+                                }
+                                event.changes.forEach {
+                                    if (it.positionChanged()) it.consume()
                                 }
                             }
                         }
-                    }
+                    } while (!canceled && event.changes.any { it.pressed })
                 }
             }
     ) {
@@ -432,10 +497,12 @@ fun GpsMapCanvas(
             return@Canvas
         }
 
-        // Snapping inteligente throttled: sólo se ejecuta si el camión se movió > 1.8 metros o cambió ruta/grafo
+        // Snapping inteligente: re-consulta el MapEdge cada > 1.8m o > 8 deg, pero proyecta cada frame a 60-120 FPS
         val dxSnap = smoothTruckX - snapCache.lastX
         val dzSnap = smoothTruckZ - snapCache.lastZ
-        val dHeadingSnap = abs(smoothHeading - snapCache.lastHeading)
+        val dHeadingSnap = if (snapCache.lastHeading.isNaN()) 999f else {
+            abs(((smoothHeading - snapCache.lastHeading) % 360f + 540f) % 360f - 180f)
+        }
         val snap = if (snapCache.cachedGraph !== graph || snapCache.cachedRoute !== activeRoute ||
             snapCache.lastX.isNaN() || (dxSnap * dxSnap + dzSnap * dzSnap) > 3.24f || dHeadingSnap > 8f
         ) {
@@ -457,12 +524,45 @@ fun GpsMapCanvas(
             snapCache.cachedSnap
         }
 
-        val truckX = snap?.snappedX ?: smoothTruckX
-        val truckZ = snap?.snappedZ ?: smoothTruckZ
+        var truckX = smoothTruckX
+        var truckZ = smoothTruckZ
+        if (snap != null) {
+            val poly = snap.edge.polyline
+            if (poly.size >= 2) {
+                val startSeg = (snap.segmentIndex - 1).coerceAtLeast(0)
+                val endSeg = (snap.segmentIndex + 1).coerceAtMost(poly.size - 2)
+                var bestSq = Float.MAX_VALUE
+                var bestPx = snap.snappedX
+                var bestPz = snap.snappedZ
+                for (i in startSeg..endSeg) {
+                    val p1 = poly[i]
+                    val p2 = poly[i + 1]
+                    val vx = p2.x - p1.x
+                    val vz = p2.z - p1.z
+                    val lenSq = vx * vx + vz * vz
+                    val t = if (lenSq > 0.0001f) {
+                        (((smoothTruckX - p1.x) * vx + (smoothTruckZ - p1.z) * vz) / lenSq).coerceIn(0f, 1f)
+                    } else 0f
+                    val px = p1.x + t * vx
+                    val pz = p1.z + t * vz
+                    val dSq = (smoothTruckX - px) * (smoothTruckX - px) + (smoothTruckZ - pz) * (smoothTruckZ - pz)
+                    if (dSq < bestSq) {
+                        bestSq = dSq
+                        bestPx = px
+                        bestPz = pz
+                    }
+                }
+                truckX = bestPx
+                truckZ = bestPz
+            } else {
+                truckX = snap.snappedX
+                truckZ = snap.snappedZ
+            }
+        }
         val headingDeg = smoothHeading
 
-        // Trazado de ruta activa pre-suavizado con ventana deslizante O(1)
-        val smoothRoutePoints = getOrUpdateSmoothedRoute(activeRoute, truckX, truckZ, routeCache)
+        // Trazado de ruta activa pre-suavizado con ventana deslizante O(1) sin copias de lista
+        updateSmoothedRouteTrim(activeRoute, truckX, truckZ, headingDeg, routeCache)
 
         when (viewMode) {
             MapViewMode.MODE_2D_TOP_DOWN -> {
@@ -487,11 +587,12 @@ fun GpsMapCanvas(
 
                 if (cache2D.cachedGraph !== graph || cache2D.cachedRoute !== activeRoute ||
                     distFromLast2D > worldThresholdSq || scaleRatio > 0.08f ||
-                    cache2D.lastWasLowZoom != isLowZoom || cache2D.edges.isEmpty()
+                    cache2D.lastWasLowZoom != isLowZoom || !cache2D.hasCache
                 ) {
                     val visible = graph.getEdgesNear(viewCenterX, viewCenterZ, viewRadius * 1.25f)
                     cache2D.cachedGraph = graph
                     cache2D.cachedRoute = activeRoute
+                    cache2D.hasCache = true
                     cache2D.edges = visible
                     cache2D.lastX = viewCenterX
                     cache2D.lastZ = viewCenterZ
@@ -541,6 +642,7 @@ fun GpsMapCanvas(
                     graph = graph,
                     cache2D = cache2D,
                     reusablePaths = reusablePaths,
+                    scratchCache = scratchCache,
                     truckX = truckX,
                     truckZ = truckZ,
                     viewCenterX = viewCenterX,
@@ -550,7 +652,7 @@ fun GpsMapCanvas(
                     cy = cy,
                     baseScale = baseScale,
                     headingDeg = headingDeg,
-                    routePoints = smoothRoutePoints,
+                    routeCache = routeCache,
                     zoomScale = zoomScale,
                     isFollowingTruck = isFollowingTruck,
                     cursorPulseAlpha = cursorPulseAlpha,
@@ -568,11 +670,12 @@ fun GpsMapCanvas(
                     qx * qx + qz * qz
                 }
                 if (cache3D.cachedGraph !== graph || cache3D.cachedRoute !== activeRoute ||
-                    distFromLast3D > 225f || cache3D.edges.isEmpty()
+                    distFromLast3D > 225f || !cache3D.hasCache
                 ) {
                     val nearby = graph.getEdgesNear(truckX, truckZ, 1400f)
                     cache3D.cachedGraph = graph
                     cache3D.cachedRoute = activeRoute
+                    cache3D.hasCache = true
                     cache3D.edges = nearby
                     cache3D.lastX = truckX
                     cache3D.lastZ = truckZ
@@ -595,7 +698,7 @@ fun GpsMapCanvas(
                 }
 
                 // Controlador de zoom dinámico en función de la velocidad
-                val speedKmh = telemetry.speedKmh.coerceAtLeast(0f)
+                val speedKmh = (if (telemetry.speedKmh.isFinite()) telemetry.speedKmh else 0f).coerceAtLeast(0f)
                 val speedZoomRatio = (speedKmh / 90f).coerceIn(0f, 1f)
                 val dynamicZoom = zoomScale * (0.85f + speedZoomRatio * 0.35f)
 
@@ -605,10 +708,11 @@ fun GpsMapCanvas(
                     roadPool = roadSegPool,
                     routePool = routeSegPool,
                     reusablePaths = reusablePaths,
+                    scratchCache = scratchCache,
                     truckX = truckX,
                     truckZ = truckZ,
                     headingDeg = headingDeg,
-                    routePoints = smoothRoutePoints,
+                    routeCache = routeCache,
                     zoomScale = dynamicZoom,
                     cursorPulseAlpha = cursorPulseAlpha,
                     mapTheme = mapTheme,
@@ -625,10 +729,11 @@ fun GpsMapCanvas(
 // SUAVIZADO DE CURVAS Y ENCADENADO DE VÍAS
 // =====================================================================
 private fun smoothPolyline(points: List<Point3D>, iterations: Int = 1): List<Point3D> {
-    if (points.size < 3 || iterations <= 0 || points.size > 2000) return points
+    if (points.size < 3 || iterations <= 0 || points.size > 60000) return points
+    val effectiveIter = if (points.size > 12000) 1 else iterations
     var current = points
-    repeat(iterations) {
-        if (current.size < 3 || current.size > 2000) return current
+    repeat(effectiveIter) {
+        if (current.size < 3 || current.size > 60000) return current
         val next = ArrayList<Point3D>(current.size * 2)
         next.add(current.first())
         for (i in 0 until current.size - 1) {
@@ -678,17 +783,20 @@ private fun subdivideLongSegments(points: List<Point3D>, maxSegLenMeters: Float)
     return out
 }
 
-private fun getOrUpdateSmoothedRoute(
+private fun updateSmoothedRouteTrim(
     activeRoute: RouteResult?,
     truckX: Float,
     truckZ: Float,
+    headingDeg: Float,
     routeCache: RouteRenderCache
-): List<Point3D> {
+) {
     if (activeRoute == null || activeRoute.edgePath.isEmpty()) {
         routeCache.cachedRoute = null
         routeCache.fullSmoothedPoints = emptyList()
-        routeCache.trimmedPoints = emptyList()
-        return emptyList()
+        routeCache.cumDistances = FloatArray(0)
+        routeCache.lastTrimIdx = 0
+        routeCache.trimProjPoint = null
+        return
     }
 
     // Si la ruta cambió, construir el trazado suavizado completo de la ruta UNA SOLA VEZ
@@ -706,32 +814,50 @@ private fun getOrUpdateSmoothedRoute(
             }
         }
         val sub = subdivideLongSegments(raw, 6f)
-        routeCache.fullSmoothedPoints = smoothPolyline(sub, iterations = 2)
+        val smoothed = smoothPolyline(sub, iterations = 2)
+        val cum = FloatArray(smoothed.size)
+        var accDist = 0f
+        for (i in 1 until smoothed.size) {
+            val a = smoothed[i - 1]
+            val b = smoothed[i]
+            val dx = b.x - a.x
+            val dz = b.z - a.z
+            accDist += sqrt(dx * dx + dz * dz)
+            cum[i] = accDist
+        }
+        routeCache.fullSmoothedPoints = smoothed
+        routeCache.cumDistances = cum
         routeCache.cachedRoute = activeRoute
         routeCache.lastTruckX = Float.NaN
         routeCache.lastTruckZ = Float.NaN
         routeCache.lastTrimIdx = 0
-        routeCache.trimmedPoints = routeCache.fullSmoothedPoints
+        routeCache.trimProjPoint = smoothed.firstOrNull()
     }
 
     val fullPoints = routeCache.fullSmoothedPoints
-    if (fullPoints.size < 2) return fullPoints
+    if (fullPoints.size < 2) return
 
-    // Solo recortar si el camión se movió más de 0.8 metros
+    // Solo recortar si el camión se movió más de 0.8 metros (sin copiar la lista)
     val dx = truckX - routeCache.lastTruckX
     val dz = truckZ - routeCache.lastTruckZ
     if (!routeCache.lastTruckX.isNaN() && (dx * dx + dz * dz) < 0.64f) {
-        return routeCache.trimmedPoints
+        return
     }
 
-    // Búsqueda en ventana cercana a la posición anterior para O(1)
+    val hasHeading = headingDeg.isFinite()
+    val rad = if (hasHeading) Math.toRadians(headingDeg.toDouble()).toFloat() else 0f
+    val hx = if (hasHeading) sin(rad) else 0f
+    val hz = if (hasHeading) -cos(rad) else 0f
+
+    // Búsqueda en ventana cercana a la posición anterior para O(1) con preferencia direccional
     var bestIdx = -1
-    var bestDistSq = Float.MAX_VALUE
+    var bestEffectiveSq = Float.MAX_VALUE
+    var bestRawDistSq = Float.MAX_VALUE
     var bestProjX = truckX
     var bestProjY = 0f
     var bestProjZ = truckZ
-    val startWindow = (routeCache.lastTrimIdx - 12).coerceAtLeast(0)
-    val endWindow = (routeCache.lastTrimIdx + 25).coerceAtMost(fullPoints.size - 2)
+    val startWindow = (routeCache.lastTrimIdx - 4).coerceAtLeast(0)
+    val endWindow = (routeCache.lastTrimIdx + 30).coerceAtMost(fullPoints.size - 2)
 
     for (i in startWindow..endWindow) {
         val p1 = fullPoints[i]
@@ -745,8 +871,14 @@ private fun getOrUpdateSmoothedRoute(
         val px = p1.x + t * vx
         val pz = p1.z + t * vz
         val dSq = (truckX - px) * (truckX - px) + (truckZ - pz) * (truckZ - pz)
-        if (dSq < bestDistSq) {
-            bestDistSq = dSq
+        var effectiveSq = dSq
+        if (hasHeading && lenSq > 0.0001f) {
+            val dot = (vx * hx + vz * hz) / sqrt(lenSq)
+            if (dot < -0.35f) effectiveSq *= 5f
+        }
+        if (effectiveSq < bestEffectiveSq) {
+            bestEffectiveSq = effectiveSq
+            bestRawDistSq = dSq
             bestIdx = i
             bestProjX = px
             bestProjY = p1.y + t * (p2.y - p1.y)
@@ -754,8 +886,9 @@ private fun getOrUpdateSmoothedRoute(
         }
     }
 
-    // Si no está en la ventana cercana (< 45m), buscar en toda la lista
-    if (bestDistSq > 2025f) {
+    // Si no está en la ventana cercana (< 45m), buscar en toda la lista exigiendo alineacion y progreso monotono
+    if (bestRawDistSq > 2025f) {
+        bestEffectiveSq = Float.MAX_VALUE
         for (i in 0 until fullPoints.size - 1) {
             val p1 = fullPoints[i]
             val p2 = fullPoints[i + 1]
@@ -768,8 +901,16 @@ private fun getOrUpdateSmoothedRoute(
             val px = p1.x + t * vx
             val pz = p1.z + t * vz
             val dSq = (truckX - px) * (truckX - px) + (truckZ - pz) * (truckZ - pz)
-            if (dSq < bestDistSq) {
-                bestDistSq = dSq
+            var effectiveSq = dSq
+            if (hasHeading && lenSq > 0.0001f) {
+                val dot = (vx * hx + vz * hz) / sqrt(lenSq)
+                if (dot < -0.35f) effectiveSq *= 5f
+            }
+            if (i < routeCache.lastTrimIdx) {
+                effectiveSq += 100f // Penalizar retroceso en lazos al buscar globalmente
+            }
+            if (effectiveSq < bestEffectiveSq) {
+                bestEffectiveSq = effectiveSq
                 bestIdx = i
                 bestProjX = px
                 bestProjY = p1.y + t * (p2.y - p1.y)
@@ -782,17 +923,7 @@ private fun getOrUpdateSmoothedRoute(
     routeCache.lastTrimIdx = trimStart
     routeCache.lastTruckX = truckX
     routeCache.lastTruckZ = truckZ
-    routeCache.trimmedPoints = if (bestIdx >= 0) {
-        val out = ArrayList<Point3D>(fullPoints.size - trimStart)
-        out.add(Point3D(bestProjX, bestProjY, bestProjZ))
-        for (k in (trimStart + 1) until fullPoints.size) {
-            out.add(fullPoints[k])
-        }
-        out
-    } else {
-        fullPoints
-    }
-    return routeCache.trimmedPoints
+    routeCache.trimProjPoint = if (bestIdx >= 0) Point3D(bestProjX, bestProjY, bestProjZ) else fullPoints[0]
 }
 
 private fun chainEdges(edges: List<MapEdge>): List<List<Point3D>> {
@@ -969,6 +1100,7 @@ private fun DrawScope.drawMap2D(
     graph: MapGraph,
     cache2D: Viewport2DCache,
     reusablePaths: ReusableCanvasPaths,
+    scratchCache: RenderScratchCache,
     truckX: Float,
     truckZ: Float,
     viewCenterX: Float,
@@ -978,7 +1110,7 @@ private fun DrawScope.drawMap2D(
     cy: Float,
     baseScale: Float,
     headingDeg: Float,
-    routePoints: List<Point3D>,
+    routeCache: RouteRenderCache,
     zoomScale: Float,
     isFollowingTruck: Boolean,
     cursorPulseAlpha: Float,
@@ -1032,10 +1164,14 @@ private fun DrawScope.drawMap2D(
 
     // GLOBAL PASS 3: Brillo y trazo discontinuo neón para caminos ocultos (Secret Roads)
     if (hasHidden) {
-        val dashEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(
-            floatArrayOf(14f * zoomScale.coerceIn(0.6f, 2.0f), 8f * zoomScale.coerceIn(0.6f, 2.0f)),
-            0f
-        )
+        val clampedDashZoom = zoomScale.coerceIn(0.6f, 2.0f)
+        if (scratchCache.dashEffect == null || abs(scratchCache.lastDashZoom - clampedDashZoom) > 0.01f) {
+            scratchCache.lastDashZoom = clampedDashZoom
+            scratchCache.dashEffect = PathEffect.dashPathEffect(
+                floatArrayOf(14f * clampedDashZoom, 8f * clampedDashZoom),
+                0f
+            )
+        }
         drawPath(
             reusablePaths.hiddenPath,
             Color(0x40F59E0B),
@@ -1048,27 +1184,44 @@ private fun DrawScope.drawMap2D(
                 width = (hiddenW * 0.75f).coerceAtLeast(3.2f),
                 cap = StrokeCap.Round,
                 join = StrokeJoin.Round,
-                pathEffect = dashEffect
+                pathEffect = scratchCache.dashEffect
             )
         )
     }
 
-    // 2. Ruta activa GPS (Cinta continua con Path reutilizable)
-    if (routePoints.size >= 2) {
+    // 2. Ruta activa GPS (Cinta continua desde trimIdx + trimProjPoint sin copiar lista)
+    val fullRoutePts = routeCache.fullSmoothedPoints
+    val trimIdx = routeCache.lastTrimIdx
+    val trimProj = routeCache.trimProjPoint
+    if (fullRoutePts.size >= 2 && trimIdx < fullRoutePts.size - 1) {
         val rPath = reusablePaths.routePath
         rPath.reset()
         var hasRoute = false
-        for (i in routePoints.indices) {
-            val pt = routePoints[i]
+        val firstPt = trimProj ?: fullRoutePts[trimIdx]
+        val firstSx = cx + (firstPt.x - viewCenterX) * baseScale
+        val firstSy = cy + (firstPt.z - viewCenterZ) * baseScale
+        var started = false
+        if (firstSx.isFinite() && firstSy.isFinite()) {
+            rPath.moveTo(firstSx, firstSy)
+            started = true
+        }
+        val stride = if (zoomScale < 0.35f) 3 else 1
+        var i = trimIdx + 1
+        while (i < fullRoutePts.size) {
+            val pt = fullRoutePts[i]
             val sx = cx + (pt.x - viewCenterX) * baseScale
             val sy = cy + (pt.z - viewCenterZ) * baseScale
-            if (sx.isNaN() || sy.isNaN()) continue
-            if (i == 0) {
-                rPath.moveTo(sx, sy)
-            } else {
-                rPath.lineTo(sx, sy)
-                hasRoute = true
+            if (sx.isFinite() && sy.isFinite()) {
+                if (!started) {
+                    rPath.moveTo(sx, sy)
+                    started = true
+                } else {
+                    rPath.lineTo(sx, sy)
+                    hasRoute = true
+                }
             }
+            if (i == fullRoutePts.size - 1) break
+            i = (i + stride).coerceAtMost(fullRoutePts.size - 1)
         }
 
         if (hasRoute) {
@@ -1203,10 +1356,11 @@ private fun DrawScope.drawMap3D(
     roadPool: RoadSegPool3D,
     routePool: RouteSegPool3D,
     reusablePaths: ReusableCanvasPaths,
+    scratchCache: RenderScratchCache,
     truckX: Float,
     truckZ: Float,
     headingDeg: Float,
-    routePoints: List<Point3D>,
+    routeCache: RouteRenderCache,
     zoomScale: Float,
     cursorPulseAlpha: Float,
     mapTheme: MapThemeStyle,
@@ -1223,76 +1377,74 @@ private fun DrawScope.drawMap3D(
     val focal3D = 440f * zoomScale.coerceIn(0.6f, 2.0f)
     val camHeight3D = (targetTruckY - horizonY) / (focal3D / camDist3D)
 
-    // 1. Cielo crepuscular según estilo de mapa
-    val skyColors = when (mapTheme) {
-        MapThemeStyle.DARK_PREMIUM -> listOf(
-            Color(0xFF030508),
-            Color(0xFF080F1D),
-            Color(0xFF112238),
-            Color(0xFF1A3350)
+    // 1. Cielo, resplandor y terreno cacheados por (mapTheme, h)
+    if (scratchCache.theme != mapTheme || scratchCache.height3D != h ||
+        scratchCache.skyBrush == null || scratchCache.horizonGlowBrush == null || scratchCache.groundBrush == null
+    ) {
+        val skyColors = when (mapTheme) {
+            MapThemeStyle.DARK_PREMIUM -> listOf(
+                Color(0xFF030508),
+                Color(0xFF080F1D),
+                Color(0xFF112238),
+                Color(0xFF1A3350)
+            )
+            MapThemeStyle.HIGH_CONTRAST -> listOf(
+                Color(0xFF000000),
+                Color(0xFF05070B),
+                Color(0xFF0F172A),
+                Color(0xFF1E293B)
+            )
+            MapThemeStyle.CYBER_NEON -> listOf(
+                Color(0xFF04010A),
+                Color(0xFF0F0726),
+                Color(0xFF1E1042),
+                Color(0xFF0B2948)
+            )
+        }
+        val horizonGlow = if (mapTheme == MapThemeStyle.CYBER_NEON) Color(0xFFC7F36B) else Color(0xFF00E5FF)
+        val groundColors = when (mapTheme) {
+            MapThemeStyle.DARK_PREMIUM -> listOf(
+                Color(0xFF080D14),
+                Color(0xFF0C1013),
+                Color(0xFF10151A),
+                Color(0xFF151C21)
+            )
+            MapThemeStyle.HIGH_CONTRAST -> listOf(
+                Color(0xFF000000),
+                Color(0xFF030508),
+                Color(0xFF070A0E),
+                Color(0xFF0B0F14)
+            )
+            MapThemeStyle.CYBER_NEON -> listOf(
+                Color(0xFF050711),
+                Color(0xFF070B18),
+                Color(0xFF0A1022),
+                Color(0xFF0D152C)
+            )
+        }
+        scratchCache.theme = mapTheme
+        scratchCache.height3D = h
+        scratchCache.skyBrush = Brush.verticalGradient(colors = skyColors, startY = 0f, endY = horizonY)
+        scratchCache.horizonGlowBrush = Brush.verticalGradient(
+            colors = listOf(horizonGlow.copy(alpha = 0.35f), Color.Transparent),
+            startY = horizonY - 4f,
+            endY = horizonY + 28f
         )
-        MapThemeStyle.HIGH_CONTRAST -> listOf(
-            Color(0xFF000000),
-            Color(0xFF05070B),
-            Color(0xFF0F172A),
-            Color(0xFF1E293B)
-        )
-        MapThemeStyle.CYBER_NEON -> listOf(
-            Color(0xFF04010A),
-            Color(0xFF0F0726),
-            Color(0xFF1E1042),
-            Color(0xFF0B2948)
-        )
+        scratchCache.groundBrush = Brush.verticalGradient(colors = groundColors, startY = horizonY, endY = h)
     }
+
     drawRect(
-        brush = Brush.verticalGradient(
-            colors = skyColors,
-            startY = 0f,
-            endY = horizonY
-        ),
+        brush = scratchCache.skyBrush!!,
         topLeft = Offset.Zero,
         size = Size(w, horizonY)
     )
-
-    // Resplandor en el horizonte
-    val horizonGlow = if (mapTheme == MapThemeStyle.CYBER_NEON) Color(0xFFC7F36B) else Color(0xFF00E5FF)
     drawRect(
-        brush = Brush.verticalGradient(
-            listOf(horizonGlow.copy(alpha = 0.35f), Color.Transparent),
-            startY = horizonY - 4f,
-            endY = horizonY + 28f
-        ),
+        brush = scratchCache.horizonGlowBrush!!,
         topLeft = Offset(0f, horizonY - 4f),
         size = Size(w, 32f)
     )
-
-    // 2. Terreno oscuro según estilo de mapa
-    val groundColors = when (mapTheme) {
-        MapThemeStyle.DARK_PREMIUM -> listOf(
-            Color(0xFF080D14),
-            Color(0xFF0C1013),
-            Color(0xFF10151A),
-            Color(0xFF151C21)
-        )
-        MapThemeStyle.HIGH_CONTRAST -> listOf(
-            Color(0xFF000000),
-            Color(0xFF030508),
-            Color(0xFF070A0E),
-            Color(0xFF0B0F14)
-        )
-        MapThemeStyle.CYBER_NEON -> listOf(
-            Color(0xFF050711),
-            Color(0xFF070B18),
-            Color(0xFF0A1022),
-            Color(0xFF0D152C)
-        )
-    }
     drawRect(
-        brush = Brush.verticalGradient(
-            colors = groundColors,
-            startY = horizonY,
-            endY = h
-        ),
+        brush = scratchCache.groundBrush!!,
         topLeft = Offset(0f, horizonY),
         size = Size(w, h - horizonY)
     )
@@ -1302,23 +1454,25 @@ private fun DrawScope.drawMap3D(
     val cosH = cos(-camHeadingRad)
     val sinH = sin(-camHeadingRad)
 
-    fun projectPoint3D(wx: Float, wz: Float): Offset? {
+    fun projectPoint3D(wx: Float, wz: Float): Boolean {
         val dx = wx - truckX
         val dz = wz - truckZ
         val rx = dx * cosH - dz * sinH
         val rz = -(dx * sinH + dz * cosH)
 
         val depth = rz + camDist3D
-        if (depth < 8f) return null
+        if (depth < 8f || depth > 1600f) return false
 
         val factor = focal3D / depth
         val sx = (w * 0.5f) + rx * factor
         val sy = horizonY + (camHeight3D * factor)
-        if (sy < horizonY - 2f || sy > h + 300f) return null
-        return Offset(sx, sy)
+        if (sy < horizonY - 2f || sy > h + 300f) return false
+        scratchCache.projX1 = sx
+        scratchCache.projY1 = sy
+        return true
     }
 
-    fun projectSegment3D(x1: Float, z1: Float, x2: Float, z2: Float): Pair<Offset, Offset>? {
+    fun projectSegment3D(x1: Float, z1: Float, x2: Float, z2: Float): Boolean {
         val dx1 = x1 - truckX
         val dz1 = z1 - truckZ
         var rx1 = dx1 * cosH - dz1 * sinH
@@ -1333,7 +1487,8 @@ private fun DrawScope.drawMap3D(
         var depth1 = rz1 + camDist3D
         var depth2 = rz2 + camDist3D
 
-        if (depth1 < minDepth && depth2 < minDepth) return null
+        if (depth1 < minDepth && depth2 < minDepth) return false
+        if (depth1 > 1600f && depth2 > 1600f) return false
 
         if (depth1 < minDepth) {
             val t = (minDepth - depth1) / (depth2 - depth1)
@@ -1354,15 +1509,19 @@ private fun DrawScope.drawMap3D(
         val sy2 = horizonY + (camHeight3D * factor2)
 
         if ((sy1 < horizonY - 2f && sy2 < horizonY - 2f) || (sy1 > h + 300f && sy2 > h + 300f)) {
-            return null
+            return false
         }
         if ((sx1 < -w * 1.5f && sx2 < -w * 1.5f) || (sx1 > w * 2.5f && sx2 > w * 2.5f)) {
-            return null
+            return false
         }
-        return Pair(Offset(sx1, sy1), Offset(sx2, sy2))
+        scratchCache.projX1 = sx1
+        scratchCache.projY1 = sy1
+        scratchCache.projX2 = sx2
+        scratchCache.projY2 = sy2
+        return true
     }
 
-    fun projectRouteSegment3D(x1: Float, z1: Float, x2: Float, z2: Float): Pair<Offset, Offset>? {
+    fun projectRouteSegment3D(x1: Float, z1: Float, x2: Float, z2: Float): Boolean {
         val dx1 = x1 - truckX
         val dz1 = z1 - truckZ
         var rx1 = dx1 * cosH - dz1 * sinH
@@ -1373,18 +1532,19 @@ private fun DrawScope.drawMap3D(
         var rx2 = dx2 * cosH - dz2 * sinH
         var rz2 = -(dx2 * sinH + dz2 * cosH)
 
-        // Recortar estrictamente contra el plano del camion (rz >= 0f) para que nunca se dibuje detras
-        if (rz1 < 0f && rz2 < 0f) return null
+        // Recortar estrictamente contra el plano del camion (rz >= 0f) y horizonte visible (<= 1550f)
+        if (rz1 < 0f && rz2 < 0f) return false
+        if (rz1 > 1550f && rz2 > 1550f) return false
 
         if (rz1 < 0f) {
             val denom = rz2 - rz1
-            if (abs(denom) < 1e-5f) return null
+            if (abs(denom) < 1e-5f) return false
             val t = (0f - rz1) / denom
             rx1 += (rx2 - rx1) * t
             rz1 = 0f
         } else if (rz2 < 0f) {
             val denom = rz1 - rz2
-            if (abs(denom) < 1e-5f) return null
+            if (abs(denom) < 1e-5f) return false
             val t = (0f - rz2) / denom
             rx2 += (rx1 - rx2) * t
             rz2 = 0f
@@ -1392,6 +1552,7 @@ private fun DrawScope.drawMap3D(
 
         val depth1 = rz1 + camDist3D
         val depth2 = rz2 + camDist3D
+        if (depth1 > 1600f && depth2 > 1600f) return false
 
         val factor1 = focal3D / depth1
         val sx1 = (w * 0.5f) + rx1 * factor1
@@ -1402,12 +1563,16 @@ private fun DrawScope.drawMap3D(
         val sy2 = horizonY + (camHeight3D * factor2)
 
         if ((sy1 < horizonY - 2f && sy2 < horizonY - 2f) || (sy1 > h + 300f && sy2 > h + 300f)) {
-            return null
+            return false
         }
         if ((sx1 < -w * 1.5f && sx2 < -w * 1.5f) || (sx1 > w * 2.5f && sx2 > w * 2.5f)) {
-            return null
+            return false
         }
-        return Pair(Offset(sx1, sy1), Offset(sx2, sy2))
+        scratchCache.projX1 = sx1
+        scratchCache.projY1 = sy1
+        scratchCache.projX2 = sx2
+        scratchCache.projY2 = sy2
+        return true
     }
 
     clipRect(0f, horizonY, w, h) {
@@ -1417,7 +1582,7 @@ private fun DrawScope.drawMap3D(
             MapThemeStyle.HIGH_CONTRAST -> Color(0x24FFFFFF)
             MapThemeStyle.CYBER_NEON -> Color(0x28C7F36B)
         }
-        drawGroundGrid3D(truckX, truckZ, gridColor) { x1, z1, x2, z2 ->
+        drawGroundGrid3D(truckX, truckZ, gridColor, scratchCache) { x1, z1, x2, z2 ->
             projectSegment3D(x1, z1, x2, z2)
         }
 
@@ -1428,15 +1593,19 @@ private fun DrawScope.drawMap3D(
             for (i in 0 until pts.size - 1) {
                 val p0 = pts[i]
                 val p1 = pts[i + 1]
-                val seg = projectSegment3D(p0.x, p0.z, p1.x, p1.z) ?: continue
-                val midY = (seg.first.y + seg.second.y) * 0.5f
+                if (!projectSegment3D(p0.x, p0.z, p1.x, p1.z)) continue
+                val sx1 = scratchCache.projX1
+                val sy1 = scratchCache.projY1
+                val sx2 = scratchCache.projX2
+                val sy2 = scratchCache.projY2
+                val midY = (sy1 + sy2) * 0.5f
                 val depthRatio = ((midY - horizonY) / (targetTruckY - horizonY)).coerceIn(0.08f, 1.4f)
                 val casingW = if (road.isFreeway) {
                     (24f * depthRatio * road.laneWidthFactor).coerceIn(3.5f, 38f)
                 } else {
                     (14f * depthRatio * road.laneWidthFactor).coerceIn(2.0f, 22f)
                 }
-                roadPool.add(seg.first.x, seg.first.y, seg.second.x, seg.second.y, casingW, depthRatio, road.isFreeway, road.lanes, road.isHidden)
+                roadPool.add(sx1, sy1, sx2, sy2, casingW, depthRatio, road.isFreeway, road.lanes, road.isHidden)
             }
         }
 
@@ -1518,17 +1687,28 @@ private fun DrawScope.drawMap3D(
             }
         }
 
-        // 5. Ruta de Navegación Activa GPS en 3D (estrictamente hacia adelante rz >= 0f)
+        // 5. Ruta de Navegación Activa GPS en 3D (estrictamente hacia adelante rz >= 0f, desde trimIdx hasta horizonte)
         routePool.reset()
-        if (routePoints.size >= 2) {
-            for (i in 0 until routePoints.size - 1) {
-                val p0 = routePoints[i]
-                val p1 = routePoints[i + 1]
-                val seg = projectRouteSegment3D(p0.x, p0.z, p1.x, p1.z) ?: continue
-                val midY = (seg.first.y + seg.second.y) * 0.5f
-                val depthRatio = ((midY - horizonY) / (targetTruckY - horizonY)).coerceIn(0.10f, 1.35f)
-                val rWidth = (28f * depthRatio).coerceIn(4.5f, 36f)
-                routePool.add(seg.first.x, seg.first.y, seg.second.x, seg.second.y, rWidth)
+        val fullRoutePts = routeCache.fullSmoothedPoints
+        val trimIdx = routeCache.lastTrimIdx
+        val cumDists = routeCache.cumDistances
+        if (fullRoutePts.size >= 2 && trimIdx < fullRoutePts.size - 1) {
+            val baseArc = if (trimIdx < cumDists.size) cumDists[trimIdx] else 0f
+            var prevPt = routeCache.trimProjPoint ?: fullRoutePts[trimIdx]
+            for (i in (trimIdx + 1) until fullRoutePts.size) {
+                val nextPt = fullRoutePts[i]
+                if (projectRouteSegment3D(prevPt.x, prevPt.z, nextPt.x, nextPt.z)) {
+                    val sx1 = scratchCache.projX1
+                    val sy1 = scratchCache.projY1
+                    val sx2 = scratchCache.projX2
+                    val sy2 = scratchCache.projY2
+                    val midY = (sy1 + sy2) * 0.5f
+                    val depthRatio = ((midY - horizonY) / (targetTruckY - horizonY)).coerceIn(0.10f, 1.35f)
+                    val rWidth = (28f * depthRatio).coerceIn(4.5f, 36f)
+                    routePool.add(sx1, sy1, sx2, sy2, rWidth)
+                }
+                prevPt = nextPt
+                if (i < cumDists.size && (cumDists[i] - baseArc) > 2600f) break
             }
 
             // Capa 1: Halo difuso
@@ -1564,15 +1744,17 @@ private fun DrawScope.drawMap3D(
         val dz = poi.z - truckZ
         if (dx * dx + dz * dz > 1000000f) continue // 1000m
 
-        val sp = projectPoint3D(poi.x, poi.z) ?: continue
-        if (sp.y in (horizonY + 12f)..(h + 60f) && sp.x in -60f..(w + 60f)) {
-            val depthRatio = ((sp.y - horizonY) / (targetTruckY - horizonY)).coerceIn(0.35f, 1.25f)
-            drawPoiMarker3D(poi, sp.x, sp.y - 10f * depthRatio, depthRatio, poiIconPaint, poiLabelPaint, poiBgPaint)
+        if (!projectPoint3D(poi.x, poi.z)) continue
+        val sx = scratchCache.projX1
+        val sy = scratchCache.projY1
+        if (sy in (horizonY + 12f)..(h + 60f) && sx in -60f..(w + 60f)) {
+            val depthRatio = ((sy - horizonY) / (targetTruckY - horizonY)).coerceIn(0.35f, 1.25f)
+            drawPoiMarker3D(poi, sx, sy - 10f * depthRatio, depthRatio, poiIconPaint, poiLabelPaint, poiBgPaint)
         }
     }
 
     // 7. Cursor 3D del camión de alto contraste (siempre dibujado AL FINAL)
-    drawTruckCursor3D(w * 0.5f, targetTruckY, cursorPulseAlpha, reusablePaths)
+    drawTruckCursor3D(w * 0.5f, targetTruckY, h, cursorPulseAlpha, reusablePaths, scratchCache)
 }
 
 private fun DrawScope.drawPoiMarker3D(
@@ -1621,7 +1803,8 @@ private fun DrawScope.drawGroundGrid3D(
     truckX: Float,
     truckZ: Float,
     gridColor: Color,
-    segmentProjector: (Float, Float, Float, Float) -> Pair<Offset, Offset>?
+    scratchCache: RenderScratchCache,
+    segmentProjector: (Float, Float, Float, Float) -> Boolean
 ) {
     val gridSpacing = 20f
     val gridRange = 140f
@@ -1633,18 +1816,26 @@ private fun DrawScope.drawGroundGrid3D(
 
     var curX = startX
     while (curX <= endX) {
-        val seg = segmentProjector(curX, truckZ - gridRange, curX, truckZ + gridRange)
-        if (seg != null) {
-            drawLine(gridColor, seg.first, seg.second, strokeWidth = 1.0f)
+        if (segmentProjector(curX, truckZ - gridRange, curX, truckZ + gridRange)) {
+            drawLine(
+                gridColor,
+                Offset(scratchCache.projX1, scratchCache.projY1),
+                Offset(scratchCache.projX2, scratchCache.projY2),
+                strokeWidth = 1.0f
+            )
         }
         curX += gridSpacing
     }
 
     var curZ = startZ
     while (curZ <= endZ) {
-        val seg = segmentProjector(truckX - gridRange, curZ, truckX + gridRange, curZ)
-        if (seg != null) {
-            drawLine(gridColor, seg.first, seg.second, strokeWidth = 1.0f)
+        if (segmentProjector(truckX - gridRange, curZ, truckX + gridRange, curZ)) {
+            drawLine(
+                gridColor,
+                Offset(scratchCache.projX1, scratchCache.projY1),
+                Offset(scratchCache.projX2, scratchCache.projY2),
+                strokeWidth = 1.0f
+            )
         }
         curZ += gridSpacing
     }
@@ -1653,8 +1844,10 @@ private fun DrawScope.drawGroundGrid3D(
 private fun DrawScope.drawTruckCursor3D(
     cx: Float,
     cy: Float,
+    h: Float,
     pulseAlpha: Float,
-    paths: ReusableCanvasPaths
+    paths: ReusableCanvasPaths,
+    scratchCache: RenderScratchCache
 ) {
     val r = 26f * density
 
@@ -1674,13 +1867,18 @@ private fun DrawScope.drawTruckCursor3D(
     headlightPath.lineTo(cx + r * 0.28f, cy - r * 0.35f)
     headlightPath.close()
 
-    drawPath(
-        path = headlightPath,
-        brush = Brush.verticalGradient(
+    if (scratchCache.headlightBrush == null || scratchCache.headlightHeight != h || scratchCache.headlightDensity != density) {
+        scratchCache.headlightHeight = h
+        scratchCache.headlightDensity = density
+        scratchCache.headlightBrush = Brush.verticalGradient(
             colors = listOf(Color(0x2CF8FAFC), Color(0x00F8FAFC)),
             startY = cy - r * 0.35f,
             endY = cy - r * 3.30f
         )
+    }
+    drawPath(
+        path = headlightPath,
+        brush = scratchCache.headlightBrush!!
     )
 
     // 3. Anillo exterior suave/pulsante en verde lima electrico (#C7F36B)

@@ -15,7 +15,7 @@
 
 ## 2. Origen y Trazabilidad de Constantes de Camara 3D (`GpsMapCanvas.kt`)
 
-La proyeccion 3D en perspectiva del navegador (`android/app/src/main/java/com/ats/gps/ui/map/GpsMapCanvas.kt`) utiliza un modelo de camara estenopeica (*pinhole*) sobre plano de suelo horizontal (`y = 0`), implementado en `drawMap3D` (lineas 1156-1299) y replicado en forma inversa en `detectTapGestures` (lineas 367-389).
+La proyeccion 3D en perspectiva del navegador (`android/app/src/main/java/com/ats/gps/ui/map/GpsMapCanvas.kt`) utiliza un modelo de camara estenopeica (*pinhole*) sobre plano de suelo horizontal (`y = 0`), implementado en `drawMap3D` (lineas 1353-1758, con `projectPoint3D` en lineas 1457-1473) y replicado en forma inversa en `detectTapGestures` (lineas 396-434).
 
 ### 2.1 Tabla de Constantes y Derivacion Geometrica
 

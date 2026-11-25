@@ -19,7 +19,7 @@
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize|uiMode|fontScale|locale|density"
             android:windowSoftInputMode="adjustResize"
-            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+            android:theme="@android:style/Theme.Material.NoActionBar">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

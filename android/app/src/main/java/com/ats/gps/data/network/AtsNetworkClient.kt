@@ -320,14 +320,7 @@ class AtsNetworkClient {
                         Result.failure(MapBuildingException("El servidor esta generando el mapa local"))
                     }
                     response.code == 404 -> {
-                        val errBody = response.body?.string() ?: ""
-                        if (errBody.contains("no ha sido generado", ignoreCase = true) ||
-                            errBody.contains("generando", ignoreCase = true)
-                        ) {
-                            Result.failure(MapBuildingException("El servidor esta generando el mapa local"))
-                        } else {
-                            Result.failure(IOException("No se pudo descargar el mapa. Codigo: ${response.code}"))
-                        }
+                        Result.failure(IOException("El mapa aun no ha sido generado en la PC. Ejecuta --build-map o POST /api/map/build."))
                     }
                     else -> {
                         Result.failure(IOException("No se pudo descargar el mapa. Codigo: ${response.code}"))
@@ -347,8 +340,11 @@ class AtsNetworkClient {
         onStatusChanged: (Boolean) -> Unit,
         onAuthExpired: () -> Unit = {}
     ) {
+        synchronized(wsLock) {
+            isUserDisconnected.set(false)
+        }
         retryAttempt.set(0)
-        openWebSocketInternal(host, port, token, onTelemetry, onStatusChanged, onAuthExpired)
+        openWebSocketInternal(host, port, token, onTelemetry, onStatusChanged, onAuthExpired, fromReconnect = false)
     }
 
     private fun openWebSocketInternal(
@@ -357,12 +353,12 @@ class AtsNetworkClient {
         token: String,
         onTelemetry: (TelemetryData) -> Unit,
         onStatusChanged: (Boolean) -> Unit,
-        onAuthExpired: () -> Unit
+        onAuthExpired: () -> Unit,
+        fromReconnect: Boolean = false
     ) {
-        isUserDisconnected.set(false)
-
         if (!isAllowedPrivateAddress(host)) {
             synchronized(wsLock) {
+                if (fromReconnect && isUserDisconnected.get()) return
                 reconnectJob?.cancel()
                 reconnectJob = null
                 disconnectWebSocketInternal()
@@ -373,6 +369,7 @@ class AtsNetworkClient {
 
         if (token.isBlank()) {
             synchronized(wsLock) {
+                if (fromReconnect && isUserDisconnected.get()) return
                 reconnectJob?.cancel()
                 reconnectJob = null
                 disconnectWebSocketInternal()
@@ -392,6 +389,7 @@ class AtsNetworkClient {
             .build()
 
         synchronized(wsLock) {
+            if (fromReconnect && isUserDisconnected.get()) return
             reconnectJob?.cancel()
             reconnectJob = null
             disconnectWebSocketInternal()
@@ -451,11 +449,11 @@ class AtsNetworkClient {
     ) {
         synchronized(wsLock) {
             if (webSocket !== activeWebSocket) return
+            isUserDisconnected.set(true)
             activeWebSocket = null
             reconnectJob?.cancel()
             reconnectJob = null
         }
-        isUserDisconnected.set(true)
         postToMain {
             onStatusChanged(false)
             onAuthExpired()
@@ -482,15 +480,23 @@ class AtsNetworkClient {
                 delay(delayMs)
 
                 if (!isUserDisconnected.get()) {
-                    openWebSocketInternal(host, port, token, onTelemetry, onStatusChanged, onAuthExpired)
+                    openWebSocketInternal(
+                        host,
+                        port,
+                        token,
+                        onTelemetry,
+                        onStatusChanged,
+                        onAuthExpired,
+                        fromReconnect = true
+                    )
                 }
             }
         }
     }
 
     fun disconnectWebSocket(preserveSession: Boolean = false) {
-        isUserDisconnected.set(true)
         synchronized(wsLock) {
+            isUserDisconnected.set(true)
             reconnectJob?.cancel()
             reconnectJob = null
             disconnectWebSocketInternal(

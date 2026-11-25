@@ -115,9 +115,7 @@ foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
 
     foreach (var ip in ni.GetIPProperties().UnicastAddresses)
     {
-        if (ip.Address.AddressFamily == AddressFamily.InterNetwork &&
-            !IPAddress.IsLoopback(ip.Address) &&
-            !IsApipaAddress(ip.Address))
+        if (IsRfc1918PrivateIpv4(ip.Address))
         {
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine($"  -> http://{ip.Address}:{ServerPort} ({ni.Name})");
@@ -289,13 +287,25 @@ static void ConfigureUsbAdbReverse(int port)
             CreateNoWindow = true
         };
         using var proc = System.Diagnostics.Process.Start(psi);
-        if (proc != null && proc.WaitForExit(2000) && proc.ExitCode == 0)
+        if (proc != null)
         {
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine($"  [OK] Reenvio USB activo (adb reverse tcp:{port} tcp:{port})");
-            Console.WriteLine("       En la app movil selecciona 'Cable USB' e ingresa el PIN mostrado en consola.");
-            Console.ResetColor();
-            return;
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+            bool exited = proc.WaitForExit(2000);
+            if (!exited)
+            {
+                try { proc.Kill(true); } catch { }
+            }
+            try { Task.WhenAll(stdoutTask, stderrTask).Wait(500); } catch { }
+
+            if (exited && proc.ExitCode == 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine($"  [OK] Reenvio USB activo (adb reverse tcp:{port} tcp:{port})");
+                Console.WriteLine("       En la app movil selecciona 'Cable USB' e ingresa el PIN mostrado en consola.");
+                Console.ResetColor();
+                return;
+            }
         }
     }
     catch { }
@@ -349,5 +359,21 @@ public partial class Program
 
         byte[] bytes = ip.GetAddressBytes();
         return bytes[0] == 169 && bytes[1] == 254;
+    }
+
+    internal static bool IsRfc1918PrivateIpv4(IPAddress ip)
+    {
+        if (ip.AddressFamily != AddressFamily.InterNetwork)
+        {
+            return false;
+        }
+
+        byte[] bytes = ip.GetAddressBytes();
+        byte b0 = bytes[0];
+        byte b1 = bytes[1];
+
+        return b0 == 10 ||
+               (b0 == 172 && b1 >= 16 && b1 <= 31) ||
+               (b0 == 192 && b1 == 168);
     }
 }

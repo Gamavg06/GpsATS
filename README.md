@@ -132,7 +132,7 @@ Ejecuta `Iniciar_Servidor.exe` (o `Iniciar_Servidor.bat`) para iniciar el servid
 dotnet build server/AtsGpsServer.csproj -c Release
 dotnet build tools/AtsGpsLauncher/AtsGpsLauncher.csproj -c Release
 
-# Ejecutar suite completa de pruebas xUnit (123/123 pruebas totales, incluidas 48/48 pruebas de seguridad)
+# Ejecutar suite completa de pruebas xUnit (125/125 pruebas totales, incluidas 48/48 pruebas de seguridad)
 dotnet test tests/AtsGpsServer.Tests/AtsGpsServer.Tests.csproj
 
 # Publicar servidor y lanzador WPF sin PDB ni ensamblados innecesarios

@@ -1099,7 +1099,7 @@ namespace AtsGpsInstaller
                         }
 
                         string netshArgs = ruleExists
-                            ? "advfirewall firewall set rule name=\"ATS GPS Server\" new profile=private,domain remoteip=LocalSubnet"
+                            ? "advfirewall firewall set rule name=\"ATS GPS Server\" new dir=in action=allow protocol=TCP localport=35500 profile=private,domain remoteip=LocalSubnet"
                             : "advfirewall firewall add rule name=\"ATS GPS Server\" dir=in action=allow protocol=TCP localport=35500 profile=private,domain remoteip=LocalSubnet";
 
                         ProcessStartInfo psi = new ProcessStartInfo("netsh", netshArgs)
@@ -1114,12 +1114,12 @@ namespace AtsGpsInstaller
                             if (p != null)
                             {
                                 p.WaitForExit(3000);
-                                if (p.ExitCode != 0 && !ruleExists)
+                                if (p.ExitCode != 0)
                                 {
-                                    outcome.Warnings.Add("No se pudo crear la regla de Firewall (TCP 35500); ejecuta el instalador como Administrador o habilitala manualmente.");
+                                    outcome.Warnings.Add("No se pudo configurar o actualizar la regla de Firewall (TCP 35500); ejecuta el instalador como Administrador o habilitala manualmente.");
                                 }
                             }
-                            else if (!ruleExists)
+                            else
                             {
                                 outcome.Warnings.Add("No se pudo iniciar netsh para configurar el Firewall de Windows.");
                             }

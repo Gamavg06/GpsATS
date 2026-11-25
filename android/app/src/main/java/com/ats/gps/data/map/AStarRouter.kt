@@ -37,7 +37,10 @@ object AStarRouter {
         if (isCancelled()) return null
 
         // Si el nodo exacto esta desconectado o en sentido contrario, buscar un nodo adyacente conectado
-        val candidateStarts = graph.adjacency[startNode]?.map { it.toNodeIndex }?.take(4) ?: emptyList()
+        val candidateStarts = graph.adjacency[startNode]
+            ?.filter { it.toNodeIndex != initialEdge?.fromNodeIndex }
+            ?.map { it.toNodeIndex }
+            ?.take(4) ?: emptyList()
         for (cand in candidateStarts) {
             if (isCancelled()) return null
             if (cand in 0 until nodeCount && cand != targetNode) {
@@ -90,7 +93,7 @@ object AStarRouter {
         if (isCancelled()) return null
 
         // Ultimo recurso si no existe ruta hacia adelante (callejon sin salida): relajar headingDeg
-        if (!headingDeg.isNaN() || initialEdge != null) {
+        if (headingDeg.isFinite() || initialEdge != null) {
             val fallbackDirect = executeAStar(graph, startNode, targetNode, nodeCount, Float.NaN, null, isCancelled)
             if (fallbackDirect != null) return fallbackDirect
 
@@ -119,7 +122,7 @@ object AStarRouter {
         val adjacency = graph.adjacency
         val nodes = graph.nodes
 
-        val hasHeading = !headingDeg.isNaN()
+        val hasHeading = headingDeg.isFinite()
         val hx: Float
         val hz: Float
         if (hasHeading) {

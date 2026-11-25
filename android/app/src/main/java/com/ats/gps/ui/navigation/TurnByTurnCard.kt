@@ -21,13 +21,16 @@ import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ats.gps.data.map.RouteResult
 import com.ats.gps.data.model.MapEdge
 import kotlin.math.abs
 import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 enum class ManeuverType {
@@ -59,6 +62,9 @@ fun TurnByTurnCard(
     activeRoute: RouteResult?,
     destinationCity: String,
     instructionOverride: NavigationInstruction? = null,
+    truckY: Float = Float.NaN,
+    headingDeg: Float = Float.NaN,
+    cardWidth: Dp = 260.dp,
     modifier: Modifier = Modifier
 ) {
     if (activeRoute == null || activeRoute.edgePath.isEmpty()) return
@@ -69,12 +75,15 @@ fun TurnByTurnCard(
         truckZ = truckZ,
         route = activeRoute,
         destinationCity = destinationCity,
-        cache = navCache
+        cache = navCache,
+        truckY = truckY,
+        headingDeg = headingDeg
     ) ?: return
 
+    val isCompact = cardWidth < 240.dp
     Box(
         modifier = modifier
-            .width(260.dp)
+            .width(cardWidth)
             .shadow(12.dp, RoundedCornerShape(16.dp))
             .clip(RoundedCornerShape(16.dp))
             .background(
@@ -97,7 +106,7 @@ fun TurnByTurnCard(
                 if (instruction.isHiddenRoad) Color(0xFFF59E0B) else Color(0x40FFFFFF),
                 RoundedCornerShape(16.dp)
             )
-            .padding(14.dp)
+            .padding(if (isCompact) 10.dp else 14.dp)
     ) {
         Column(
             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -348,7 +357,9 @@ fun calculateNavigationInstruction(
     truckZ: Float,
     route: RouteResult,
     destinationCity: String,
-    cache: NavigationInstructionCache? = null
+    cache: NavigationInstructionCache? = null,
+    truckY: Float = Float.NaN,
+    headingDeg: Float = Float.NaN
 ): NavigationInstruction? {
     val edges = route.edgePath
     if (edges.isEmpty()) return null
@@ -362,20 +373,37 @@ fun calculateNavigationInstruction(
         }
     }
 
-    // 1. Encontrar el tramo actual más cercano proyectando ortogonalmente sobre los segmentos
+    val hasY = truckY.isFinite()
+    val hasHeading = headingDeg.isFinite()
+    val hx: Float
+    val hz: Float
+    if (hasHeading) {
+        val rad = Math.toRadians(headingDeg.toDouble()).toFloat()
+        hx = sin(rad)
+        hz = -cos(rad)
+    } else {
+        hx = 0f
+        hz = 0f
+    }
+
+    // 1. Encontrar el tramo actual más cercano proyectando ortogonalmente con penalizacion de altura Y y rumbo
     var currentEdgeIdx = 0
-    var minDistSq = Float.MAX_VALUE
+    var minEffDistSq = Float.MAX_VALUE
+    var minRawDistSq = Float.MAX_VALUE
     var remainingOnCurrentEdge = edges[0].length
 
-    fun projectOntoEdge(edge: MapEdge): Pair<Float, Float> {
+    fun projectOntoEdge(edge: MapEdge): Triple<Float, Float, Float> {
         val poly = edge.polyline
-        if (poly.isEmpty()) return Pair(Float.MAX_VALUE, edge.length)
+        if (poly.isEmpty()) return Triple(Float.MAX_VALUE, Float.MAX_VALUE, edge.length)
         if (poly.size == 1) {
             val pt = poly[0]
             val dSq = (pt.x - truckX) * (pt.x - truckX) + (pt.z - truckZ) * (pt.z - truckZ)
-            return Pair(dSq, edge.length)
+            val dy = if (hasY) abs(pt.y - truckY) else 0f
+            val yPen = if (dy > 3.5f) (dy - 3.5f) * (dy - 3.5f) * 150f + 400f else 0f
+            return Triple(dSq + yPen, dSq, edge.length)
         }
-        var bestSq = Float.MAX_VALUE
+        var bestEffSq = Float.MAX_VALUE
+        var bestRawSq = Float.MAX_VALUE
         var bestTraveled = 0f
         var accLen = 0f
         for (pIdx in 0 until poly.size - 1) {
@@ -391,8 +419,23 @@ fun calculateNavigationInstruction(
             val px = p1.x + t * vx
             val pz = p1.z + t * vz
             val dSq = (truckX - px) * (truckX - px) + (truckZ - pz) * (truckZ - pz)
-            if (dSq < bestSq) {
-                bestSq = dSq
+
+            val dy = if (hasY) abs((p1.y + t * (p2.y - p1.y)) - truckY) else 0f
+            val yPen = if (dy > 3.5f) (dy - 3.5f) * (dy - 3.5f) * 150f + 400f else 0f
+
+            val hPen = if (hasHeading && lenSq > 0.01f) {
+                val dot = (vx * hx + vz * hz) / segLen
+                when {
+                    dot < -0.35f -> dSq * 4.0f + 500f
+                    dot < 0.0f -> dSq * 2.0f + 150f
+                    else -> 0f
+                }
+            } else 0f
+
+            val effSq = dSq + yPen + hPen
+            if (effSq < bestEffSq) {
+                bestEffSq = effSq
+                bestRawSq = dSq
                 bestTraveled = accLen + t * segLen
             }
             accLen += segLen
@@ -403,7 +446,7 @@ fun calculateNavigationInstruction(
         } else {
             edge.length
         }
-        return Pair(bestSq, remaining)
+        return Triple(bestEffSq, bestRawSq, remaining)
     }
 
     val isSameRoute = (cache != null && cache.lastRoute === route)
@@ -411,20 +454,22 @@ fun calculateNavigationInstruction(
     val endSearch = if (isSameRoute) (cache!!.lastEdgeIdx + 8).coerceAtMost(edges.size - 1) else edges.size - 1
 
     for (i in startSearch..endSearch) {
-        val (dSq, rem) = projectOntoEdge(edges[i])
-        if (dSq < minDistSq) {
-            minDistSq = dSq
+        val (effSq, rawSq, rem) = projectOntoEdge(edges[i])
+        if (effSq < minEffDistSq) {
+            minEffDistSq = effSq
+            minRawDistSq = rawSq
             currentEdgeIdx = i
             remainingOnCurrentEdge = rem
         }
     }
 
     // Si la búsqueda local no encontró ningún tramo cercano (< 60m), hacer búsqueda global
-    if (minDistSq > 3600f && (startSearch > 0 || endSearch < edges.size - 1)) {
+    if (minRawDistSq > 3600f && (startSearch > 0 || endSearch < edges.size - 1)) {
         for (i in edges.indices) {
-            val (dSq, rem) = projectOntoEdge(edges[i])
-            if (dSq < minDistSq) {
-                minDistSq = dSq
+            val (effSq, rawSq, rem) = projectOntoEdge(edges[i])
+            if (effSq < minEffDistSq) {
+                minEffDistSq = effSq
+                minRawDistSq = rawSq
                 currentEdgeIdx = i
                 remainingOnCurrentEdge = rem
             }
@@ -478,6 +523,50 @@ fun calculateNavigationInstruction(
             val isRamp = eNext.roadType.toInt() == 3
             val isShortPrefab = (eCurr.roadType.toInt() == 3 && eCurr.length <= 38f) ||
                 (eNext.roadType.toInt() == 3 && eNext.length <= 38f)
+
+            // Para prefabs (especialmente 4 puntos o cuerdas cortas), medir giro total contra salida y quiebres internos
+            if (isRamp) {
+                val nextPoly = eNext.polyline
+                val exitLastP0 = nextPoly[nextPoly.size - 2]
+                val exitLastP1 = nextPoly[nextPoly.size - 1]
+                var outDx = (exitLastP1.x - exitLastP0.x).toDouble()
+                var outDz = (exitLastP1.z - exitLastP0.z).toDouble()
+                if (i + 2 < edges.size) {
+                    val eAfter = edges[i + 2]
+                    if (eAfter.polyline.size >= 2) {
+                        val ap0 = eAfter.polyline[0]
+                        val ap1 = eAfter.polyline[1]
+                        val adx = (ap1.x - ap0.x).toDouble()
+                        val adz = (ap1.z - ap0.z).toDouble()
+                        if (adx * adx + adz * adz >= 1e-4) {
+                            outDx = adx
+                            outDz = adz
+                        }
+                    }
+                }
+                if (outDx * outDx + outDz * outDz >= 1e-4) {
+                    var totalDiff = Math.toDegrees(atan2(outDz, outDx) - angle1)
+                    while (totalDiff > 180.0) totalDiff -= 360.0
+                    while (totalDiff < -180.0) totalDiff += 360.0
+                    if (abs(totalDiff) > abs(diffDeg)) {
+                        diffDeg = totalDiff
+                    }
+                }
+                for (k in 0 until nextPoly.size - 1) {
+                    val kp0 = nextPoly[k]
+                    val kp1 = nextPoly[k + 1]
+                    val kdx = (kp1.x - kp0.x).toDouble()
+                    val kdz = (kp1.z - kp0.z).toDouble()
+                    if (kdx * kdx + kdz * kdz < 1e-4) continue
+                    var kDiff = Math.toDegrees(atan2(kdz, kdx) - angle1)
+                    while (kDiff > 180.0) kDiff -= 360.0
+                    while (kDiff < -180.0) kDiff += 360.0
+                    if (abs(diffDeg) < 20.0 && abs(kDiff) > abs(diffDeg)) {
+                        diffDeg = kDiff
+                    }
+                }
+            }
+
             if (abs(diffDeg) >= 20.0 || isRamp) {
                 var matched = true
                 when {

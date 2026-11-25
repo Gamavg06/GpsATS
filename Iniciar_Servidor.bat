@@ -105,7 +105,9 @@ if "%HAS_MAP%"=="0" (
     echo [AVISO] No se encontro 'map_ats.bin' en server\data ni server\publish\data.
     echo         Iniciando extraccion local on-demand...
     echo.
-    if "%USE_DOTNET_RUN%"=="0" if exist "%SERVER_EXE%" (
+    set "USE_PREBUILT=0"
+    if "%USE_DOTNET_RUN%"=="0" if exist "%SERVER_EXE%" set "USE_PREBUILT=1"
+    if "%USE_PREBUILT%"=="1" (
         "%SERVER_EXE%" --build-map
     ) else (
         dotnet run --project "server\AtsGpsServer.csproj" -- --build-map
@@ -142,7 +144,9 @@ REM 7. Ejecucion del Servidor
 echo [INICIO] Ejecutando servidor companion en puerto 35500...
 echo Presiona Ctrl+C en esta ventana para detener el servidor.
 echo.
-if "%USE_DOTNET_RUN%"=="0" if exist "%SERVER_EXE%" (
+set "USE_PREBUILT=0"
+if "%USE_DOTNET_RUN%"=="0" if exist "%SERVER_EXE%" set "USE_PREBUILT=1"
+if "%USE_PREBUILT%"=="1" (
     "%SERVER_EXE%"
 ) else (
     dotnet run --project "server\AtsGpsServer.csproj"

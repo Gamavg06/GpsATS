@@ -9,6 +9,7 @@ using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
+using AtsGpsServer.Input;
 using AtsGpsServer.Map;
 using AtsGpsServer.Security;
 using AtsGpsServer.Telemetry;
@@ -287,8 +288,25 @@ namespace AtsGpsServer.Tests
             Assert.True(Program.IsApipaAddress(IPAddress.Parse("169.254.12.34")));
             Assert.False(Program.IsApipaAddress(IPAddress.Parse("192.168.1.55")));
 
+            Assert.True(Program.IsRfc1918PrivateIpv4(IPAddress.Parse("10.0.0.5")));
+            Assert.True(Program.IsRfc1918PrivateIpv4(IPAddress.Parse("172.16.0.1")));
+            Assert.True(Program.IsRfc1918PrivateIpv4(IPAddress.Parse("172.31.255.254")));
+            Assert.True(Program.IsRfc1918PrivateIpv4(IPAddress.Parse("192.168.1.55")));
+            Assert.False(Program.IsRfc1918PrivateIpv4(IPAddress.Parse("100.64.0.1")));
+            Assert.False(Program.IsRfc1918PrivateIpv4(IPAddress.Parse("172.15.255.255")));
+            Assert.False(Program.IsRfc1918PrivateIpv4(IPAddress.Parse("172.32.0.1")));
+            Assert.False(Program.IsRfc1918PrivateIpv4(IPAddress.Parse("169.254.12.34")));
+            Assert.False(Program.IsRfc1918PrivateIpv4(IPAddress.Parse("127.0.0.1")));
+
             Assert.Equal(@"D:\Games\ATS", AtsServerBuilder.ParseAtsDirArg(new[] { "--ats-dir", @"D:\Games\ATS" }));
             Assert.Equal(@"D:\Games\ATS", AtsServerBuilder.ParseAtsDirArg(new[] { @"--ats-dir=""D:\Games\ATS""" }));
+        }
+
+        [Fact]
+        public void VirtualInputController_InputStructSize_MatchesWin32NativeSize()
+        {
+            int expectedBytes = Environment.Is64BitProcess ? 40 : 28;
+            Assert.Equal(expectedBytes, VirtualInputController.GetInputStructSize());
         }
     }
 }
