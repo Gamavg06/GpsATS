@@ -10,6 +10,8 @@
 
 Plataforma integral de telemetria en cabina, navegacion por satelite (GPS) en tiempo real y panel de instrumentos complementario para **American Truck Simulator** (compatible con Euro Truck Simulator 2). Disenada con renderizado por hardware a 60-120 FPS estables, asistente de voz giro a giro, bitacora persistente de entregas y enlace autenticado a 30 Hz en el puerto TCP `35500` por red Wi-Fi privada o cable USB opcional (`adb reverse`).
 
+> **Web Oficial de Lanzamiento (GitHub Pages):** Consulta [`docs/index.html`](docs/index.html) para ver el sitio de lanzamiento open-source interactivo (simulador 2D/3D, galeria, arquitectura, matriz de seguridad, guias de compilacion y verificacion `SHA256SUMS`).
+
 ---
 
 ## Autoria y Propiedad del Codigo Fuente
